@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openrtc.dev/schemas/protocol/server-message.v1.schema.json",
+  "title": "OpenRTC v1 Server Messages",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "payload"],
+      "properties": {
+        "t": { "const": "HELLO" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["conn_id", "server_time"],
+          "properties": {
+            "conn_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "server_time": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "payload"],
+      "properties": {
+        "t": { "const": "ERROR" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "request_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "payload"],
+      "properties": {
+        "t": { "const": "JOINED" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["members", "presence"],
+          "properties": {
+            "members": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+            },
+            "presence": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "next_cursor": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room"],
+      "properties": {
+        "t": { "const": "LEFT" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "event", "payload"],
+      "properties": {
+        "t": { "const": "EVENT" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "event": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "payload": {}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "payload"],
+      "properties": {
+        "t": { "const": "PRESENCE" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  ]
+}

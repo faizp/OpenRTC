@@ -1,0 +1,40 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+coverage/
+*.tsbuildinfo
+
+# Go
+bin/
+*.test
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Env
+.env
+.env.*
+
+# Local planning / agent context (do not publish)
+claude.md
+plan.md
+local-testing-plan.md
+engineering-guidelines-plan.md
+tasks-and-subtasks.md
+tasks_and_subtasks.md
+docs/engineering/

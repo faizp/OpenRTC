@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openrtc.dev/schemas/protocol/client-message.v1.schema.json",
+  "title": "OpenRTC v1 Client Messages",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room"],
+      "properties": {
+        "t": { "const": "JOIN" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+            "cursor": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room"],
+      "properties": {
+        "t": { "const": "LEAVE" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "event", "payload"],
+      "properties": {
+        "t": { "const": "EMIT" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "event": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "payload": {},
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "trace_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "payload"],
+      "properties": {
+        "t": { "const": "PRESENCE_SET" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  ]
+}

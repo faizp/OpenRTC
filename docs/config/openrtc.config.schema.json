@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openrtc.dev/schemas/config/openrtc.config.v1.schema.json",
+  "title": "OpenRTC v1 Runtime Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "node_id", "auth", "tenant", "limits"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["single", "cluster"],
+      "default": "single"
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string", "default": "0.0.0.0" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 8080 },
+        "ws_path": { "type": "string", "default": "/ws" }
+      },
+      "default": {}
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "channel_prefix": { "type": "string", "default": "room:" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "audience", "jwks_url"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string", "minLength": 1 },
+        "jwks_url": { "type": "string", "format": "uri" }
+      }
+    },
+    "admin_auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "audience"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enforce_prefix", "separator"],
+      "properties": {
+        "enforce_prefix": { "type": "boolean", "default": true },
+        "separator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1,
+          "default": ":"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payload_max_bytes",
+        "envelope_max_bytes",
+        "rooms_per_connection",
+        "emits_per_second",
+        "outbound_queue_depth"
+      ],
+      "properties": {
+        "payload_max_bytes": { "type": "integer", "minimum": 1024, "default": 16384 },
+        "envelope_max_bytes": { "type": "integer", "minimum": 1024, "default": 20480 },
+        "rooms_per_connection": { "type": "integer", "minimum": 1, "default": 50 },
+        "emits_per_second": { "type": "integer", "minimum": 1, "default": 100 },
+        "outbound_queue_depth": { "type": "integer", "minimum": 1, "default": 256 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": { "const": "cluster" }
+        }
+      },
+      "then": {
+        "required": ["redis"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "version": "v1",
+  "codes": [
+    {
+      "code": "AUTH_INVALID",
+      "http_status": 401,
+      "ws_close_code": 4001,
+      "retryable": false,
+      "description": "JWT validation failed (signature, issuer, audience, or format)."
+    },
+    {
+      "code": "AUTH_EXPIRED",
+      "http_status": 401,
+      "ws_close_code": 4002,
+      "retryable": true,
+      "description": "JWT expired based on exp claim."
+    },
+    {
+      "code": "ROOM_FORBIDDEN",
+      "http_status": 403,
+      "ws_close_code": 4403,
+      "retryable": false,
+      "description": "Token claims do not authorize requested room/action."
+    },
+    {
+      "code": "RATE_LIMITED",
+      "http_status": 429,
+      "ws_close_code": 4408,
+      "retryable": true,
+      "description": "Per-connection emit rate limit exceeded."
+    },
+    {
+      "code": "PAYLOAD_TOO_LARGE",
+      "http_status": 413,
+      "ws_close_code": 4409,
+      "retryable": false,
+      "description": "Envelope or payload exceeded configured limits."
+    },
+    {
+      "code": "QUEUE_OVERFLOW",
+      "http_status": 503,
+      "ws_close_code": 4410,
+      "retryable": true,
+      "description": "Outbound queue overflow forced disconnect."
+    },
+    {
+      "code": "BAD_REQUEST",
+      "http_status": 400,
+      "ws_close_code": 4400,
+      "retryable": false,
+      "description": "Envelope validation or request schema failed."
+    },
+    {
+      "code": "INTERNAL",
+      "http_status": 500,
+      "ws_close_code": 4500,
+      "retryable": true,
+      "description": "Unhandled server-side failure."
+    }
+  ]
+}

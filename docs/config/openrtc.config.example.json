@@ -1,0 +1,33 @@
+{
+  "mode": "cluster",
+  "node_id": "node-a",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "ws_path": "/ws"
+  },
+  "redis": {
+    "url": "redis://localhost:6379/0",
+    "channel_prefix": "room:"
+  },
+  "auth": {
+    "issuer": "https://issuer.example.com",
+    "audience": "openrtc-clients",
+    "jwks_url": "https://issuer.example.com/.well-known/jwks.json"
+  },
+  "admin_auth": {
+    "issuer": "https://issuer.example.com",
+    "audience": "openrtc-admin"
+  },
+  "tenant": {
+    "enforce_prefix": true,
+    "separator": ":"
+  },
+  "limits": {
+    "payload_max_bytes": 16384,
+    "envelope_max_bytes": 20480,
+    "rooms_per_connection": 50,
+    "emits_per_second": 100,
+    "outbound_queue_depth": 256
+  }
+}

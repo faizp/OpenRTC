@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openrtc.dev/schemas/protocol/envelope.v1.schema.json",
+  "title": "OpenRTC v1 Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["t", "id"],
+  "properties": {
+    "t": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "room": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 256,
+      "pattern": "^[a-zA-Z0-9._:-]+$"
+    },
+    "event": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "payload": {},
+    "meta": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}
