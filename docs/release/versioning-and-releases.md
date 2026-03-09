@@ -26,3 +26,5 @@
 2. Protocol/config changes include contract docs and schema updates.
 3. Error/limits changes include migration notes.
 4. `CHANGELOG.md` is updated by automation before tag cut.
+5. Go backend image builds once and can run both `openrtc-runtime` and `openrtc-admin`.
+6. Release notes call out any backend/runtime contract change separately from SDK-only changes.

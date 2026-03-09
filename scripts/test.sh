@@ -13,6 +13,7 @@ fi
 "${pnpm_cmd[@]}" -r --if-present test
 
 if command -v go >/dev/null 2>&1; then
+  (cd server && go test ./...)
   (cd sdk-go && go test ./...)
 else
   echo "go is required for Go tests" >&2

@@ -12,4 +12,11 @@ fi
 
 "${pnpm_cmd[@]}" -r --if-present test:integration
 
-echo "No Go or Python integration suites are defined yet (M1 scope)."
+if command -v go >/dev/null 2>&1; then
+  (cd server && go test ./integration/...)
+else
+  echo "go is required for Go integration tests" >&2
+  exit 1
+fi
+
+echo "No Python integration suite is defined yet."

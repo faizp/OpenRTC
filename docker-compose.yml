@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  runtime:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["/usr/local/bin/openrtc-runtime"]
+    environment:
+      OPENRTC_MODE: cluster
+      OPENRTC_NODE_ID: runtime-a
+      OPENRTC_SERVER_HOST: 0.0.0.0
+      OPENRTC_SERVER_PORT: 8080
+      OPENRTC_WS_PATH: /ws
+      OPENRTC_REDIS_URL: redis://redis:6379/0
+      OPENRTC_AUTH_ISSUER: https://issuer.example.com
+      OPENRTC_AUTH_AUDIENCE: openrtc-clients
+      OPENRTC_AUTH_JWKS_URL: https://issuer.example.com/.well-known/jwks.json
+      OPENRTC_TENANT_ENFORCE_PREFIX: "true"
+      OPENRTC_TENANT_SEPARATOR: ":"
+      OPENRTC_ADMIN_AUTH_ISSUER: https://issuer.example.com
+      OPENRTC_ADMIN_AUTH_AUDIENCE: openrtc-admin
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+
+  admin:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["/usr/local/bin/openrtc-admin"]
+    environment:
+      OPENRTC_MODE: cluster
+      OPENRTC_NODE_ID: admin-a
+      OPENRTC_SERVER_HOST: 0.0.0.0
+      OPENRTC_SERVER_PORT: 8090
+      OPENRTC_REDIS_URL: redis://redis:6379/0
+      OPENRTC_AUTH_ISSUER: https://issuer.example.com
+      OPENRTC_AUTH_AUDIENCE: openrtc-clients
+      OPENRTC_AUTH_JWKS_URL: https://issuer.example.com/.well-known/jwks.json
+      OPENRTC_TENANT_ENFORCE_PREFIX: "true"
+      OPENRTC_TENANT_SEPARATOR: ":"
+      OPENRTC_ADMIN_AUTH_ISSUER: https://issuer.example.com
+      OPENRTC_ADMIN_AUTH_AUDIENCE: openrtc-admin
+    ports:
+      - "8090:8090"
+    depends_on:
+      - redis

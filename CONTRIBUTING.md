@@ -12,6 +12,9 @@ Run these commands before opening a PR:
 
 ## Scope and compatibility guardrails
 
+- Go is the only backend runtime implementation language.
+- `server/` builds `openrtc-runtime` and `openrtc-admin`.
+- SDK packages call public APIs only; they do not own backend routing or cluster logic.
 - v1 keeps at-most-once, non-durable semantics.
 - Room names must remain tenant-prefixed at server boundary.
 - Reconnect semantics remain fresh-session (no resume window).

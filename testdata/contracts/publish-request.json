@@ -1,0 +1,7 @@
+{
+  "room": "tenant-a:room-1",
+  "event": "chat.message",
+  "payload": {
+    "text": "hello"
+  }
+}

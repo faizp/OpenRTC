@@ -1,3 +1,3 @@
-from .publisher import Publisher, PublishRequest
+from .publisher import AdminClient, OpenRTCError, PublishRequest, Stats
 
-__all__ = ["PublishRequest", "Publisher"]
+__all__ = ["AdminClient", "OpenRTCError", "PublishRequest", "Stats"]

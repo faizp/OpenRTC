@@ -13,6 +13,14 @@ fi
 "${pnpm_cmd[@]}" -r --if-present lint
 
 if command -v go >/dev/null 2>&1; then
+  unformatted="$(cd server && gofmt -l .)"
+  if [ -n "$unformatted" ]; then
+    echo "gofmt reported unformatted server files:" >&2
+    echo "$unformatted" >&2
+    exit 1
+  fi
+  (cd server && go vet ./...)
+
   unformatted="$(cd sdk-go && gofmt -l .)"
   if [ -n "$unformatted" ]; then
     echo "gofmt reported unformatted files:" >&2

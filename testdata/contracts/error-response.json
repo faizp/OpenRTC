@@ -1,0 +1,5 @@
+{
+  "code": "ROOM_FORBIDDEN",
+  "message": "room publish is not permitted",
+  "request_id": "req-123"
+}
