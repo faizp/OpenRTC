@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openrtc-config
+  namespace: openrtc
+data:
+  OPENRTC_MODE: "cluster"
+  OPENRTC_SERVER_HOST: "0.0.0.0"
+  OPENRTC_SERVER_PORT: "8080"
+  OPENRTC_WS_PATH: "/ws"
+  OPENRTC_REDIS_URL: "redis://redis.openrtc.svc.cluster.local:6379/0"
+  OPENRTC_TENANT_ENFORCE_PREFIX: "true"
+  OPENRTC_TENANT_SEPARATOR: ":"
+  OPENRTC_LIMIT_PAYLOAD_MAX_BYTES: "16384"
+  OPENRTC_LIMIT_ENVELOPE_MAX_BYTES: "20480"
+  OPENRTC_LIMIT_ROOMS_PER_CONNECTION: "50"
+  OPENRTC_LIMIT_EMITS_PER_SECOND: "100"
+  OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH: "256"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openrtc-auth
+  namespace: openrtc
+type: Opaque
+stringData:
+  # Replace these with your actual OIDC provider values
+  OPENRTC_AUTH_ISSUER: "https://your-issuer.example.com"
+  OPENRTC_AUTH_AUDIENCE: "openrtc-clients"
+  OPENRTC_AUTH_JWKS_URL: "https://your-issuer.example.com/.well-known/jwks.json"
+  OPENRTC_ADMIN_AUTH_ISSUER: "https://your-issuer.example.com"
+  OPENRTC_ADMIN_AUTH_AUDIENCE: "openrtc-admin"
