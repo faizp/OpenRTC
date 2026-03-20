@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenRTC Chat — Reference App</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1117; color: #e1e4e8; height: 100vh; display: flex; flex-direction: column; }
+    .header { padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .status { width: 8px; height: 8px; border-radius: 50%; background: #f85149; }
+    .status.connected { background: #3fb950; }
+    .status-text { font-size: 12px; color: #8b949e; }
+    .setup { max-width: 400px; margin: 80px auto; padding: 24px; }
+    .setup h2 { margin-bottom: 16px; font-size: 20px; }
+    .setup input, .setup button { width: 100%; padding: 10px 12px; margin-bottom: 10px; border-radius: 6px; border: 1px solid #30363d; font-size: 14px; }
+    .setup input { background: #0d1117; color: #e1e4e8; }
+    .setup button { background: #238636; color: #fff; border: none; cursor: pointer; font-weight: 600; }
+    .setup button:hover { background: #2ea043; }
+    .chat { display: none; flex: 1; flex-direction: column; }
+    .chat.active { display: flex; }
+    .room-bar { padding: 8px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .room-bar .room-name { font-weight: 600; }
+    .presence { color: #8b949e; font-size: 12px; }
+    .messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
+    .message { margin-bottom: 12px; }
+    .message .sender { font-weight: 600; font-size: 13px; color: #58a6ff; }
+    .message .time { font-size: 11px; color: #484f58; margin-left: 8px; }
+    .message .text { margin-top: 2px; font-size: 14px; line-height: 1.4; }
+    .message.system { color: #8b949e; font-style: italic; font-size: 12px; }
+    .input-bar { padding: 12px 20px; background: #161b22; border-top: 1px solid #30363d; display: flex; gap: 8px; }
+    .input-bar input { flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e1e4e8; font-size: 14px; }
+    .input-bar button { padding: 10px 20px; border-radius: 6px; border: none; background: #238636; color: #fff; cursor: pointer; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>OpenRTC Chat</h1>
+    <div class="status" id="status-dot"></div>
+    <span class="status-text" id="status-text">Disconnected</span>
+  </div>
+
+  <div class="setup" id="setup">
+    <h2>Join Chat</h2>
+    <input type="text" id="username-input" placeholder="Username" autofocus>
+    <input type="text" id="room-input" placeholder="Room name" value="general">
+    <button onclick="connect()">Connect</button>
+  </div>
+
+  <div class="chat" id="chat">
+    <div class="room-bar">
+      <span class="room-name" id="room-label"></span>
+      <span class="presence" id="presence-display"></span>
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="input-bar">
+      <input type="text" id="msg-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMessage()">
+      <button onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let token = null;
+    let username = '';
+    let room = '';
+    let connId = '';
+    let wsURL = '';
+    let presenceState = {};
+    let typingTimeout = null;
+
+    async function connect() {
+      username = document.getElementById('username-input').value.trim();
+      room = document.getElementById('room-input').value.trim();
+      if (!username || !room) return;
+
+      // Get server config
+      const configResp = await fetch('/config');
+      const config = await configResp.json();
+      wsURL = config.wsURL;
+
+      // Get JWT token
+      const tokenResp = await fetch('/token?username=' + encodeURIComponent(username));
+      const tokenData = await tokenResp.json();
+      token = tokenData.token;
+
+      // Connect WebSocket
+      ws = new WebSocket(wsURL + '?token=' + token);
+
+      ws.onopen = () => {
+        setStatus(true);
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        handleMessage(msg);
+      };
+
+      ws.onclose = (event) => {
+        setStatus(false);
+        addSystemMessage('Disconnected: ' + (event.reason || 'connection closed'));
+      };
+
+      ws.onerror = () => {
+        setStatus(false);
+      };
+
+      document.getElementById('setup').style.display = 'none';
+      document.getElementById('chat').classList.add('active');
+      document.getElementById('room-label').textContent = '#' + room;
+      document.getElementById('msg-input').focus();
+    }
+
+    function handleMessage(msg) {
+      switch (msg.t) {
+        case 'HELLO':
+          connId = msg.payload.conn_id;
+          addSystemMessage('Connected as ' + username + ' (node: ' + msg.payload.server.node_id + ')');
+          // Join room
+          ws.send(JSON.stringify({ t: 'JOIN', id: 'join-1', room: room }));
+          // Set initial presence
+          ws.send(JSON.stringify({ t: 'PRESENCE_SET', id: 'pres-1', room: room, payload: { username: username, status: 'online' } }));
+          break;
+
+        case 'JOINED':
+          addSystemMessage('Joined #' + msg.room + ' (' + msg.payload.members.length + ' members)');
+          // Load existing presence
+          if (msg.payload.presence) {
+            for (const [cid, state] of Object.entries(msg.payload.presence)) {
+              try {
+                presenceState[cid] = typeof state === 'string' ? JSON.parse(state) : state;
+              } catch(e) {}
+            }
+            updatePresenceDisplay();
+          }
+          break;
+
+        case 'EVENT':
+          addChatMessage(msg.payload.sender || msg.payload.username || 'unknown', msg.payload.text || JSON.stringify(msg.payload));
+          break;
+
+        case 'PRESENCE':
+          if (msg.payload && msg.payload.conn_id) {
+            presenceState[msg.payload.conn_id] = typeof msg.payload.state === 'string' ? JSON.parse(msg.payload.state) : msg.payload.state;
+            updatePresenceDisplay();
+          }
+          break;
+
+        case 'LEFT':
+          addSystemMessage('Left #' + msg.room);
+          break;
+
+        case 'ERROR':
+          addSystemMessage('Error: ' + (msg.payload.message || JSON.stringify(msg.payload)));
+          break;
+      }
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('msg-input');
+      const text = input.value.trim();
+      if (!text || !ws) return;
+
+      ws.send(JSON.stringify({
+        t: 'EMIT',
+        id: 'msg-' + Date.now(),
+        room: room,
+        event: 'chat.message',
+        payload: { text: text, username: username, sender: username }
+      }));
+
+      input.value = '';
+
+      // Reset typing presence
+      ws.send(JSON.stringify({
+        t: 'PRESENCE_SET',
+        id: 'pres-' + Date.now(),
+        room: room,
+        payload: { username: username, status: 'online' }
+      }));
+    }
+
+    // Typing indicator
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('msg-input').addEventListener('input', () => {
+        if (!ws) return;
+        ws.send(JSON.stringify({
+          t: 'PRESENCE_SET',
+          id: 'pres-typing-' + Date.now(),
+          room: room,
+          payload: { username: username, status: 'typing' }
+        }));
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+          ws.send(JSON.stringify({
+            t: 'PRESENCE_SET',
+            id: 'pres-idle-' + Date.now(),
+            room: room,
+            payload: { username: username, status: 'online' }
+          }));
+        }, 2000);
+      });
+    });
+
+    function updatePresenceDisplay() {
+      const users = Object.values(presenceState).filter(s => s && s.username);
+      const typing = users.filter(s => s.status === 'typing').map(s => s.username);
+      const online = users.map(s => s.username);
+
+      let text = online.length + ' online';
+      if (typing.length > 0) {
+        text += ' | ' + typing.join(', ') + (typing.length === 1 ? ' is' : ' are') + ' typing...';
+      }
+      document.getElementById('presence-display').textContent = text;
+    }
+
+    function addChatMessage(sender, text) {
+      const div = document.createElement('div');
+      div.className = 'message';
+      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      div.innerHTML = '<span class="sender">' + escapeHtml(sender) + '</span><span class="time">' + time + '</span><div class="text">' + escapeHtml(text) + '</div>';
+      document.getElementById('messages').appendChild(div);
+      div.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function addSystemMessage(text) {
+      const div = document.createElement('div');
+      div.className = 'message system';
+      div.textContent = text;
+      document.getElementById('messages').appendChild(div);
+      div.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function setStatus(connected) {
+      document.getElementById('status-dot').className = 'status' + (connected ? ' connected' : '');
+      document.getElementById('status-text').textContent = connected ? 'Connected' : 'Disconnected';
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
