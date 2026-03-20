@@ -3,7 +3,6 @@ FROM golang:1.22 AS build
 WORKDIR /src
 
 COPY server/go.mod server/go.sum ./server/
-COPY sdk-go/go.mod ./sdk-go/
 COPY go.work ./
 RUN cd /src/server && go mod download
 
