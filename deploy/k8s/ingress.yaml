@@ -15,6 +15,10 @@ metadata:
     nginx.ingress.kubernetes.io/websocket-services: "openrtc-runtime"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - openrtc.example.com
+      secretName: openrtc-tls
   rules:
     - host: openrtc.example.com
       http:

@@ -46,9 +46,10 @@ kubectl apply -f deploy/k8s/yjs-compactor.yaml
 kubectl apply -f deploy/k8s/ingress.yaml
 ```
 
-**Important:** WebSocket connections require sticky sessions. The ingress manifest
-includes nginx annotations for cookie-based affinity. Adjust for your ingress
-controller.
+**Important:** WebSocket connections require sticky sessions and TLS. The ingress
+manifest includes nginx annotations for cookie-based affinity and expects an
+`openrtc-tls` secret for `openrtc.example.com`. Adjust both for your ingress
+controller and certificate manager.
 
 ## Option 3: Build from Source
 
