@@ -1,0 +1,20 @@
+{
+  "name": "@openrtc/yjs-compactor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./redis": "./src/redis-store.ts"
+  },
+  "dependencies": {
+    "redis": "5.12.0",
+    "yjs": "13.6.27"
+  },
+  "scripts": {
+    "compact": "node --loader ts-node/esm src/cli.ts",
+    "compact:once": "node --loader ts-node/esm src/cli.ts --once",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --loader ts-node/esm src/index.test.ts && node --loader ts-node/esm src/redis-store.test.ts && node --loader ts-node/esm src/runner.test.ts"
+  }
+}

@@ -23,6 +23,62 @@
       "description": "Token claims do not authorize requested room/action."
     },
     {
+      "code": "ROOM_NOT_FOUND",
+      "http_status": 404,
+      "ws_close_code": 4404,
+      "retryable": false,
+      "description": "Requested durable room record does not exist."
+    },
+    {
+      "code": "ROOM_CONFLICT",
+      "http_status": 409,
+      "ws_close_code": 4411,
+      "retryable": false,
+      "description": "Requested durable room record already exists or conflicts with current state."
+    },
+    {
+      "code": "THREAD_NOT_FOUND",
+      "http_status": 404,
+      "ws_close_code": 4414,
+      "retryable": false,
+      "description": "Requested durable room thread does not exist."
+    },
+    {
+      "code": "THREAD_CONFLICT",
+      "http_status": 409,
+      "ws_close_code": 4415,
+      "retryable": false,
+      "description": "Requested durable room thread already exists or conflicts with current state."
+    },
+    {
+      "code": "INBOX_NOTIFICATION_NOT_FOUND",
+      "http_status": 404,
+      "ws_close_code": 4416,
+      "retryable": false,
+      "description": "Requested durable inbox notification does not exist."
+    },
+    {
+      "code": "INBOX_NOTIFICATION_CONFLICT",
+      "http_status": 409,
+      "ws_close_code": 4417,
+      "retryable": false,
+      "description": "Requested durable inbox notification already exists or conflicts with current state."
+    },
+    {
+      "code": "STORAGE_NOT_FOUND",
+      "http_status": 404,
+      "ws_close_code": 4412,
+      "retryable": false,
+      "description": "Requested durable storage document does not exist."
+    },
+    {
+      "code": "PATCH_FAILED",
+      "http_status": 422,
+      "ws_close_code": 4413,
+      "retryable": false,
+      "description": "JSON Patch operation failed validation or could not be applied atomically."
+    },
+    {
       "code": "RATE_LIMITED",
       "http_status": 429,
       "ws_close_code": 4408,

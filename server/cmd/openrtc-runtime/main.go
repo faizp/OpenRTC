@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,17 +15,31 @@ import (
 )
 
 func main() {
-	cfg, err := config.LoadFromOS()
-	if err != nil {
-		log.Printf("load config: %v", err)
+	if err := run(context.Background(), config.LoadFromOS, func(cfg config.RuntimeConfig, logger *log.Logger) (runtimeService, error) {
+		return runtimeapp.NewService(cfg, logger)
+	}, func(server *http.Server) error {
+		return server.ListenAndServe()
+	}, os.Stdout); err != nil {
+		log.Print(err)
 		os.Exit(1)
 	}
+}
 
-	logger := log.New(os.Stdout, "openrtc-runtime ", log.LstdFlags)
-	service, err := runtimeapp.NewService(cfg, logger)
+type runtimeService interface {
+	Handler() http.Handler
+	Close() error
+}
+
+func run(ctx context.Context, loadConfig func() (config.RuntimeConfig, error), newService func(config.RuntimeConfig, *log.Logger) (runtimeService, error), listenAndServe func(*http.Server) error, logOutput io.Writer) error {
+	cfg, err := loadConfig()
 	if err != nil {
-		logger.Printf("create runtime service: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	logger := log.New(logOutput, "openrtc-runtime ", log.LstdFlags)
+	service, err := newService(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("create runtime service: %w", err)
 	}
 	defer service.Close()
 
@@ -33,7 +48,7 @@ func main() {
 		Handler: service.Handler(),
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
@@ -42,8 +57,8 @@ func main() {
 	}()
 
 	logger.Printf("runtime server starting: %s", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Printf("runtime server exited: %v", err)
-		os.Exit(1)
+	if err := listenAndServe(server); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("runtime server exited: %w", err)
 	}
+	return nil
 }

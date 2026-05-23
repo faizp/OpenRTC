@@ -27,6 +27,18 @@ SDKs will be maintained in separate repositories to allow independent versioning
 ## What remains
 
 - `server/` — Go core runtime (unchanged)
+- `packages/client/` — TypeScript room/event/presence client
+- `packages/react/` — React hooks around the TypeScript client
+- `packages/rich-text/` — rich text editor Yjs binding helpers and presence adapters
+- `packages/yjs/` — Yjs sync provider
+- `packages/yjs-compactor/` — trusted Yjs update compactor for Redis-backed persistence
 - `reference-app/` — Reference application (unchanged)
 - `docs/` — Documentation (unchanged)
 - All planning files (`plan.md`, `tasks-and-subtasks.md`, etc.) — unchanged
+
+## Current note
+
+The removed `sdk-ts`, `sdk-go`, and `sdk-python` directories are still gone.
+The current TypeScript packages are narrower in-repo integration packages for
+the runtime protocol, React hooks, rich-text Yjs/presence helpers, Yjs sync, and operational
+Yjs compaction.

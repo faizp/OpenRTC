@@ -1,19 +1,27 @@
 package admin
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/openrtc/openrtc/server/internal/auth"
 	"github.com/openrtc/openrtc/server/internal/cluster"
 	"github.com/openrtc/openrtc/server/internal/config"
 	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
 	"github.com/openrtc/openrtc/server/internal/observability"
+	"github.com/openrtc/openrtc/server/internal/protocol"
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
@@ -36,10 +44,85 @@ type PublishRequest struct {
 	TraceID             string          `json:"trace_id,omitempty"`
 }
 
+type PresenceRequest struct {
+	Room       string          `json:"room"`
+	ConnID     string          `json:"conn_id"`
+	State      json.RawMessage `json:"state"`
+	TTLSeconds int             `json:"ttl_seconds,omitempty"`
+}
+
+type RoomCreateRequest struct {
+	ID              string              `json:"id"`
+	Metadata        json.RawMessage     `json:"metadata,omitempty"`
+	DefaultAccesses []string            `json:"defaultAccesses,omitempty"`
+	UsersAccesses   map[string][]string `json:"usersAccesses,omitempty"`
+	GroupsAccesses  map[string][]string `json:"groupsAccesses,omitempty"`
+}
+
+type RoomUpdateRequest struct {
+	Metadata        *json.RawMessage    `json:"metadata,omitempty"`
+	DefaultAccesses *[]string           `json:"defaultAccesses,omitempty"`
+	UsersAccesses   map[string][]string `json:"usersAccesses,omitempty"`
+	GroupsAccesses  map[string][]string `json:"groupsAccesses,omitempty"`
+}
+
+type ThreadCreateRequest struct {
+	ID       string               `json:"id,omitempty"`
+	Metadata json.RawMessage      `json:"metadata,omitempty"`
+	Comment  CommentCreateRequest `json:"comment"`
+}
+
+type CommentCreateRequest struct {
+	ID       string          `json:"id,omitempty"`
+	UserID   string          `json:"userId"`
+	Body     json.RawMessage `json:"body"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+}
+
+type InboxNotificationTriggerRequest struct {
+	ID           string          `json:"id,omitempty"`
+	UserID       string          `json:"userId"`
+	Kind         string          `json:"kind"`
+	SubjectID    string          `json:"subjectId,omitempty"`
+	ThreadID     string          `json:"threadId,omitempty"`
+	RoomID       string          `json:"roomId,omitempty"`
+	ActivityData json.RawMessage `json:"activityData,omitempty"`
+}
+
+type RoomSubscriptionSettingsRequest struct {
+	Threads      string `json:"threads,omitempty"`
+	TextMentions string `json:"textMentions,omitempty"`
+}
+
+const maxStoragePatchOperations = 100
+
+type roomListResponse struct {
+	Rooms      []cluster.RoomRecord `json:"rooms"`
+	NextCursor string               `json:"next_cursor,omitempty"`
+}
+
+type activeUsersResponse struct {
+	Data []cluster.ActiveUser `json:"data"`
+}
+
+type threadListResponse struct {
+	Data []cluster.ThreadRecord `json:"data"`
+}
+
+type inboxNotificationListResponse struct {
+	Data       []cluster.InboxNotificationRecord `json:"data"`
+	NextCursor string                            `json:"next_cursor,omitempty"`
+}
+
+type roomSubscriptionSettingsListResponse struct {
+	Data       []cluster.RoomSubscriptionSettings `json:"data"`
+	NextCursor string                             `json:"next_cursor,omitempty"`
+}
+
 func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) {
 	var verifier *auth.Verifier
 	if cfg.AdminAuth != nil {
-		verifier = auth.NewVerifier(cfg.AdminAuth.Issuer, cfg.AdminAuth.Audience, cfg.Auth.JWKSURL)
+		verifier = auth.NewVerifier(cfg.AdminAuth.Issuer, cfg.AdminAuth.Audience, cfg.AdminAuth.JWKSURL)
 	}
 
 	service := &Service{
@@ -70,6 +153,12 @@ func (s *Service) Close() error {
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/publish", s.handlePublish)
+	mux.HandleFunc("/v1/presence", s.handlePresence)
+	mux.HandleFunc("/v1/inbox-notifications/trigger", s.handleTriggerInboxNotification)
+	mux.HandleFunc("/v1/inbox-notifications/", s.handleInboxNotificationAction)
+	mux.HandleFunc("/v1/rooms", s.handleRooms)
+	mux.HandleFunc("/v1/rooms/", s.handleRoom)
+	mux.HandleFunc("/v1/users/", s.handleUser)
 	mux.HandleFunc("/v1/stats", s.handleStats)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
@@ -94,12 +183,30 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request PublishRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
 		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
 		return
 	}
-	if request.Room == "" || request.Event == "" || len(request.Payload) == 0 {
+	if request.Room == "" || request.Event == "" || len(request.Payload) == 0 || !json.Valid(request.Payload) {
 		s.writeError(w, openrtcerr.CodeBadRequest, "room, event, and payload are required", "", http.StatusBadRequest)
+		return
+	}
+	if err := protocol.ValidateRoomName(request.Room); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if err := protocol.ValidateEventName(request.Event); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if request.ExcludeSenderConnID != "" {
+		if err := protocol.ValidateConnectionID(request.ExcludeSenderConnID); err != nil {
+			s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+			return
+		}
+	}
+	if len(request.Payload) > s.cfg.Limits.PayloadMaxBytes {
+		s.writeError(w, openrtcerr.CodePayloadTooLarge, "payload exceeds max size", "", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if !claims.Allows("publish", request.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
@@ -127,6 +234,990 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.SyncStats(context.Background(), "admin:"+s.cfg.NodeID, snapshot)
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Service) handlePresence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "admin presence requires redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+
+	var request PresenceRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if request.Room == "" || request.ConnID == "" || len(request.State) == 0 || !json.Valid(request.State) || request.State[0] != '{' {
+		s.writeError(w, openrtcerr.CodeBadRequest, "room, conn_id, and object state are required", "", http.StatusBadRequest)
+		return
+	}
+	if err := protocol.ValidateRoomName(request.Room); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if err := protocol.ValidateConnectionID(request.ConnID); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if len(request.State) > s.cfg.Limits.PayloadMaxBytes {
+		s.writeError(w, openrtcerr.CodePayloadTooLarge, "state exceeds max size", "", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if !claims.Allows("presence", request.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room presence is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	ttl := 60 * time.Second
+	if request.TTLSeconds > 0 {
+		if request.TTLSeconds > 3600 {
+			s.writeError(w, openrtcerr.CodeBadRequest, "ttl_seconds must be between 1 and 3600", "", http.StatusBadRequest)
+			return
+		}
+		ttl = time.Duration(request.TTLSeconds) * time.Second
+	}
+
+	if err := s.store.SetEphemeralPresence(r.Context(), request.ConnID, request.Room, request.State, ttl); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.PublishPresence(r.Context(), cluster.PresenceEvent{
+		Room:       request.Room,
+		ConnID:     request.ConnID,
+		State:      request.State,
+		OriginNode: "admin:" + s.cfg.NodeID,
+	}); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Service) handleRooms(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		s.handleCreateRoom(w, r)
+	case http.MethodGet:
+		s.handleListRooms(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleRoom(w http.ResponseWriter, r *http.Request) {
+	room, subresource, err := roomPathParts(r.URL.Path)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if subresource == "storage" {
+		s.handleStorage(w, r, room)
+		return
+	}
+	if subresource == "storage/json-patch" {
+		s.handleStoragePatch(w, r, room)
+		return
+	}
+	if subresource == "active_users" || subresource == "active-users" {
+		s.handleActiveUsers(w, r, room)
+		return
+	}
+	if subresource == "threads" {
+		s.handleThreads(w, r, room)
+		return
+	}
+	if strings.HasPrefix(subresource, "threads/") {
+		s.handleThreadSubresource(w, r, room, subresource)
+		return
+	}
+	if strings.HasPrefix(subresource, "users/") {
+		s.handleRoomUserSubresource(w, r, room, subresource)
+		return
+	}
+	if subresource != "" {
+		s.writeError(w, openrtcerr.CodeBadRequest, "unsupported room subresource", "", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetRoom(w, r, room)
+	case http.MethodPatch:
+		s.handleUpdateRoom(w, r, room)
+	case http.MethodDelete:
+		s.handleDeleteRoom(w, r, room)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleStorage(w http.ResponseWriter, r *http.Request, room string) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetStorage(w, r, room)
+	case http.MethodPut:
+		s.handleSetStorage(w, r, room)
+	case http.MethodDelete:
+		s.handleDeleteStorage(w, r, room)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, room string) {
+	if r.Method != http.MethodPatch {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	operations, parseErr := decodeStoragePatch(w, r, s.cfg.Limits.PayloadMaxBytes)
+	if parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	document, err := s.store.ApplyStoragePatch(r.Context(), room, operations, s.cfg.Limits.PayloadMaxBytes)
+	if errors.Is(err, cluster.ErrStorageNotFound) {
+		s.writeError(w, openrtcerr.CodeStorageNotFound, "storage document not found", "", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, cluster.ErrStoragePatch) {
+		s.writeError(w, openrtcerr.CodePatchFailed, err.Error(), "", http.StatusUnprocessableEntity)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeRawJSON(w, http.StatusOK, document)
+}
+
+func (s *Service) handleActiveUsers(w http.ResponseWriter, r *http.Request, room string) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "active users API requires redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("presence", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room presence is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	users, err := s.store.ActiveUsers(r.Context(), room)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, activeUsersResponse{Data: users})
+}
+
+func (s *Service) handleThreads(w http.ResponseWriter, r *http.Request, room string) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListThreads(w, r, room)
+	case http.MethodPost:
+		s.handleCreateThread(w, r, room)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleThreadSubresource(w http.ResponseWriter, r *http.Request, room string, subresource string) {
+	threadID, child, err := threadPathParts(subresource)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if child == "comments" {
+		s.handleAddComment(w, r, room, threadID)
+		return
+	}
+	s.writeError(w, openrtcerr.CodeBadRequest, "unsupported thread subresource", "", http.StatusBadRequest)
+}
+
+func (s *Service) handleRoomUserSubresource(w http.ResponseWriter, r *http.Request, room string, subresource string) {
+	userID, child, err := roomUserPathParts(subresource)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if child == "subscription-settings" {
+		s.handleRoomSubscriptionSettings(w, r, room, userID)
+		return
+	}
+	s.writeError(w, openrtcerr.CodeBadRequest, "unsupported room user subresource", "", http.StatusBadRequest)
+}
+
+func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("comments", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+	threads, err := s.store.ListThreads(r.Context(), room)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, threadListResponse{Data: threads})
+}
+
+func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("comments", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	var request ThreadCreateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	threadID := request.ID
+	if threadID == "" {
+		threadID = newRecordID("th")
+	}
+	if request.Comment.ID == "" {
+		request.Comment.ID = newRecordID("cm")
+	}
+	if parseErr := validateThreadRequest(threadID, request.Metadata, request.Comment, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	comment := commentRecordFromRequest(room, threadID, request.Comment)
+	thread, err := s.store.CreateThread(r.Context(), room, cluster.ThreadRecord{
+		ID:       threadID,
+		RoomID:   room,
+		Metadata: normalizedMetadata(request.Metadata),
+		Comments: []cluster.CommentRecord{comment},
+	})
+	if errors.Is(err, cluster.ErrThreadAlreadyExists) {
+		s.writeError(w, openrtcerr.CodeThreadConflict, "thread already exists", "", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, thread)
+}
+
+func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("comments", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	var request CommentCreateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if request.ID == "" {
+		request.ID = newRecordID("cm")
+	}
+	if parseErr := validateCommentRequest(request, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	thread, err := s.store.AddComment(r.Context(), room, threadID, commentRecordFromRequest(room, threadID, request))
+	if errors.Is(err, cluster.ErrThreadNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, "thread not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, thread)
+}
+
+func (s *Service) handleUser(w http.ResponseWriter, r *http.Request) {
+	userID, subresource, itemID, err := userPathParts(r.URL.Path)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	switch subresource {
+	case "inbox-notifications":
+		s.handleUserInboxNotifications(w, r, userID, itemID)
+	case "notification-settings":
+		if itemID != "" {
+			s.writeError(w, openrtcerr.CodeBadRequest, "unsupported notification settings subresource", "", http.StatusBadRequest)
+			return
+		}
+		s.handleNotificationSettings(w, r, userID)
+	case "room-subscription-settings":
+		if itemID != "" {
+			s.writeError(w, openrtcerr.CodeBadRequest, "unsupported room subscription settings subresource", "", http.StatusBadRequest)
+			return
+		}
+		s.handleUserRoomSubscriptionSettings(w, r, userID)
+	default:
+		s.writeError(w, openrtcerr.CodeBadRequest, "unsupported user subresource", "", http.StatusBadRequest)
+	}
+}
+
+func (s *Service) handleUserInboxNotifications(w http.ResponseWriter, r *http.Request, userID string, notificationID string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "notification APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.notificationAllowed(claims, userID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	if notificationID == "" {
+		switch r.Method {
+		case http.MethodGet:
+			limit, parseErr := parseNotificationListLimit(r.URL.Query().Get("limit"))
+			if parseErr != nil {
+				s.writeError(w, openrtcerr.CodeBadRequest, parseErr.Error(), "", http.StatusBadRequest)
+				return
+			}
+			cursor, parseErr := parseCursor(firstNonEmpty(r.URL.Query().Get("cursor"), r.URL.Query().Get("startingAfter")))
+			if parseErr != nil {
+				s.writeError(w, openrtcerr.CodeBadRequest, parseErr.Error(), "", http.StatusBadRequest)
+				return
+			}
+			list, err := s.store.ListInboxNotifications(r.Context(), userID, cluster.InboxNotificationListFilter{
+				UnreadOnly: unreadOnlyQuery(r.URL.Query().Get("query"), r.URL.Query().Get("unread")),
+				Cursor:     cursor,
+				Limit:      limit,
+			})
+			if err != nil {
+				s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+				return
+			}
+			response := inboxNotificationListResponse{Data: list.Data}
+			if list.NextCursor != 0 {
+				response.NextCursor = strconv.FormatUint(list.NextCursor, 10)
+			}
+			writeJSON(w, http.StatusOK, response)
+		case http.MethodDelete:
+			if err := s.store.DeleteAllInboxNotifications(r.Context(), userID); err != nil {
+				s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		notification, err := s.store.GetInboxNotification(r.Context(), userID, notificationID)
+		if errors.Is(err, cluster.ErrInboxNotFound) {
+			s.writeError(w, openrtcerr.CodeInboxNotificationNotFound, "inbox notification not found", "", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, notification)
+	case http.MethodDelete:
+		err := s.store.DeleteInboxNotification(r.Context(), userID, notificationID)
+		if errors.Is(err, cluster.ErrInboxNotFound) {
+			s.writeError(w, openrtcerr.CodeInboxNotificationNotFound, "inbox notification not found", "", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleTriggerInboxNotification(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "notification APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+
+	var request InboxNotificationTriggerRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if request.ID == "" {
+		request.ID = newRecordID("in")
+	}
+	if parseErr := validateInboxNotificationRequest(request, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	if !s.notificationAllowed(claims, request.UserID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	notification, err := s.store.CreateInboxNotification(r.Context(), cluster.InboxNotificationRecord{
+		ID:           request.ID,
+		UserID:       request.UserID,
+		Kind:         request.Kind,
+		SubjectID:    request.SubjectID,
+		ThreadID:     request.ThreadID,
+		RoomID:       request.RoomID,
+		ActivityData: normalizedMetadata(request.ActivityData),
+	})
+	if errors.Is(err, cluster.ErrInboxAlreadyExists) {
+		s.writeError(w, openrtcerr.CodeInboxNotificationConflict, "inbox notification already exists", "", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, notification)
+}
+
+func (s *Service) handleInboxNotificationAction(w http.ResponseWriter, r *http.Request) {
+	notificationID, child, err := inboxNotificationActionParts(r.URL.Path)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if child != "read" {
+		s.writeError(w, openrtcerr.CodeBadRequest, "unsupported inbox notification action", "", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "notification APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	existing, err := s.store.GetInboxNotification(r.Context(), "", notificationID)
+	if errors.Is(err, cluster.ErrInboxNotFound) {
+		s.writeError(w, openrtcerr.CodeInboxNotificationNotFound, "inbox notification not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if !s.notificationAllowed(claims, existing.UserID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return
+	}
+	notification, err := s.store.MarkInboxNotificationRead(r.Context(), notificationID)
+	if errors.Is(err, cluster.ErrInboxNotFound) {
+		s.writeError(w, openrtcerr.CodeInboxNotificationNotFound, "inbox notification not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, notification)
+}
+
+func (s *Service) handleNotificationSettings(w http.ResponseWriter, r *http.Request, userID string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "notification APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.notificationAllowed(claims, userID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := s.store.GetNotificationSettings(r.Context(), userID)
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		writeRawJSON(w, http.StatusOK, settings)
+	case http.MethodPost:
+		settings, parseErr := readNotificationSettings(w, r, s.cfg.Limits.PayloadMaxBytes)
+		if parseErr != nil {
+			s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+			return
+		}
+		stored, err := s.store.SetNotificationSettings(r.Context(), userID, settings)
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		writeRawJSON(w, http.StatusOK, stored)
+	case http.MethodDelete:
+		if err := s.store.DeleteNotificationSettings(r.Context(), userID); err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleRoomSubscriptionSettings(w http.ResponseWriter, r *http.Request, room string, userID string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "notification APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.notificationAllowed(claims, userID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := s.store.GetRoomSubscriptionSettings(r.Context(), room, userID)
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodPost:
+		var request RoomSubscriptionSettingsRequest
+		if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+			s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+			return
+		}
+		if parseErr := validateRoomSubscriptionSettingsRequest(request); parseErr != nil {
+			s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+			return
+		}
+		settings, err := s.store.SetRoomSubscriptionSettings(r.Context(), cluster.RoomSubscriptionSettings{
+			RoomID:       room,
+			UserID:       userID,
+			Threads:      request.Threads,
+			TextMentions: request.TextMentions,
+		})
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodDelete:
+		if err := s.store.DeleteRoomSubscriptionSettings(r.Context(), room, userID); err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleUserRoomSubscriptionSettings(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "notification APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.notificationAllowed(claims, userID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return
+	}
+	limit, parseErr := parseNotificationListLimit(r.URL.Query().Get("limit"))
+	if parseErr != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, parseErr.Error(), "", http.StatusBadRequest)
+		return
+	}
+	cursor, parseErr := parseCursor(firstNonEmpty(r.URL.Query().Get("cursor"), r.URL.Query().Get("startingAfter")))
+	if parseErr != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, parseErr.Error(), "", http.StatusBadRequest)
+		return
+	}
+	list, err := s.store.ListRoomSubscriptionSettings(r.Context(), userID, cursor, limit)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	response := roomSubscriptionSettingsListResponse{Data: list.Data}
+	if list.NextCursor != 0 {
+		response.NextCursor = strconv.FormatUint(list.NextCursor, 10)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Service) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "room APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+
+	var request RoomCreateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if err := validateRoomRequest(request.ID, request.Metadata, true, s.cfg.Limits.PayloadMaxBytes); err != nil {
+		s.writeError(w, err.Code, err.Message, "", openrtcerr.DescriptorFor(err.Code).HTTPStatus)
+		return
+	}
+	if err := validateRoomAccesses(request.DefaultAccesses, request.UsersAccesses, request.GroupsAccesses); err != nil {
+		s.writeError(w, err.Code, err.Message, "", openrtcerr.DescriptorFor(err.Code).HTTPStatus)
+		return
+	}
+	if !claims.Allows("rooms", request.ID, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room administration is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	record, err := s.store.CreateRoom(r.Context(), cluster.RoomRecord{
+		ID:              request.ID,
+		Metadata:        normalizedMetadata(request.Metadata),
+		DefaultAccesses: request.DefaultAccesses,
+		UsersAccesses:   request.UsersAccesses,
+		GroupsAccesses:  request.GroupsAccesses,
+	})
+	if errors.Is(err, cluster.ErrRoomAlreadyExists) {
+		s.writeError(w, openrtcerr.CodeRoomConflict, "room already exists", "", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, record)
+}
+
+func (s *Service) handleGetStorage(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	document, err := s.store.GetStorage(r.Context(), room)
+	if errors.Is(err, cluster.ErrStorageNotFound) {
+		s.writeError(w, openrtcerr.CodeStorageNotFound, "storage document not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeRawJSON(w, http.StatusOK, document)
+}
+
+func (s *Service) handleSetStorage(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	document, parseErr := readStorageDocument(w, r, s.cfg.Limits.PayloadMaxBytes)
+	if parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	stored, err := s.store.SetStorage(r.Context(), room, document)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeRawJSON(w, http.StatusOK, stored)
+}
+
+func (s *Service) handleDeleteStorage(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	err = s.store.DeleteStorage(r.Context(), room)
+	if errors.Is(err, cluster.ErrStorageNotFound) {
+		s.writeError(w, openrtcerr.CodeStorageNotFound, "storage document not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleGetRoom(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "room APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("rooms", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room administration is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	record, err := s.store.GetRoom(r.Context(), room)
+	if errors.Is(err, cluster.ErrRoomNotFound) {
+		s.writeError(w, openrtcerr.CodeRoomNotFound, "room not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Service) handleUpdateRoom(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "room APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("rooms", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room administration is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	var request RoomUpdateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	update := cluster.RoomUpdate{}
+	if request.Metadata != nil {
+		if err := validateMetadata(*request.Metadata, false, s.cfg.Limits.PayloadMaxBytes); err != nil {
+			s.writeError(w, err.Code, err.Message, "", openrtcerr.DescriptorFor(err.Code).HTTPStatus)
+			return
+		}
+		update.Metadata = normalizedMetadata(*request.Metadata)
+		update.MetadataSet = true
+	}
+	if request.DefaultAccesses != nil {
+		update.DefaultAccesses = *request.DefaultAccesses
+		update.DefaultAccessesSet = true
+	}
+	if request.UsersAccesses != nil {
+		update.UsersAccesses = request.UsersAccesses
+		update.UsersAccessesSet = true
+	}
+	if request.GroupsAccesses != nil {
+		update.GroupsAccesses = request.GroupsAccesses
+		update.GroupsAccessesSet = true
+	}
+	if err := validateRoomAccesses(update.DefaultAccesses, update.UsersAccesses, update.GroupsAccesses); err != nil {
+		s.writeError(w, err.Code, err.Message, "", openrtcerr.DescriptorFor(err.Code).HTTPStatus)
+		return
+	}
+
+	record, err := s.store.UpdateRoom(r.Context(), room, update)
+	if errors.Is(err, cluster.ErrRoomNotFound) {
+		s.writeError(w, openrtcerr.CodeRoomNotFound, "room not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Service) handleDeleteRoom(w http.ResponseWriter, r *http.Request, room string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "room APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("rooms", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room administration is not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	err = s.store.DeleteRoom(r.Context(), room)
+	if errors.Is(err, cluster.ErrRoomNotFound) {
+		s.writeError(w, openrtcerr.CodeRoomNotFound, "room not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleListRooms(w http.ResponseWriter, r *http.Request) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "room APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+
+	prefix, parseErr := s.authorizedRoomListPrefix(claims, r.URL.Query().Get("prefix"))
+	if parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	limit, err := parseListLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	cursor, err := parseCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+
+	list, err := s.store.ListRooms(r.Context(), prefix, cursor, limit)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	response := roomListResponse{Rooms: list.Rooms}
+	if list.NextCursor != 0 {
+		response.NextCursor = strconv.FormatUint(list.NextCursor, 10)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +1270,512 @@ func (s *Service) authenticate(r *http.Request) (*auth.Claims, error) {
 		return nil, errors.New("missing bearer token")
 	}
 	return s.verifier.Verify(r.Context(), strings.TrimPrefix(authHeader, "Bearer "))
+}
+
+func roomFromPath(path string) (string, error) {
+	room, subresource, err := roomPathParts(path)
+	if err != nil {
+		return "", err
+	}
+	if subresource != "" {
+		return "", errors.New("unsupported room subresource")
+	}
+	return room, nil
+}
+
+func roomPathParts(path string) (string, string, error) {
+	raw := strings.TrimPrefix(path, "/v1/rooms/")
+	if raw == "" {
+		return "", "", errors.New("room id is required")
+	}
+	parts := strings.SplitN(raw, "/", 2)
+	room, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", errors.New("room id must be URL-escaped")
+	}
+	if err := protocol.ValidateRoomName(room); err != nil {
+		return "", "", err
+	}
+	subresource := ""
+	if len(parts) == 2 {
+		subresource = parts[1]
+	}
+	return room, subresource, nil
+}
+
+func threadPathParts(subresource string) (string, string, error) {
+	raw := strings.TrimPrefix(subresource, "threads/")
+	if raw == "" || raw == subresource {
+		return "", "", errors.New("thread id is required")
+	}
+	parts := strings.SplitN(raw, "/", 2)
+	threadID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", errors.New("thread id must be URL-escaped")
+	}
+	if err := protocol.ValidateConnectionID(threadID); err != nil {
+		return "", "", err
+	}
+	child := ""
+	if len(parts) == 2 {
+		child = parts[1]
+	}
+	return threadID, child, nil
+}
+
+func roomUserPathParts(subresource string) (string, string, error) {
+	raw := strings.TrimPrefix(subresource, "users/")
+	if raw == "" || raw == subresource {
+		return "", "", errors.New("user id is required")
+	}
+	parts := strings.SplitN(raw, "/", 2)
+	userID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", errors.New("user id must be URL-escaped")
+	}
+	if err := protocol.ValidateConnectionID(userID); err != nil {
+		return "", "", err
+	}
+	child := ""
+	if len(parts) == 2 {
+		child = parts[1]
+	}
+	return userID, child, nil
+}
+
+func userPathParts(path string) (string, string, string, error) {
+	raw := strings.TrimPrefix(path, "/v1/users/")
+	if raw == "" || raw == path {
+		return "", "", "", errors.New("user id is required")
+	}
+	parts := strings.Split(raw, "/")
+	userID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", "", errors.New("user id must be URL-escaped")
+	}
+	if err := protocol.ValidateConnectionID(userID); err != nil {
+		return "", "", "", err
+	}
+	if len(parts) < 2 || parts[1] == "" {
+		return "", "", "", errors.New("user subresource is required")
+	}
+	subresource := parts[1]
+	itemID := ""
+	if len(parts) >= 3 {
+		itemID, err = url.PathUnescape(parts[2])
+		if err != nil {
+			return "", "", "", errors.New("subresource id must be URL-escaped")
+		}
+		if err := protocol.ValidateConnectionID(itemID); err != nil {
+			return "", "", "", err
+		}
+	}
+	if len(parts) > 3 {
+		return "", "", "", errors.New("unsupported user path")
+	}
+	return userID, subresource, itemID, nil
+}
+
+func inboxNotificationActionParts(path string) (string, string, error) {
+	raw := strings.TrimPrefix(path, "/v1/inbox-notifications/")
+	if raw == "" || raw == path {
+		return "", "", errors.New("inbox notification id is required")
+	}
+	parts := strings.SplitN(raw, "/", 2)
+	notificationID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", errors.New("inbox notification id must be URL-escaped")
+	}
+	if err := protocol.ValidateConnectionID(notificationID); err != nil {
+		return "", "", err
+	}
+	child := ""
+	if len(parts) == 2 {
+		child = parts[1]
+	}
+	return notificationID, child, nil
+}
+
+func validateRoomRequest(room string, metadata json.RawMessage, metadataOptional bool, maxBytes int) *protocol.ParseError {
+	if err := protocol.ValidateRoomName(room); err != nil {
+		return err.(*protocol.ParseError)
+	}
+	return validateMetadata(metadata, metadataOptional, maxBytes)
+}
+
+func validateThreadRequest(threadID string, metadata json.RawMessage, comment CommentCreateRequest, maxBytes int) *protocol.ParseError {
+	if err := protocol.ValidateConnectionID(threadID); err != nil {
+		return err.(*protocol.ParseError)
+	}
+	if err := validateMetadata(metadata, true, maxBytes); err != nil {
+		return err
+	}
+	return validateCommentRequest(comment, maxBytes)
+}
+
+func validateInboxNotificationRequest(request InboxNotificationTriggerRequest, maxBytes int) *protocol.ParseError {
+	if err := protocol.ValidateConnectionID(request.ID); err != nil {
+		return err.(*protocol.ParseError)
+	}
+	if err := protocol.ValidateConnectionID(request.UserID); err != nil {
+		return err.(*protocol.ParseError)
+	}
+	if err := validateNotificationKind(request.Kind); err != nil {
+		return err
+	}
+	if request.SubjectID != "" {
+		if err := protocol.ValidateConnectionID(request.SubjectID); err != nil {
+			return err.(*protocol.ParseError)
+		}
+	}
+	if request.ThreadID != "" {
+		if err := protocol.ValidateConnectionID(request.ThreadID); err != nil {
+			return err.(*protocol.ParseError)
+		}
+	}
+	if request.RoomID != "" {
+		if err := protocol.ValidateRoomName(request.RoomID); err != nil {
+			return err.(*protocol.ParseError)
+		}
+	}
+	if err := validateActivityData(request.ActivityData, true, maxBytes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateNotificationKind(kind string) *protocol.ParseError {
+	if kind == "" || len(kind) > protocol.MaxEventNameBytes {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "notification kind must be 1-128 characters"}
+	}
+	if kind[0] != '$' {
+		if err := protocol.ValidateEventName(kind); err != nil {
+			parseErr := err.(*protocol.ParseError)
+			parseErr.Message = "notification kind must be safe ASCII"
+			return parseErr
+		}
+		return nil
+	}
+	if len(kind) == 1 {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "custom notification kind is required after $"}
+	}
+	for _, r := range kind[1:] {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r == '_':
+		default:
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "custom notification kind must contain only letters and underscores"}
+		}
+	}
+	return nil
+}
+
+func validateActivityData(data json.RawMessage, optional bool, maxBytes int) *protocol.ParseError {
+	if len(data) == 0 {
+		if optional {
+			return nil
+		}
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData is required"}
+	}
+	if len(data) > maxBytes {
+		return &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "activityData exceeds max size"}
+	}
+	if !json.Valid(data) || data[0] != '{' {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData must be a JSON object"}
+	}
+	var values map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&values); err != nil {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData must be valid JSON"}
+	}
+	for _, value := range values {
+		switch value.(type) {
+		case string, bool, json.Number, nil:
+		default:
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData values must be scalar"}
+		}
+	}
+	return nil
+}
+
+func validateRoomSubscriptionSettingsRequest(request RoomSubscriptionSettingsRequest) *protocol.ParseError {
+	if request.Threads != "" {
+		switch request.Threads {
+		case "all", "replies_and_mentions", "none":
+		default:
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "threads must be all, replies_and_mentions, or none"}
+		}
+	}
+	if request.TextMentions != "" {
+		switch request.TextMentions {
+		case "mine", "none":
+		default:
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "textMentions must be mine or none"}
+		}
+	}
+	return nil
+}
+
+func validateCommentRequest(comment CommentCreateRequest, maxBytes int) *protocol.ParseError {
+	if err := protocol.ValidateConnectionID(comment.ID); err != nil {
+		return err.(*protocol.ParseError)
+	}
+	if err := protocol.ValidateConnectionID(comment.UserID); err != nil {
+		return err.(*protocol.ParseError)
+	}
+	if err := validateMetadata(comment.Body, false, maxBytes); err != nil {
+		err.Message = "comment body " + err.Message
+		return err
+	}
+	if err := validateMetadata(comment.Metadata, true, maxBytes); err != nil {
+		err.Message = "comment metadata " + err.Message
+		return err
+	}
+	return nil
+}
+
+func validateMetadata(metadata json.RawMessage, optional bool, maxBytes int) *protocol.ParseError {
+	if len(metadata) == 0 {
+		if optional {
+			return nil
+		}
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "metadata is required"}
+	}
+	if len(metadata) > maxBytes {
+		return &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "metadata exceeds max size"}
+	}
+	if !json.Valid(metadata) || metadata[0] != '{' {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "metadata must be a JSON object"}
+	}
+	return nil
+}
+
+func validateRoomAccesses(defaultAccesses []string, usersAccesses map[string][]string, groupsAccesses map[string][]string) *protocol.ParseError {
+	if err := validateAccessList(defaultAccesses); err != nil {
+		return err
+	}
+	if err := validateAccessMap(usersAccesses, "usersAccesses"); err != nil {
+		return err
+	}
+	if err := validateAccessMap(groupsAccesses, "groupsAccesses"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAccessMap(accesses map[string][]string, field string) *protocol.ParseError {
+	if len(accesses) > 1000 {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: field + " supports at most 1000 ids"}
+	}
+	for id, permissions := range accesses {
+		if id == "" || len(id) > protocol.MaxRoomNameBytes {
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: field + " ids must be 1-256 characters"}
+		}
+		if err := validateAccessList(permissions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAccessList(permissions []string) *protocol.ParseError {
+	for _, permission := range permissions {
+		switch permission {
+		case cluster.PermissionRoomWrite, cluster.PermissionRoomRead, cluster.PermissionRoomPresenceWrite, cluster.PermissionCommentsWrite:
+		default:
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "unsupported room access permission"}
+		}
+	}
+	return nil
+}
+
+func normalizedMetadata(metadata json.RawMessage) json.RawMessage {
+	if len(metadata) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return append(json.RawMessage(nil), metadata...)
+}
+
+func commentRecordFromRequest(room string, threadID string, request CommentCreateRequest) cluster.CommentRecord {
+	return cluster.CommentRecord{
+		ID:       request.ID,
+		ThreadID: threadID,
+		RoomID:   room,
+		UserID:   request.UserID,
+		Body:     normalizedMetadata(request.Body),
+		Metadata: normalizedMetadata(request.Metadata),
+	}
+}
+
+func newRecordID(prefix string) string {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		panic(err)
+	}
+	return prefix + "_" + hex.EncodeToString(raw)
+}
+
+func (s *Service) authorizedRoomListPrefix(claims *auth.Claims, requested string) (string, *protocol.ParseError) {
+	prefix := requested
+	if prefix == "" && s.cfg.Tenant.EnforcePrefix {
+		if claims.Tenant == "" {
+			return "", &protocol.ParseError{Code: openrtcerr.CodeRoomForbidden, Message: "tenant claim is required for room listing"}
+		}
+		prefix = claims.Tenant + s.cfg.Tenant.Separator
+	}
+	if err := protocol.ValidateRoomPrefix(prefix); err != nil {
+		return "", err.(*protocol.ParseError)
+	}
+	if len(prefix)+len("__probe") > protocol.MaxRoomNameBytes {
+		return "", &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room prefix is too long"}
+	}
+	probeRoom := prefix + "__probe"
+	if !claims.Allows("rooms", probeRoom, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		return "", &protocol.ParseError{Code: openrtcerr.CodeRoomForbidden, Message: "room administration is not permitted"}
+	}
+	return prefix, nil
+}
+
+func parseListLimit(raw string) (int, error) {
+	if raw == "" {
+		return 50, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 200 {
+		return 0, errors.New("limit must be an integer between 1 and 200")
+	}
+	return limit, nil
+}
+
+func parseCursor(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	cursor, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, errors.New("cursor must be an unsigned integer")
+	}
+	return cursor, nil
+}
+
+func parseNotificationListLimit(raw string) (int, error) {
+	if raw == "" {
+		return 50, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 50 {
+		return 0, errors.New("limit must be an integer between 1 and 50")
+	}
+	return limit, nil
+}
+
+func unreadOnlyQuery(query string, unread string) bool {
+	if strings.EqualFold(unread, "true") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(query), "unread:true")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (s *Service) notificationAllowed(claims *auth.Claims, userID string) bool {
+	return claims.Allows("notifications", userID, false, s.cfg.Tenant.Separator)
+}
+
+func readNotificationSettings(w http.ResponseWriter, r *http.Request, maxBytes int) (json.RawMessage, *protocol.ParseError) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(maxBytes)))
+	if err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "notification settings exceed max size"}
+	}
+	if !isJSONObject(raw) {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "notification settings must be a JSON object"}
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, raw); err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "notification settings must be valid JSON"}
+	}
+	if compacted.Len() > maxBytes {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "notification settings exceed max size"}
+	}
+	return json.RawMessage(compacted.Bytes()), nil
+}
+
+func readStorageDocument(w http.ResponseWriter, r *http.Request, maxBytes int) (json.RawMessage, *protocol.ParseError) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(maxBytes)))
+	if err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "storage document exceeds max size"}
+	}
+	if !isJSONObject(raw) {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage document must be a JSON object"}
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, raw); err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage document must be valid JSON"}
+	}
+	if compacted.Len() > maxBytes {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "storage document exceeds max size"}
+	}
+	document := json.RawMessage(compacted.Bytes())
+	if err := cluster.ValidateStorageDocument(document); err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: err.Error()}
+	}
+	return document, nil
+}
+
+func decodeStoragePatch(w http.ResponseWriter, r *http.Request, maxBytes int) ([]cluster.JSONPatchOperation, *protocol.ParseError) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBytes)))
+	decoder.DisallowUnknownFields()
+	var operations []cluster.JSONPatchOperation
+	if err := decoder.Decode(&operations); err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage patch must be a valid JSON Patch array"}
+	}
+	if len(operations) == 0 || len(operations) > maxStoragePatchOperations {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage patch must contain 1-100 operations"}
+	}
+	for _, operation := range operations {
+		if operation.Op == "" {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage patch operation requires op"}
+		}
+		if operation.Op != "add" && operation.Op != "remove" && operation.Op != "replace" && operation.Op != "test" && operation.Op != "copy" && operation.Op != "move" {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodePatchFailed, Message: "unsupported storage patch operation"}
+		}
+		if operation.Path == "" && operation.Op == "remove" {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodePatchFailed, Message: "removing storage root is not supported"}
+		}
+	}
+	return operations, nil
+}
+
+func isJSONObject(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
+
+func decodeRequest(w http.ResponseWriter, r *http.Request, maxBytes int, dest any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBytes)))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(dest)
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeRawJSON(w http.ResponseWriter, status int, payload json.RawMessage) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
 }
 
 func (s *Service) writeError(w http.ResponseWriter, code openrtcerr.Code, message string, requestID string, status int) {

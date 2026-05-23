@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openrtc-yjs-compactor
+  namespace: openrtc
+  labels:
+    app.kubernetes.io/name: openrtc-yjs-compactor
+    app.kubernetes.io/component: yjs-compactor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openrtc-yjs-compactor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openrtc-yjs-compactor
+        app.kubernetes.io/component: yjs-compactor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: yjs-compactor
+          image: openrtc-yjs-compactor:latest
+          command: ["pnpm", "--filter", "@openrtc/yjs-compactor", "compact"]
+          ports:
+            - containerPort: 9102
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: openrtc-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openrtc-yjs-compactor
+  namespace: openrtc
+  labels:
+    app.kubernetes.io/name: openrtc-yjs-compactor
+    app.kubernetes.io/component: yjs-compactor
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9102"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app.kubernetes.io/name: openrtc-yjs-compactor
+  ports:
+    - port: 9102
+      targetPort: metrics
+      name: metrics

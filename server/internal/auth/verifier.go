@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"path"
@@ -17,12 +18,16 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+const jwksMaxBytes = 1024 * 1024
+
 type Claims struct {
 	jwt.RegisteredClaims
 	Tenant   string   `json:"tenant,omitempty"`
 	Join     []string `json:"join,omitempty"`
 	Publish  []string `json:"publish,omitempty"`
 	Presence []string `json:"presence,omitempty"`
+	Groups   []string `json:"groups,omitempty"`
+	GroupIDs []string `json:"groupIds,omitempty"`
 	Scope    string   `json:"scope,omitempty"`
 }
 
@@ -109,6 +114,9 @@ func (v *Verifier) fetchKeys(ctx context.Context) (map[string]*rsa.PublicKey, er
 		return nil, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("jwks request failed with status %d", response.StatusCode)
+	}
 
 	var jwks struct {
 		Keys []struct {
@@ -118,7 +126,7 @@ func (v *Verifier) fetchKeys(ctx context.Context) (map[string]*rsa.PublicKey, er
 			E   string `json:"e"`
 		} `json:"keys"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&jwks); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, jwksMaxBytes)).Decode(&jwks); err != nil {
 		return nil, err
 	}
 
@@ -141,13 +149,18 @@ func (v *Verifier) fetchKeys(ctx context.Context) (map[string]*rsa.PublicKey, er
 }
 
 func (c *Claims) Allows(action string, room string, enforcePrefix bool, separator string) bool {
-	if enforcePrefix && c.Tenant != "" && !strings.HasPrefix(room, c.Tenant+separator) {
-		return false
+	if enforcePrefix {
+		if c.Tenant == "" {
+			return false
+		}
+		if !strings.HasPrefix(room, c.Tenant+separator) {
+			return false
+		}
 	}
 
 	patterns := c.patternsFor(action)
 	if len(patterns) == 0 {
-		return true
+		return false
 	}
 
 	for _, pattern := range patterns {
@@ -177,6 +190,22 @@ func (c *Claims) patternsFor(action string) []string {
 		}
 	}
 	return patterns
+}
+
+func (c *Claims) RoomGroupIDs() []string {
+	seen := map[string]struct{}{}
+	groups := make([]string, 0, len(c.Groups)+len(c.GroupIDs))
+	for _, groupID := range append(append([]string{}, c.GroupIDs...), c.Groups...) {
+		if groupID == "" {
+			continue
+		}
+		if _, ok := seen[groupID]; ok {
+			continue
+		}
+		seen[groupID] = struct{}{}
+		groups = append(groups, groupID)
+	}
+	return groups
 }
 
 func rsaKeyFromJWK(nValue string, eValue string) (*rsa.PublicKey, error) {

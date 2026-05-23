@@ -26,7 +26,9 @@ curl http://localhost:8090/healthz   # admin
 
 Services:
 - **Runtime** (WebSocket): `localhost:8080`, WS path `/ws`
+- **Runtime** (Yjs): `localhost:8080`, Yjs path `/yjs/{url-escaped-room}`
 - **Admin API**: `localhost:8090`
+- **Yjs compactor metrics**: `localhost:9102/metrics`
 - **Redis**: `localhost:6379`
 
 ## Option 2: Kubernetes
@@ -40,6 +42,7 @@ kubectl apply -f deploy/k8s/configmap.yaml
 kubectl apply -f deploy/k8s/redis.yaml
 kubectl apply -f deploy/k8s/runtime.yaml
 kubectl apply -f deploy/k8s/admin.yaml
+kubectl apply -f deploy/k8s/yjs-compactor.yaml
 kubectl apply -f deploy/k8s/ingress.yaml
 ```
 
@@ -58,6 +61,7 @@ go build -o openrtc-admin ./cmd/openrtc-admin
 export OPENRTC_MODE=cluster
 export OPENRTC_NODE_ID=node-1
 export OPENRTC_REDIS_URL=redis://localhost:6379/0
+export OPENRTC_ALLOWED_ORIGINS=https://app.example.com
 export OPENRTC_AUTH_ISSUER=https://your-issuer.example.com
 export OPENRTC_AUTH_AUDIENCE=openrtc-clients
 export OPENRTC_AUTH_JWKS_URL=https://your-issuer.example.com/.well-known/jwks.json
@@ -81,19 +85,31 @@ All configuration is via environment variables:
 | `OPENRTC_SERVER_HOST` | `0.0.0.0` | Bind address |
 | `OPENRTC_SERVER_PORT` | `8080` | HTTP/WS port |
 | `OPENRTC_WS_PATH` | `/ws` | WebSocket endpoint path |
+| `OPENRTC_ALLOWED_ORIGINS` | — | Comma-separated WebSocket Origin allowlist. Empty allows all; set in production. |
+| `/yjs/{room}` | fixed | Binary Yjs sync endpoint path |
 | `OPENRTC_REDIS_URL` | — | Redis connection URL (required in cluster mode) |
 | `OPENRTC_AUTH_ISSUER` | (required) | JWT issuer for client tokens |
 | `OPENRTC_AUTH_AUDIENCE` | (required) | JWT audience for client tokens |
 | `OPENRTC_AUTH_JWKS_URL` | (required) | JWKS endpoint URL |
 | `OPENRTC_ADMIN_AUTH_ISSUER` | — | JWT issuer for admin tokens (optional) |
 | `OPENRTC_ADMIN_AUTH_AUDIENCE` | — | JWT audience for admin tokens (optional) |
+| `OPENRTC_ADMIN_AUTH_JWKS_URL` | `OPENRTC_AUTH_JWKS_URL` | JWKS endpoint for admin tokens |
 | `OPENRTC_TENANT_ENFORCE_PREFIX` | `true` | Enforce tenant prefix on room names |
 | `OPENRTC_TENANT_SEPARATOR` | `:` | Separator between tenant and room name |
 | `OPENRTC_LIMIT_PAYLOAD_MAX_BYTES` | `16384` | Max payload size (bytes) |
 | `OPENRTC_LIMIT_ENVELOPE_MAX_BYTES` | `20480` | Max envelope size (bytes) |
+| `OPENRTC_LIMIT_YJS_MAX_BYTES` | `1048576` | Max binary Yjs frame size (bytes) |
 | `OPENRTC_LIMIT_ROOMS_PER_CONNECTION` | `50` | Max rooms per WebSocket connection |
 | `OPENRTC_LIMIT_EMITS_PER_SECOND` | `100` | Max emits per connection per second |
 | `OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH` | `256` | Outbound message queue depth |
+| `OPENRTC_YJS_COMPACTOR_INTERVAL_MS` | `60000` | Compactor polling interval for all rooms |
+| `OPENRTC_YJS_COMPACTOR_MIN_UPDATES` | `500` | Minimum sequenced updates before compaction |
+| `OPENRTC_YJS_COMPACTOR_MIN_BYTES` | `1048576` | Minimum update bytes before compaction |
+| `OPENRTC_YJS_COMPACTOR_ROOM_RETRIES` | `2` | Per-room compaction retries before counting a failure |
+| `OPENRTC_YJS_COMPACTOR_RETRY_BACKOFF_MS` | `1000` | Delay between per-room compaction retries |
+| `OPENRTC_YJS_COMPACTOR_MAX_CONSECUTIVE_FAILURES` | `10` | Worker exits after this many scan/room failures so the supervisor can restart it |
+| `OPENRTC_YJS_COMPACTOR_METRICS_HOST` | `0.0.0.0` | Compactor metrics bind host |
+| `OPENRTC_YJS_COMPACTOR_METRICS_PORT` | — | Optional compactor Prometheus metrics port |
 
 ## Verifying Your Deployment
 
@@ -106,9 +122,49 @@ curl http://<runtime-host>:8080/readyz
 
 # Prometheus metrics
 curl http://<runtime-host>:8080/metrics
+curl http://<compactor-host>:9102/metrics
 
 # Admin stats
 curl -H "Authorization: Bearer <admin-jwt>" http://<admin-host>:8090/v1/stats
+
+# Room metadata lifecycle. Requires an admin token with a scope such as
+# rooms:tenant-a:*.
+curl -X POST -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"tenant-a:room-1","metadata":{"name":"Room 1"},"defaultAccesses":["room:read","room:presence:write"],"groupsAccesses":{"editors":["room:write"]}}' \
+  http://<admin-host>:8090/v1/rooms
+
+curl -H "Authorization: Bearer <admin-jwt>" \
+  "http://<admin-host>:8090/v1/rooms?prefix=tenant-a:&limit=50"
+
+# Active users. Requires an admin token with a scope such as
+# presence:tenant-a:*.
+curl -H "Authorization: Bearer <admin-jwt>" \
+  http://<admin-host>:8090/v1/rooms/tenant-a:room-1/active_users
+
+# Durable room storage. Requires an admin token with a scope such as
+# storage:tenant-a:*.
+curl -X PUT -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"layers":["base"],"meta":{"title":"Draft"}}' \
+  http://<admin-host>:8090/v1/rooms/tenant-a:room-1/storage
+
+# Typed storage envelopes are also accepted and validated.
+curl -X PUT -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"liveblocksType":"LiveObject","data":{"items":{"liveblocksType":"LiveList","data":["base"]}}}' \
+  http://<admin-host>:8090/v1/rooms/tenant-a:room-1/storage
+
+curl -X PATCH -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '[{"op":"add","path":"/layers/-","value":"foreground"}]' \
+  http://<admin-host>:8090/v1/rooms/tenant-a:room-1/storage/json-patch
+
+# Server-side ephemeral presence for agents/backends
+curl -X POST -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"room":"tenant-a:room-1","conn_id":"agent-1","state":{"status":"thinking"},"ttl_seconds":60}' \
+  http://<admin-host>:8090/v1/presence
 ```
 
 ## Sticky Sessions

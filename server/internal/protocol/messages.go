@@ -12,6 +12,10 @@ import (
 const (
 	MaxPayloadBytesDefault  = 16 * 1024
 	MaxEnvelopeBytesDefault = 20 * 1024
+	MaxMessageIDBytes       = 128
+	MaxRoomNameBytes        = 256
+	MaxEventNameBytes       = 128
+	MaxConnectionIDBytes    = 128
 )
 
 type MessageType string
@@ -92,6 +96,9 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 	if err := readRequiredString(envelope, "id", "Message id `id` is required", &message.ID); err != nil {
 		return Message{}, err
 	}
+	if err := ValidateMessageID(message.ID); err != nil {
+		return Message{}, err
+	}
 
 	switch message.Type {
 	case TypeJoin, TypeLeave, TypeEmit, TypePresenceSet:
@@ -100,6 +107,9 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 	}
 
 	if err := readRequiredString(envelope, "room", "Room is required for this message type", &message.Room); err != nil {
+		return Message{}, err
+	}
+	if err := ValidateRoomName(message.Room); err != nil {
 		return Message{}, err
 	}
 	if options.TenantPrefix != "" && !bytes.HasPrefix([]byte(message.Room), []byte(options.TenantPrefix)) {
@@ -150,6 +160,9 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 		if err := readRequiredString(envelope, "event", "EMIT requires `event`", &message.Event); err != nil {
 			return Message{}, err
 		}
+		if err := ValidateEventName(message.Event); err != nil {
+			return Message{}, err
+		}
 		if len(message.Payload) == 0 {
 			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "EMIT requires `payload`"}
 		}
@@ -191,6 +204,67 @@ func readRequiredString[T ~string](envelope map[string]json.RawMessage, key stri
 	}
 	*dest = T(value)
 	return nil
+}
+
+func ValidateMessageID(id string) error {
+	if id == "" {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Message id `id` is required"}
+	}
+	if len(id) > MaxMessageIDBytes || !isSafeIdentifier(id) {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Message id must be 1-128 safe ASCII characters"}
+	}
+	return nil
+}
+
+func ValidateRoomName(room string) error {
+	if room == "" {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Room is required"}
+	}
+	if len(room) > MaxRoomNameBytes || !isSafeIdentifier(room) {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Room must be 1-256 safe ASCII characters"}
+	}
+	return nil
+}
+
+func ValidateRoomPrefix(prefix string) error {
+	if len(prefix) > MaxRoomNameBytes || !isSafeIdentifier(prefix) {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Room prefix must be at most 256 safe ASCII characters"}
+	}
+	return nil
+}
+
+func ValidateEventName(event string) error {
+	if event == "" {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Event is required"}
+	}
+	if len(event) > MaxEventNameBytes || !isSafeIdentifier(event) {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Event must be 1-128 safe ASCII characters"}
+	}
+	return nil
+}
+
+func ValidateConnectionID(connID string) error {
+	if connID == "" {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Connection id is required"}
+	}
+	if len(connID) > MaxConnectionIDBytes || !isSafeIdentifier(connID) {
+		return &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Connection id must be 1-128 safe ASCII characters"}
+	}
+	return nil
+}
+
+func isSafeIdentifier(value string) bool {
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.' || r == ':' || r == '@':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func PaginateMembers(members []string, presence map[string]json.RawMessage, limit int, cursor string) ([]string, map[string]json.RawMessage, string) {

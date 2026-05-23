@@ -6,17 +6,25 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["t", "id", "payload"],
+      "required": ["t", "payload"],
       "properties": {
         "t": { "const": "HELLO" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "payload": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["conn_id", "server_time"],
+          "required": ["conn_id", "server"],
           "properties": {
             "conn_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-            "server_time": { "type": "string", "format": "date-time" }
+            "server": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "node_id"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "node_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+              }
+            }
           }
         }
       }
@@ -89,7 +97,7 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["t", "id", "room", "event", "payload"],
+      "required": ["t", "room", "event", "payload"],
       "properties": {
         "t": { "const": "EVENT" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -106,7 +114,7 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["t", "id", "room", "payload"],
+      "required": ["t", "room", "payload"],
       "properties": {
         "t": { "const": "PRESENCE" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -118,7 +126,13 @@
         },
         "payload": {
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": ["conn_id"],
+          "properties": {
+            "conn_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "state": {},
+            "offline": { "type": "boolean" }
+          }
         }
       }
     }

@@ -81,6 +81,32 @@ func TestRejectMissingAuth(t *testing.T) {
 	}
 }
 
+func TestRejectUntrustedWebSocketOrigin(t *testing.T) {
+	server, signToken, cfg := setupHardeningServer(t, map[string]string{
+		"OPENRTC_ALLOWED_ORIGINS": "https://app.example.com",
+	})
+
+	wsURL := strings.Replace(server.URL, "http://", "ws://", 1) + cfg.Server.WSPath + "?token=" + clientToken(signToken, t)
+	badHeader := http.Header{}
+	badHeader.Set("Origin", "https://evil.example.com")
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, badHeader)
+	if err == nil {
+		t.Fatal("expected connection to fail with untrusted origin")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+
+	goodHeader := http.Header{}
+	goodHeader.Set("Origin", "https://app.example.com")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, goodHeader)
+	if err != nil {
+		t.Fatalf("expected trusted origin to connect: %v", err)
+	}
+	defer conn.Close()
+	readJSON(t, conn) // HELLO
+}
+
 func TestRejectExpiredToken(t *testing.T) {
 	jwks, _ := newJWKS(t)
 	defer jwks.Close()

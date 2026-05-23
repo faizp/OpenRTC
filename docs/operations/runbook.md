@@ -7,6 +7,7 @@
 | `GET /healthz` | runtime, admin | Liveness — returns `ok` if process is running |
 | `GET /readyz` | runtime, admin | Readiness — returns `ready`; fails (503) if Redis is unreachable in cluster mode |
 | `GET /metrics` | runtime, admin | Prometheus metrics in text format |
+| `GET /metrics` | yjs-compactor | Prometheus metrics in text format when `OPENRTC_YJS_COMPACTOR_METRICS_PORT` is set |
 
 ## Key Metrics
 
@@ -27,6 +28,18 @@
 | Metric | Type | Alert Threshold |
 |--------|------|-----------------|
 | `openrtc_admin_publishes_total` | counter | — |
+
+### Yjs Compactor
+
+| Metric | Type | Alert Threshold |
+|--------|------|-----------------|
+| `openrtc_yjs_compactor_runs_total` | counter | No increase for 2x expected interval |
+| `openrtc_yjs_compactor_failures_total` | counter | Any sustained increase |
+| `openrtc_yjs_compactor_consecutive_failures` | gauge | `> 0` for 5 minutes |
+| `openrtc_yjs_compactor_rooms_scanned_total` | counter | Informational |
+| `openrtc_yjs_compactor_rooms_compacted_total` | counter | Informational |
+| `openrtc_yjs_compactor_updates_compacted_total` | counter | Informational |
+| `openrtc_yjs_compactor_last_success_timestamp_seconds` | gauge | Too old for expected workload |
 
 ## Incident Response
 
@@ -126,8 +139,26 @@ redis-cli hdel "room:<room>:presence" "<conn_id>"
 |-------------|------|-----|---------|
 | `conn:{conn_id}:alive` | string | 45s | Heartbeat — existence means connection is alive |
 | `conn:{conn_id}:meta` | hash | — | Connection metadata (user, tenant, node, connected_at) |
+| `room:{room}:record` | hash | — | Durable room metadata record managed by admin room APIs |
+| `room:{room}:storage` | string | — | Durable JSON storage document managed by admin storage APIs |
+| `room:{room}:threads` | set | — | Durable thread IDs for the room |
+| `room:{room}:thread:{thread_id}` | hash | — | Durable thread metadata |
+| `room:{room}:thread:{thread_id}:comments` | list | — | Durable ordered comments for a thread |
+| `inbox:{notification_id}` | hash | — | Durable inbox notification payload and read timestamp |
+| `user:{user_id}:inbox` | sorted set | — | User inbox notification IDs sorted by notified time |
+| `user:{user_id}:inbox:unread` | sorted set | — | Unread inbox notification IDs |
+| `user:{user_id}:notification_settings` | string | — | User project-level notification settings JSON |
+| `user:{user_id}:room_subscription_settings` | sorted set | — | Explicit room subscription setting room IDs |
+| `room:{room}:user:{user_id}:subscription_settings` | hash | — | Room-level notification subscription settings |
 | `room:{room}:members` | set | — | Active connection IDs in the room |
 | `room:{room}:presence` | hash | — | Presence state per connection ID |
+| `room:{room}:presence:ephemeral` | set | — | Server-side presence IDs controlled by TTL keys |
+| `room:{room}:presence:ephemeral:{conn_id}:alive` | string | requested TTL | Expiry marker for server-side presence |
+| `room:{room}:yjs:snapshot` | string | — | Legacy full Yjs snapshot update for the room |
+| `room:{room}:yjs:updates` | list | — | Legacy incremental Yjs updates |
+| `room:{room}:yjs:snapshot:v2` | string | — | Sequenced snapshot record with compaction checkpoint |
+| `room:{room}:yjs:updates:v2` | sorted set | — | Sequenced incremental Yjs update records |
+| `room:{room}:yjs:seq` | string | — | Monotonic Yjs update sequence counter |
 | `node:{node_id}:conns` | set | — | All connections on a node (for crash cleanup) |
 | `stats:node:{node_id}` | hash | — | Per-node aggregate counters |
 | `stats:nodes` | set | — | Set of active node IDs |
@@ -146,6 +177,39 @@ In Kubernetes, the pod termination grace period (default 30s) should be sufficie
 
 - **Horizontal scaling:** Add more runtime replicas. Each handles independent
   WebSocket connections. Cross-node messaging goes through Redis Pub/Sub.
+- **Yjs scaling:** Yjs updates are persisted as a sequenced Redis log and
+  replayed on reconnect after the latest snapshot checkpoint. Ordinary client
+  snapshots update the baseline snapshot but do not trim logs. Only a trusted
+  compactor that has merged known updates should advance a checkpoint and trim
+  update records at or below that sequence.
+- **Yjs compaction:** Run `@openrtc/yjs-compactor` against the same Redis
+  backend as the runtime. The package uses Yjs merge semantics to produce a
+  normalized snapshot, writes `room:{room}:yjs:snapshot:v2`, and trims
+  `room:{room}:yjs:updates:v2` through the checkpoint sequence. Example:
+  `OPENRTC_REDIS_URL=redis://localhost:6379 pnpm --filter @openrtc/yjs-compactor compact:once`.
+  Use `--room <room>` for a single room, or run without `--once` as a polling
+  worker. The production worker should expose `OPENRTC_YJS_COMPACTOR_METRICS_PORT`,
+  retry transient room failures, and exit after
+  `OPENRTC_YJS_COMPACTOR_MAX_CONSECUTIVE_FAILURES` so Kubernetes or another
+  supervisor can restart it. Do not compact rooms that still have legacy
+  `room:{room}:yjs:updates` records until they have been migrated to sequenced
+  v2 records.
+- **Storage scaling:** Room storage is durable JSON in Redis and JSON Patch is
+  applied atomically with a watched transaction. Plain object roots and typed
+  `LiveObject`/`LiveList`/`LiveMap` envelopes are validated before persistence.
+  Keep documents small enough for `OPENRTC_LIMIT_PAYLOAD_MAX_BYTES`; use Yjs
+  document sync for high-frequency collaborative edits.
+- **Active users:** `GET /v1/rooms/{room}/active_users` is a read over room
+  membership, connection metadata, and presence hashes. Treat it as an admin or
+  dashboard endpoint, not a high-frequency client polling path. Yjs awareness
+  data appears inside presence under `__openrtc_yjs_awareness`; avoid putting
+  sensitive profile data there because it is visible to room peers and admin
+  active-user readers.
+- **Room access grants:** Room records can include `defaultAccesses`,
+  `usersAccesses`, and `groupsAccesses`. Runtime nodes check access-token
+  scopes first, then room grants for ID-token-style subject/group auth. Keep
+  `room:{room}:record` in the same Redis deployment as runtime nodes or grant
+  fallback will deny.
 - **Redis is the bottleneck:** All cross-node traffic flows through Redis.
   For very high throughput, consider Redis Cluster or sharding by tenant.
 - **Admin API is stateless:** Scale independently based on publish volume.

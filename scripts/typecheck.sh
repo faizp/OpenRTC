@@ -7,3 +7,5 @@ else
   echo "go is required for Go type checks" >&2
   exit 1
 fi
+
+./scripts/pnpm.sh -r --if-present typecheck

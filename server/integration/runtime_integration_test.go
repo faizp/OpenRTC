@@ -192,6 +192,116 @@ func TestAdminPublishReachesClusterRuntime(t *testing.T) {
 	}
 }
 
+func TestAdminPresenceReachesRuntimeAndExpires(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	jwks, signToken := newJWKS(t)
+	defer jwks.Close()
+
+	base := map[string]string{
+		"OPENRTC_MODE":                "cluster",
+		"OPENRTC_REDIS_URL":           "redis://" + redisServer.Addr(),
+		"OPENRTC_NODE_ID":             "node-a",
+		"OPENRTC_AUTH_ISSUER":         "https://issuer.example.com",
+		"OPENRTC_AUTH_AUDIENCE":       "openrtc-clients",
+		"OPENRTC_AUTH_JWKS_URL":       jwks.URL,
+		"OPENRTC_ADMIN_AUTH_ISSUER":   "https://issuer.example.com",
+		"OPENRTC_ADMIN_AUTH_AUDIENCE": "openrtc-admin",
+	}
+
+	runtimeCfg, err := config.LoadFromMap(base)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	runtimeService, err := runtimeapp.NewService(runtimeCfg, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer runtimeService.Close()
+	runtimeServer := httptest.NewServer(runtimeService.Handler())
+	defer runtimeServer.Close()
+
+	adminCfg, err := config.LoadFromMap(base)
+	if err != nil {
+		t.Fatalf("admin config: %v", err)
+	}
+	adminService, err := admin.NewService(adminCfg, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("new admin: %v", err)
+	}
+	defer adminService.Close()
+	adminServer := httptest.NewServer(adminService.Handler())
+	defer adminServer.Close()
+
+	clientToken := signToken(t, "openrtc-clients", map[string]any{
+		"tenant":   "tenant-a",
+		"join":     []string{"tenant-a:*"},
+		"publish":  []string{"tenant-a:*"},
+		"presence": []string{"tenant-a:*"},
+	})
+	conn := wsConnect(t, runtimeServer.URL+runtimeCfg.Server.WSPath+"?token="+clientToken)
+	defer conn.Close()
+	readJSON(t, conn) // HELLO
+	mustWriteJSON(t, conn, map[string]any{"t": "JOIN", "id": "req-join", "room": "tenant-a:room-1"})
+	_ = readJSON(t, conn)
+
+	requestBody := map[string]any{
+		"room":        "tenant-a:room-1",
+		"conn_id":     "agent-1",
+		"state":       map[string]any{"status": "thinking"},
+		"ttl_seconds": 1,
+	}
+	body, _ := json.Marshal(requestBody)
+	request, _ := http.NewRequest(http.MethodPost, adminServer.URL+"/v1/presence", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+signToken(t, "openrtc-admin", map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "presence:tenant-a:*",
+	}))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("presence request: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("unexpected presence status: %d", response.StatusCode)
+	}
+
+	presence := readJSON(t, conn)
+	if presence["t"] != "PRESENCE" {
+		t.Fatalf("expected admin PRESENCE, got %#v", presence)
+	}
+	payload := presence["payload"].(map[string]any)
+	if payload["conn_id"] != "agent-1" {
+		t.Fatalf("expected agent-1 presence, got %#v", payload)
+	}
+
+	connSnapshot := wsConnect(t, runtimeServer.URL+runtimeCfg.Server.WSPath+"?token="+clientToken)
+	defer connSnapshot.Close()
+	readJSON(t, connSnapshot) // HELLO
+	mustWriteJSON(t, connSnapshot, map[string]any{"t": "JOIN", "id": "snapshot-join", "room": "tenant-a:room-1"})
+	joined := readJSON(t, connSnapshot)
+	presenceMap := joined["payload"].(map[string]any)["presence"].(map[string]any)
+	if _, ok := presenceMap["agent-1"]; !ok {
+		t.Fatalf("expected snapshot to include ephemeral agent presence: %#v", presenceMap)
+	}
+
+	redisServer.FastForward(2 * time.Second)
+
+	connExpired := wsConnect(t, runtimeServer.URL+runtimeCfg.Server.WSPath+"?token="+clientToken)
+	defer connExpired.Close()
+	readJSON(t, connExpired) // HELLO
+	mustWriteJSON(t, connExpired, map[string]any{"t": "JOIN", "id": "expired-join", "room": "tenant-a:room-1"})
+	expiredJoined := readJSON(t, connExpired)
+	expiredPresence := expiredJoined["payload"].(map[string]any)["presence"].(map[string]any)
+	if _, ok := expiredPresence["agent-1"]; ok {
+		t.Fatalf("expected expired agent presence to be filtered: %#v", expiredPresence)
+	}
+}
+
 func newJWKS(t *testing.T) (*httptest.Server, func(t *testing.T, audience string, extra map[string]any) string) {
 	t.Helper()
 

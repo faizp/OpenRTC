@@ -8,6 +8,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,9 @@ const (
 	heartbeatInterval = 15 * time.Second
 	reconcileInterval = 30 * time.Second
 	defaultJoinLimit  = 100
+	yjsPathPrefix     = "/yjs/"
+	yjsFrameUpdate    = byte(cluster.YJSEventUpdate)
+	yjsFrameSnapshot  = byte(cluster.YJSEventSnapshot)
 	writeWait         = 5 * time.Second
 	readWait          = 30 * time.Second
 )
@@ -44,6 +49,8 @@ type Service struct {
 	conns    map[string]*clientConn
 	rooms    map[string]map[string]*clientConn
 	presence map[string]map[string]json.RawMessage
+	yjsRooms map[string]map[string]*yjsConn
+	yjsDocs  map[string]*memoryYJSDocument
 	stats    stats.Snapshot
 }
 
@@ -70,6 +77,29 @@ type emitLimiter struct {
 	mu     sync.Mutex
 }
 
+type yjsConn struct {
+	id      string
+	ws      *websocket.Conn
+	service *Service
+	claims  *auth.Claims
+	room    string
+	send    chan []byte
+	done    chan struct{}
+	limiter *emitLimiter
+
+	writeMu sync.Mutex
+	closeMu sync.Mutex
+	closed  bool
+}
+
+type memoryYJSDocument struct {
+	Snapshot           []byte
+	SnapshotCheckpoint int64
+	Updates            [][]byte
+	UpdateSequences    []int64
+	NextSequence       int64
+}
+
 type outboundMessage struct {
 	T       string      `json:"t"`
 	ID      string      `json:"id,omitempty"`
@@ -91,6 +121,8 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 		conns:    make(map[string]*clientConn),
 		rooms:    make(map[string]map[string]*clientConn),
 		presence: make(map[string]map[string]json.RawMessage),
+		yjsRooms: make(map[string]map[string]*yjsConn),
+		yjsDocs:  make(map[string]*memoryYJSDocument),
 	}
 
 	if cfg.Redis != nil {
@@ -101,6 +133,16 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 		}
 		service.store = store
 		if err := store.Subscribe(ctx, service.handleClusterEvent); err != nil {
+			cancel()
+			_ = store.Close()
+			return nil, err
+		}
+		if err := store.SubscribePresence(ctx, service.handleClusterPresence); err != nil {
+			cancel()
+			_ = store.Close()
+			return nil, err
+		}
+		if err := store.SubscribeYJSEvents(ctx, service.handleClusterYJSEvent); err != nil {
 			cancel()
 			_ = store.Close()
 			return nil, err
@@ -122,6 +164,7 @@ func (s *Service) Close() error {
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.cfg.Server.WSPath, s.handleWS)
+	mux.HandleFunc(yjsPathPrefix, s.handleYJS)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.Handle("/metrics", s.metrics.Handler())
@@ -142,7 +185,7 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin: s.checkOrigin,
 	}
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -196,6 +239,124 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
+	room, err := roomFromYJSPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	token := tokenFromRequest(r)
+	if token == "" {
+		http.Error(w, "missing bearer token", http.StatusUnauthorized)
+		return
+	}
+
+	claims, err := s.verifier.Verify(r.Context(), token)
+	if err != nil {
+		http.Error(w, "invalid bearer token", http.StatusUnauthorized)
+		return
+	}
+	if !s.allowsRoomAction(r.Context(), claims, "join", room) {
+		http.Error(w, "room join is not permitted", http.StatusForbidden)
+		return
+	}
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: s.checkOrigin,
+	}
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+
+	conn := &yjsConn{
+		id:      newConnID(),
+		ws:      ws,
+		service: s,
+		claims:  claims,
+		room:    room,
+		send:    make(chan []byte, s.cfg.Limits.OutboundQueueDepth),
+		done:    make(chan struct{}),
+		limiter: &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
+	}
+
+	s.registerYJSConn(conn)
+	defer s.unregisterYJSConn(conn)
+
+	go conn.writeLoop()
+	go s.yjsHeartbeatLoop(conn)
+
+	document, err := s.loadYJSDocument(room)
+	if err != nil {
+		conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
+		return
+	}
+	if len(document.Snapshot) > 0 {
+		if err := conn.enqueueFrame(yjsFrameSnapshot, document.Snapshot); err != nil {
+			return
+		}
+	}
+	for _, update := range document.Updates {
+		if err := conn.enqueueFrame(yjsFrameUpdate, update); err != nil {
+			return
+		}
+	}
+
+	ws.SetReadLimit(int64(s.cfg.Limits.YJSMaxBytes + 1))
+	_ = ws.SetReadDeadline(time.Now().Add(readWait))
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(readWait))
+	})
+
+	for {
+		messageType, payload, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		if messageType != websocket.BinaryMessage || len(payload) < 2 {
+			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
+			return
+		}
+		if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
+			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
+			return
+		}
+		if !conn.limiter.Allow() {
+			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRateLimited).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRateLimited))
+			return
+		}
+
+		kind := payload[0]
+		if kind != yjsFrameUpdate && kind != yjsFrameSnapshot {
+			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
+			return
+		}
+		update := append([]byte(nil), payload[1:]...)
+		event := cluster.YJSEvent{
+			Room:         room,
+			Kind:         cluster.YJSEventKind(kind),
+			Update:       update,
+			OriginNode:   s.cfg.NodeID,
+			OriginConnID: conn.id,
+		}
+		event, err = s.storeYJSEvent(event)
+		if err != nil {
+			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
+			return
+		}
+		if err := s.broadcastYJSEvent(event); err != nil {
+			return
+		}
+		if s.store != nil {
+			if err := s.store.PublishYJSEvent(s.ctx, event); err != nil {
+				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
+				return
+			}
+		}
+	}
+}
+
 func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {
 	message, err := protocol.ParseClientMessage(payload, protocol.ParseOptions{
 		MaxEnvelopeBytes: s.cfg.Limits.EnvelopeMaxBytes,
@@ -235,7 +396,7 @@ func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {
 }
 
 func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
-	if !conn.claims.Allows("join", message.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "join", message.Room) {
 		return conn.enqueue(outboundMessage{
 			T:  "ERROR",
 			ID: message.ID,
@@ -309,13 +470,20 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 }
 
 func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error {
+	left := false
 	s.mu.Lock()
 	if _, exists := conn.rooms[message.Room]; exists {
+		left = true
 		delete(conn.rooms, message.Room)
 		if members := s.rooms[message.Room]; members != nil {
 			delete(members, conn.id)
 			if len(members) == 0 {
 				delete(s.rooms, message.Room)
+			}
+		}
+		if roomPresence := s.presence[message.Room]; roomPresence != nil {
+			delete(roomPresence, conn.id)
+			if len(roomPresence) == 0 {
 				delete(s.presence, message.Room)
 			}
 		}
@@ -324,10 +492,28 @@ func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error 
 	}
 	s.mu.Unlock()
 
-	s.metrics.LeavesTotal.Inc()
-	if s.store != nil {
+	if left {
+		s.metrics.LeavesTotal.Inc()
+	}
+	if left && s.store != nil {
 		if err := s.store.LeaveRoom(s.ctx, conn.id, message.Room); err != nil {
 			return err
+		}
+	}
+	if left {
+		event := cluster.PresenceEvent{
+			Room:       message.Room,
+			ConnID:     conn.id,
+			Offline:    true,
+			OriginNode: s.cfg.NodeID,
+		}
+		if err := s.broadcastPresenceEvent(event); err != nil {
+			return err
+		}
+		if s.store != nil {
+			if err := s.store.PublishPresence(s.ctx, event); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -335,7 +521,7 @@ func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error 
 }
 
 func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {
-	if !conn.claims.Allows("publish", message.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "publish", message.Room) {
 		return conn.enqueue(outboundMessage{
 			T:  "ERROR",
 			ID: message.ID,
@@ -385,7 +571,7 @@ func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {
 }
 
 func (s *Service) handlePresence(conn *clientConn, message protocol.Message) error {
-	if !conn.claims.Allows("presence", message.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "presence", message.Room) {
 		return conn.enqueue(outboundMessage{
 			T:  "ERROR",
 			ID: message.ID,
@@ -415,7 +601,19 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 		}
 	}
 
-	return s.broadcastPresence(message.Room, conn.id, message.Payload)
+	event := cluster.PresenceEvent{
+		Room:       message.Room,
+		ConnID:     conn.id,
+		State:      append(json.RawMessage(nil), message.Payload...),
+		OriginNode: s.cfg.NodeID,
+	}
+	if err := s.broadcastPresenceEvent(event); err != nil {
+		return err
+	}
+	if s.store != nil {
+		return s.store.PublishPresence(s.ctx, event)
+	}
+	return nil
 }
 
 func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
@@ -423,6 +621,13 @@ func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 		return
 	}
 	_ = s.broadcastEvent(event, false)
+}
+
+func (s *Service) handleClusterPresence(event cluster.PresenceEvent) {
+	if event.OriginNode == s.cfg.NodeID {
+		return
+	}
+	_ = s.broadcastPresenceEvent(event)
 }
 
 func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool) error {
@@ -462,28 +667,113 @@ func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool)
 	return nil
 }
 
-func (s *Service) broadcastPresence(room string, connID string, state json.RawMessage) error {
+func (s *Service) broadcastPresenceEvent(event cluster.PresenceEvent) error {
 	s.mu.RLock()
-	members := s.rooms[room]
+	members := s.rooms[event.Room]
 	targets := make([]*clientConn, 0, len(members))
 	for _, member := range members {
 		targets = append(targets, member)
 	}
 	s.mu.RUnlock()
 
+	payload := map[string]any{
+		"conn_id": event.ConnID,
+	}
+	if event.Offline {
+		payload["offline"] = true
+	} else {
+		payload["state"] = event.State
+	}
+
 	for _, target := range targets {
 		if err := target.enqueue(outboundMessage{
-			T:    "PRESENCE",
-			Room: room,
-			Payload: map[string]any{
-				"conn_id": connID,
-				"state":   state,
-			},
+			T:       "PRESENCE",
+			Room:    event.Room,
+			Payload: payload,
 		}); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (s *Service) handleClusterYJSEvent(event cluster.YJSEvent) {
+	if event.OriginNode == s.cfg.NodeID {
+		return
+	}
+	_ = s.broadcastYJSEvent(event)
+}
+
+func (s *Service) loadYJSDocument(room string) (cluster.YJSDocument, error) {
+	if s.store != nil {
+		return s.store.LoadYJSDocument(s.ctx, room)
+	}
+
+	s.mu.RLock()
+	doc := s.yjsDocs[room]
+	if doc == nil {
+		s.mu.RUnlock()
+		return cluster.YJSDocument{}, nil
+	}
+	out := cluster.YJSDocument{
+		Snapshot:           append([]byte(nil), doc.Snapshot...),
+		SnapshotCheckpoint: doc.SnapshotCheckpoint,
+		Updates:            make([][]byte, 0, len(doc.Updates)),
+		UpdateSequences:    append([]int64(nil), doc.UpdateSequences...),
+	}
+	for _, update := range doc.Updates {
+		out.Updates = append(out.Updates, append([]byte(nil), update...))
+	}
+	s.mu.RUnlock()
+	return out, nil
+}
+
+func (s *Service) storeYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error) {
+	if s.store != nil {
+		if event.Kind == cluster.YJSEventSnapshot {
+			return event, s.store.StoreYJSSnapshot(s.ctx, event.Room, event.Update)
+		}
+		sequence, err := s.store.AppendYJSUpdate(s.ctx, event.Room, event.Update)
+		event.Sequence = sequence
+		return event, err
+	}
+
+	s.mu.Lock()
+	doc := s.yjsDocs[event.Room]
+	if doc == nil {
+		doc = &memoryYJSDocument{}
+		s.yjsDocs[event.Room] = doc
+	}
+	if event.Kind == cluster.YJSEventSnapshot {
+		doc.Snapshot = append([]byte(nil), event.Update...)
+	} else {
+		doc.NextSequence++
+		event.Sequence = doc.NextSequence
+		doc.Updates = append(doc.Updates, append([]byte(nil), event.Update...))
+		doc.UpdateSequences = append(doc.UpdateSequences, doc.NextSequence)
+	}
+	s.mu.Unlock()
+	return event, nil
+}
+
+func (s *Service) broadcastYJSEvent(event cluster.YJSEvent) error {
+	s.mu.RLock()
+	members := s.yjsRooms[event.Room]
+	targets := make([]*yjsConn, 0, len(members))
+	for connID, member := range members {
+		if event.OriginConnID != "" && connID == event.OriginConnID {
+			continue
+		}
+		targets = append(targets, member)
+	}
+	s.mu.RUnlock()
+
+	for _, target := range targets {
+		if err := target.enqueueFrame(byte(event.Kind), event.Update); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -539,14 +829,44 @@ func (s *Service) registerConn(conn *clientConn) {
 	}
 }
 
+func (s *Service) registerYJSConn(conn *yjsConn) {
+	s.mu.Lock()
+	members := s.yjsRooms[conn.room]
+	if members == nil {
+		members = make(map[string]*yjsConn)
+		s.yjsRooms[conn.room] = members
+	}
+	members[conn.id] = conn
+	s.mu.Unlock()
+}
+
+func (s *Service) unregisterYJSConn(conn *yjsConn) {
+	s.mu.Lock()
+	if members := s.yjsRooms[conn.room]; members != nil {
+		delete(members, conn.id)
+		if len(members) == 0 {
+			delete(s.yjsRooms, conn.room)
+		}
+	}
+	s.mu.Unlock()
+	conn.close(websocket.CloseNormalClosure, "closing")
+}
+
 func (s *Service) unregisterConn(conn *clientConn) {
+	rooms := make([]string, 0, len(conn.rooms))
 	s.mu.Lock()
 	delete(s.conns, conn.id)
 	for room := range conn.rooms {
+		rooms = append(rooms, room)
 		if members := s.rooms[room]; members != nil {
 			delete(members, conn.id)
 			if len(members) == 0 {
 				delete(s.rooms, room)
+			}
+		}
+		if roomPresence := s.presence[room]; roomPresence != nil {
+			delete(roomPresence, conn.id)
+			if len(roomPresence) == 0 {
 				delete(s.presence, room)
 			}
 		}
@@ -558,6 +878,36 @@ func (s *Service) unregisterConn(conn *clientConn) {
 
 	if s.store != nil {
 		_ = s.store.CleanupConnection(s.ctx, s.cfg.NodeID, conn.id)
+	}
+	for _, room := range rooms {
+		event := cluster.PresenceEvent{
+			Room:       room,
+			ConnID:     conn.id,
+			Offline:    true,
+			OriginNode: s.cfg.NodeID,
+		}
+		_ = s.broadcastPresenceEvent(event)
+		if s.store != nil {
+			_ = s.store.PublishPresence(s.ctx, event)
+		}
+	}
+}
+
+func (s *Service) yjsHeartbeatLoop(conn *yjsConn) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-conn.done:
+			return
+		case <-ticker.C:
+			conn.writeMu.Lock()
+			_ = conn.ws.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(writeWait))
+			conn.writeMu.Unlock()
+		}
 	}
 }
 
@@ -644,6 +994,25 @@ func (s *Service) tenantPrefix(claims *auth.Claims) string {
 	return claims.Tenant + s.cfg.Tenant.Separator
 }
 
+func (s *Service) allowsRoomAction(ctx context.Context, claims *auth.Claims, action string, room string) bool {
+	if claims.Allows(action, room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		return true
+	}
+	if s.cfg.Tenant.EnforcePrefix {
+		if claims.Tenant == "" || !strings.HasPrefix(room, claims.Tenant+s.cfg.Tenant.Separator) {
+			return false
+		}
+	}
+	if s.store == nil {
+		return false
+	}
+	record, err := s.store.GetRoom(ctx, room)
+	if err != nil {
+		return false
+	}
+	return record.Allows(claims.Subject, claims.RoomGroupIDs(), action)
+}
+
 func tokenFromRequest(r *http.Request) string {
 	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
 		const prefix = "Bearer "
@@ -654,12 +1023,49 @@ func tokenFromRequest(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
+func (s *Service) checkOrigin(r *http.Request) bool {
+	if len(s.cfg.Server.AllowedOrigins) == 0 {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	for _, allowed := range s.cfg.Server.AllowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 func newConnID() string {
 	raw := make([]byte, 12)
 	if _, err := rand.Read(raw); err != nil {
 		panic(err)
 	}
 	return hex.EncodeToString(raw)
+}
+
+func roomFromYJSPath(pathValue string) (string, error) {
+	if !strings.HasPrefix(pathValue, yjsPathPrefix) {
+		return "", errors.New("invalid yjs path")
+	}
+	escaped := strings.TrimPrefix(pathValue, yjsPathPrefix)
+	if escaped == "" {
+		return "", errors.New("room is required")
+	}
+	room, err := url.PathUnescape(escaped)
+	if err != nil {
+		return "", errors.New("room must be URL-escaped")
+	}
+	if room == "" {
+		return "", errors.New("room is required")
+	}
+	if err := protocol.ValidateRoomName(room); err != nil {
+		return "", err
+	}
+	return room, nil
 }
 
 func (c *clientConn) writeLoop() {
@@ -671,6 +1077,23 @@ func (c *clientConn) writeLoop() {
 			c.writeMu.Lock()
 			_ = c.ws.SetWriteDeadline(time.Now().Add(writeWait))
 			err := c.ws.WriteJSON(message)
+			c.writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (c *yjsConn) writeLoop() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case message := <-c.send:
+			c.writeMu.Lock()
+			_ = c.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			err := c.ws.WriteMessage(websocket.BinaryMessage, message)
 			c.writeMu.Unlock()
 			if err != nil {
 				return
@@ -696,7 +1119,37 @@ func (c *clientConn) enqueue(message outboundMessage) error {
 	}
 }
 
+func (c *yjsConn) enqueueFrame(kind byte, update []byte) error {
+	frame := make([]byte, 1+len(update))
+	frame[0] = kind
+	copy(frame[1:], update)
+
+	select {
+	case <-c.done:
+		return errors.New("connection is closed")
+	case c.send <- frame:
+		return nil
+	default:
+		c.close(openrtcerr.DescriptorFor(openrtcerr.CodeQueueOverflow).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeQueueOverflow))
+		return errors.New("outbound queue overflow")
+	}
+}
+
 func (c *clientConn) close(code int, reason string) {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	close(c.done)
+	c.writeMu.Lock()
+	_ = c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(writeWait))
+	c.writeMu.Unlock()
+	_ = c.ws.Close()
+}
+
+func (c *yjsConn) close(code int, reason string) {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
 	if c.closed {

@@ -34,33 +34,35 @@ func main() {
 
 	// Start OpenRTC runtime
 	go startProcess("openrtc-runtime", map[string]string{
-		"OPENRTC_MODE":                "cluster",
-		"OPENRTC_NODE_ID":             "ref-runtime",
-		"OPENRTC_SERVER_HOST":         "0.0.0.0",
-		"OPENRTC_SERVER_PORT":         runtimePort,
-		"OPENRTC_WS_PATH":             "/ws",
-		"OPENRTC_REDIS_URL":           redisURL,
-		"OPENRTC_AUTH_ISSUER":         "openrtc-reference",
-		"OPENRTC_AUTH_AUDIENCE":       "openrtc-clients",
-		"OPENRTC_AUTH_JWKS_URL":       jwksURL,
+		"OPENRTC_MODE":                  "cluster",
+		"OPENRTC_NODE_ID":               "ref-runtime",
+		"OPENRTC_SERVER_HOST":           "0.0.0.0",
+		"OPENRTC_SERVER_PORT":           runtimePort,
+		"OPENRTC_WS_PATH":               "/ws",
+		"OPENRTC_ALLOWED_ORIGINS":       fmt.Sprintf("http://localhost:%s", appPort),
+		"OPENRTC_REDIS_URL":             redisURL,
+		"OPENRTC_AUTH_ISSUER":           "openrtc-reference",
+		"OPENRTC_AUTH_AUDIENCE":         "openrtc-clients",
+		"OPENRTC_AUTH_JWKS_URL":         jwksURL,
 		"OPENRTC_TENANT_ENFORCE_PREFIX": "false",
-		"OPENRTC_ADMIN_AUTH_ISSUER":   "openrtc-reference",
-		"OPENRTC_ADMIN_AUTH_AUDIENCE": "openrtc-admin",
+		"OPENRTC_ADMIN_AUTH_ISSUER":     "openrtc-reference",
+		"OPENRTC_ADMIN_AUTH_AUDIENCE":   "openrtc-admin",
 	})
 
 	// Start OpenRTC admin
 	go startProcess("openrtc-admin", map[string]string{
-		"OPENRTC_MODE":                "cluster",
-		"OPENRTC_NODE_ID":             "ref-admin",
-		"OPENRTC_SERVER_HOST":         "0.0.0.0",
-		"OPENRTC_SERVER_PORT":         adminPort,
-		"OPENRTC_REDIS_URL":           redisURL,
-		"OPENRTC_AUTH_ISSUER":         "openrtc-reference",
-		"OPENRTC_AUTH_AUDIENCE":       "openrtc-clients",
-		"OPENRTC_AUTH_JWKS_URL":       jwksURL,
+		"OPENRTC_MODE":                  "cluster",
+		"OPENRTC_NODE_ID":               "ref-admin",
+		"OPENRTC_SERVER_HOST":           "0.0.0.0",
+		"OPENRTC_SERVER_PORT":           adminPort,
+		"OPENRTC_ALLOWED_ORIGINS":       fmt.Sprintf("http://localhost:%s", appPort),
+		"OPENRTC_REDIS_URL":             redisURL,
+		"OPENRTC_AUTH_ISSUER":           "openrtc-reference",
+		"OPENRTC_AUTH_AUDIENCE":         "openrtc-clients",
+		"OPENRTC_AUTH_JWKS_URL":         jwksURL,
 		"OPENRTC_TENANT_ENFORCE_PREFIX": "false",
-		"OPENRTC_ADMIN_AUTH_ISSUER":   "openrtc-reference",
-		"OPENRTC_ADMIN_AUTH_AUDIENCE": "openrtc-admin",
+		"OPENRTC_ADMIN_AUTH_ISSUER":     "openrtc-reference",
+		"OPENRTC_ADMIN_AUTH_AUDIENCE":   "openrtc-admin",
 	})
 
 	mux := http.NewServeMux()

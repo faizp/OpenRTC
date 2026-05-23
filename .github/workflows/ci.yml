@@ -33,14 +33,8 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
-
       - name: Install TypeScript workspace deps
         run: pnpm install --frozen-lockfile
-
-      - name: Install Python dev deps
-        run: uv sync --project sdk-python --group dev
 
       - name: Sync Go workspaces
         run: go work sync

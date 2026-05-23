@@ -18,6 +18,7 @@ const (
 type LimitsConfig struct {
 	PayloadMaxBytes    int
 	EnvelopeMaxBytes   int
+	YJSMaxBytes        int
 	RoomsPerConnection int
 	EmitsPerSecond     int
 	OutboundQueueDepth int
@@ -27,9 +28,10 @@ type RuntimeConfig struct {
 	Mode   RuntimeMode
 	NodeID string
 	Server struct {
-		Host   string
-		Port   int
-		WSPath string
+		Host           string
+		Port           int
+		WSPath         string
+		AllowedOrigins []string
 	}
 	Redis *struct {
 		URL           string
@@ -43,6 +45,7 @@ type RuntimeConfig struct {
 	AdminAuth *struct {
 		Issuer   string
 		Audience string
+		JWKSURL  string
 	}
 	Tenant struct {
 		EnforcePrefix bool
@@ -111,6 +114,10 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
+	yjsMaxBytes, err := readInt(env, "OPENRTC_LIMIT_YJS_MAX_BYTES", 1024*1024)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
 	roomsPerConnection, err := readInt(env, "OPENRTC_LIMIT_ROOMS_PER_CONNECTION", 50)
 	if err != nil {
 		return RuntimeConfig{}, err
@@ -135,6 +142,7 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 	cfg.Limits = LimitsConfig{
 		PayloadMaxBytes:    payloadMaxBytes,
 		EnvelopeMaxBytes:   envelopeMaxBytes,
+		YJSMaxBytes:        yjsMaxBytes,
 		RoomsPerConnection: roomsPerConnection,
 		EmitsPerSecond:     emitsPerSecond,
 		OutboundQueueDepth: outboundQueueDepth,
@@ -142,6 +150,7 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 	cfg.Server.Host = defaultString(readString(env, "OPENRTC_SERVER_HOST"), "0.0.0.0")
 	cfg.Server.Port = serverPort
 	cfg.Server.WSPath = defaultString(readString(env, "OPENRTC_WS_PATH"), "/ws")
+	cfg.Server.AllowedOrigins = readCSV(env, "OPENRTC_ALLOWED_ORIGINS")
 	cfg.Auth.Issuer = authIssuer
 	cfg.Auth.Audience = authAudience
 	cfg.Auth.JWKSURL = authJWKSURL
@@ -150,6 +159,7 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 
 	adminIssuer := readString(env, "OPENRTC_ADMIN_AUTH_ISSUER")
 	adminAudience := readString(env, "OPENRTC_ADMIN_AUTH_AUDIENCE")
+	adminJWKSURL := readString(env, "OPENRTC_ADMIN_AUTH_JWKS_URL")
 	if adminIssuer != "" || adminAudience != "" {
 		if adminIssuer == "" || adminAudience == "" {
 			return RuntimeConfig{}, &Error{Message: "OPENRTC_ADMIN_AUTH_ISSUER and OPENRTC_ADMIN_AUTH_AUDIENCE must both be set"}
@@ -157,9 +167,11 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 		cfg.AdminAuth = &struct {
 			Issuer   string
 			Audience string
+			JWKSURL  string
 		}{
 			Issuer:   adminIssuer,
 			Audience: adminAudience,
+			JWKSURL:  defaultString(adminJWKSURL, authJWKSURL),
 		}
 	}
 
@@ -206,6 +218,22 @@ func requireString(env map[string]string, key string) (string, error) {
 
 func readString(env map[string]string, key string) string {
 	return strings.TrimSpace(env[key])
+}
+
+func readCSV(env map[string]string, key string) []string {
+	raw := readString(env, key)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func readInt(env map[string]string, key string, defaultValue int) (int, error) {

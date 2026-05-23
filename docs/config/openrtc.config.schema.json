@@ -22,7 +22,12 @@
       "properties": {
         "host": { "type": "string", "default": "0.0.0.0" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 8080 },
-        "ws_path": { "type": "string", "default": "/ws" }
+        "ws_path": { "type": "string", "default": "/ws" },
+        "allowed_origins": {
+          "type": "array",
+          "items": { "type": "string", "format": "uri" },
+          "default": []
+        }
       },
       "default": {}
     },
@@ -51,7 +56,8 @@
       "required": ["issuer", "audience"],
       "properties": {
         "issuer": { "type": "string", "minLength": 1 },
-        "audience": { "type": "string", "minLength": 1 }
+        "audience": { "type": "string", "minLength": 1 },
+        "jwks_url": { "type": "string", "format": "uri" }
       }
     },
     "tenant": {
@@ -81,6 +87,7 @@
       "properties": {
         "payload_max_bytes": { "type": "integer", "minimum": 1024, "default": 16384 },
         "envelope_max_bytes": { "type": "integer", "minimum": 1024, "default": 20480 },
+        "yjs_max_bytes": { "type": "integer", "minimum": 1024, "default": 1048576 },
         "rooms_per_connection": { "type": "integer", "minimum": 1, "default": 50 },
         "emits_per_second": { "type": "integer", "minimum": 1, "default": 100 },
         "outbound_queue_depth": { "type": "integer", "minimum": 1, "default": 256 }

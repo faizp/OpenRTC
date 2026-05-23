@@ -26,11 +26,13 @@ Required only in cluster mode (`mode=cluster`):
 - `server.host`: `0.0.0.0`
 - `server.port`: `8080`
 - `server.ws_path`: `/ws`
+- `server.allowed_origins`: `[]` (allow all origins; set explicitly in production)
 - `redis.channel_prefix`: `room:`
 - `tenant.enforce_prefix`: `true`
 - `tenant.separator`: `:`
 - `limits.payload_max_bytes`: `16384`
 - `limits.envelope_max_bytes`: `20480`
+- `limits.yjs_max_bytes`: `1048576`
 - `limits.rooms_per_connection`: `50`
 - `limits.emits_per_second`: `100`
 - `limits.outbound_queue_depth`: `256`
@@ -40,3 +42,9 @@ Required only in cluster mode (`mode=cluster`):
 - New config keys after beta must be backward-compatible with default behavior.
 - Removing or changing semantics of existing keys requires version bump and migration note.
 - Unknown keys should fail validation to prevent silent misconfiguration.
+
+## 5. Compactor settings
+
+`@openrtc/yjs-compactor` is an operational worker, not part of the Go runtime
+config schema. Its `OPENRTC_YJS_COMPACTOR_*` environment variables are documented
+in [`env-mapping-v1.md`](./env-mapping-v1.md) and in the deployment quickstart.

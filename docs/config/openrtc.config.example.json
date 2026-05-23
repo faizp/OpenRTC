@@ -26,6 +26,7 @@
   "limits": {
     "payload_max_bytes": 16384,
     "envelope_max_bytes": 20480,
+    "yjs_max_bytes": 1048576,
     "rooms_per_connection": 50,
     "emits_per_second": 100,
     "outbound_queue_depth": 256

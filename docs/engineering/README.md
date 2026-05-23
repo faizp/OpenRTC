@@ -22,6 +22,7 @@ This handbook defines enforceable engineering standards for OpenRTC across TypeS
 ## Policy docs
 
 - [Dependency Policy](./dependency-policy.md)
+- [Liveblocks Replacement Architecture Review](./liveblocks-replacement-architecture-review.md)
 - [Tooling and CI](./tooling-and-ci.md)
 - [Security and Observability](./security-and-observability.md)
 
