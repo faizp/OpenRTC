@@ -55,6 +55,9 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	if _, _, err := threadPathParts("threads/bad%20thread/comments"); err == nil {
 		t.Fatalf("expected unsafe thread id to fail")
 	}
+	if _, _, err := threadPathParts("threads/%zz/comments"); err == nil {
+		t.Fatalf("expected malformed thread escape to fail")
+	}
 	if _, _, err := threadPathParts("threads"); err == nil {
 		t.Fatalf("expected incomplete thread path to fail")
 	}
@@ -91,8 +94,14 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	if _, _, _, err := userPathParts("/v1/users/user-1"); err == nil {
 		t.Fatalf("expected missing user subresource to fail")
 	}
+	if _, _, _, err := userPathParts("/v1/not-users/user-1/inbox-notifications"); err == nil {
+		t.Fatalf("expected missing users prefix to fail")
+	}
 	if _, _, _, err := userPathParts("/v1/users/%zz/inbox-notifications"); err == nil {
 		t.Fatalf("expected malformed user escape to fail")
+	}
+	if _, _, _, err := userPathParts("/v1/users/user-1/inbox-notifications/bad%20id"); err == nil {
+		t.Fatalf("expected unsafe user item id to fail")
 	}
 	if _, _, _, err := userPathParts("/v1/users/user-1/inbox-notifications/%zz"); err == nil {
 		t.Fatalf("expected malformed item escape to fail")
@@ -484,6 +493,10 @@ func TestNotificationValidation(t *testing.T) {
 	}
 	if err := validateInboxNotificationRequest(request, 128); err != nil {
 		t.Fatalf("expected valid notification: %v", err)
+	}
+	request.Kind = "$CUSTOM_KIND"
+	if err := validateInboxNotificationRequest(request, 128); err != nil {
+		t.Fatalf("expected uppercase custom notification kind: %v", err)
 	}
 	request.Kind = "$bad-kind"
 	if err := validateInboxNotificationRequest(request, 128); err == nil || err.Code != openrtcerr.CodeBadRequest {
@@ -1436,6 +1449,25 @@ func TestAdminNotificationHandlers(t *testing.T) {
 	if listRoomSettingsResp.Code != http.StatusOK {
 		t.Fatalf("expected list room settings 200, got %d", listRoomSettingsResp.Code)
 	}
+	var roomSettingsList roomSubscriptionSettingsListResponse
+	if err := json.Unmarshal(listRoomSettingsResp.Body.Bytes(), &roomSettingsList); err != nil {
+		t.Fatalf("decode room settings list: %v", err)
+	}
+	if roomSettingsList.NextCursor != "" {
+		t.Fatalf("unexpected empty room settings cursor: %+v", roomSettingsList)
+	}
+	store.listRoomSubscriptionSettings.NextCursor = 7
+	listRoomSettingsResp = performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/room-subscription-settings", "")
+	if listRoomSettingsResp.Code != http.StatusOK {
+		t.Fatalf("expected list room settings with cursor 200, got %d", listRoomSettingsResp.Code)
+	}
+	roomSettingsList = roomSubscriptionSettingsListResponse{}
+	if err := json.Unmarshal(listRoomSettingsResp.Body.Bytes(), &roomSettingsList); err != nil {
+		t.Fatalf("decode room settings cursor list: %v", err)
+	}
+	if roomSettingsList.NextCursor != "7" {
+		t.Fatalf("unexpected room settings cursor: %+v", roomSettingsList)
+	}
 	deleteRoomSettingsResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/users/user-1/subscription-settings", "")
 	if deleteRoomSettingsResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete room settings 204, got %d", deleteRoomSettingsResp.Code)
@@ -1457,6 +1489,10 @@ func TestAdminNotificationErrorBranches(t *testing.T) {
 
 	store := &fakeAdminStore{getInboxNotificationRecord: cluster.InboxNotificationRecord{ID: "in_1", UserID: "user-1", Kind: "thread"}}
 	handler := newTestAdminService(verifier, store).Handler()
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/inbox-notifications/trigger", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed trigger JSON 400, got %d", resp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/users/bad%20user/inbox-notifications", "")
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected unsafe user id 400, got %d", resp.Code)
@@ -1489,9 +1525,33 @@ func TestAdminNotificationErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected unsupported notification action 400, got %d", resp.Code)
 	}
+	store.getInboxNotificationErr = errors.New("get failed")
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/inbox-notifications/in_1/read", "")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected get notification read failure 500, got %d", resp.Code)
+	}
+	store.getInboxNotificationErr = nil
+	store.markInboxNotificationErr = cluster.ErrInboxNotFound
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/inbox-notifications/in_1/read", "")
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected mark missing notification 404, got %d", resp.Code)
+	}
+	store.markInboxNotificationErr = nil
+	actionReq := httptest.NewRequest(http.MethodPost, "/v1/inbox-notifications/in_1/read", nil)
+	actionReq.URL.Path = "/v1/inbox-notifications/%zz/read"
+	actionReq.Header.Set("Authorization", "Bearer "+token)
+	actionResp := httptest.NewRecorder()
+	newTestAdminService(verifier, store).handleInboxNotificationAction(actionResp, actionReq)
+	if actionResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed notification action path 400, got %d", actionResp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/users/user-1/notification-settings", `[]`)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid notification settings 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/users/user-1/subscription-settings", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed room subscription settings 400, got %d", resp.Code)
 	}
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/users/user-1/subscription-settings", `{"threads":"bad"}`)
 	if resp.Code != http.StatusBadRequest {

@@ -1525,10 +1525,18 @@ func TestRedisStorageValidatesTypedLiveblocksStorage(t *testing.T) {
 		t.Fatalf("unexpected typed storage: %s", stored)
 	}
 
+	if err := ValidateStorageDocument(json.RawMessage(`{`)); !errors.Is(err, ErrStoragePatch) {
+		t.Fatalf("expected malformed storage document validation failure, got %v", err)
+	}
+
 	invalidDocuments := []json.RawMessage{
+		json.RawMessage(`[]`),
 		json.RawMessage(`{"liveblocksType":"LiveList","data":[]}`),
 		json.RawMessage(`{"liveblocksType":"LiveObject","data":[]}`),
+		json.RawMessage(`{"child":{"liveblocksType":"LiveObject","data":[]}}`),
+		json.RawMessage(`{"items":[{"liveblocksType":"LiveMap","data":[]}]}`),
 		json.RawMessage(`{"liveblocksType":"LiveObject","data":{"items":{"liveblocksType":"LiveList","data":{}}}}`),
+		json.RawMessage(`{"liveblocksType":"LiveObject","data":{"items":{"liveblocksType":"LiveList","data":[{"liveblocksType":"LiveMap","data":[]}]}}}`),
 		json.RawMessage(`{"liveblocksType":"LiveObject","data":{"bad":{"liveblocksType":"LiveSet","data":[]}}}`),
 		json.RawMessage(`{"liveblocksType":1,"data":{}}`),
 		json.RawMessage(`{"liveblocksType":"LiveObject"}`),
@@ -1575,6 +1583,17 @@ func TestApplyJSONPatchPointerAndArraySemantics(t *testing.T) {
 		t.Fatalf("unexpected escaped result: %s", result)
 	}
 
+	result, err = ApplyJSONPatch(json.RawMessage(`{"items":[{"title":"Draft","tags":["a","b"]}]}`), []JSONPatchOperation{
+		{Op: "add", Path: "/items/0/subtitle", Value: json.RawMessage(`"Sub"`)},
+		{Op: "remove", Path: "/items/0/tags/0"},
+	})
+	if err != nil {
+		t.Fatalf("apply nested array patch: %v", err)
+	}
+	if string(result) != `{"items":[{"subtitle":"Sub","tags":["b"],"title":"Draft"}]}` {
+		t.Fatalf("unexpected nested result: %s", result)
+	}
+
 	if _, err := ApplyJSONPatch(json.RawMessage(`{"items":[]}`), []JSONPatchOperation{
 		{Op: "add", Path: "items/0", Value: json.RawMessage(`true`)},
 	}); !errors.Is(err, ErrStoragePatch) {
@@ -1612,10 +1631,24 @@ func TestApplyJSONPatchRejectsInvalidOperations(t *testing.T) {
 			},
 		},
 		{
-			name:     "missing operation value",
+			name:     "add missing operation value",
 			document: json.RawMessage(`{"title":"Draft"}`),
 			operations: []JSONPatchOperation{
 				{Op: "add", Path: "/title"},
+			},
+		},
+		{
+			name:     "replace missing operation value",
+			document: json.RawMessage(`{"title":"Draft"}`),
+			operations: []JSONPatchOperation{
+				{Op: "replace", Path: "/title"},
+			},
+		},
+		{
+			name:     "test missing operation value",
+			document: json.RawMessage(`{"title":"Draft"}`),
+			operations: []JSONPatchOperation{
+				{Op: "test", Path: "/title"},
 			},
 		},
 		{
