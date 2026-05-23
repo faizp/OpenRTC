@@ -52,6 +52,14 @@ func TestParseValidMessageVariants(t *testing.T) {
 	if presence.Type != TypePresenceSet || string(presence.Payload) != `{"cursor":1}` {
 		t.Fatalf("unexpected presence message: %+v", presence)
 	}
+
+	uppercaseAndUnderscore, err := ParseClientMessage([]byte(`{"t":"JOIN","id":"REQ_1","room":"TENANT_A:ROOM_1"}`), ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse uppercase and underscore identifiers: %v", err)
+	}
+	if uppercaseAndUnderscore.ID != "REQ_1" || uppercaseAndUnderscore.Room != "TENANT_A:ROOM_1" {
+		t.Fatalf("unexpected uppercase identifier message: %+v", uppercaseAndUnderscore)
+	}
 }
 
 func TestParseRejectsUnexpectedField(t *testing.T) {

@@ -403,6 +403,177 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 			t.Fatalf("expected publish store error, got %v", err)
 		}
 	})
+
+	t.Run("leave presence publish", func(t *testing.T) {
+		service := newRuntimeUnitService(t)
+		defer service.Close()
+		store := &fakeRuntimeStore{publishPresenceErr: expected}
+		service.store = store
+		conn := runtimeTestConn(service, "conn-leave-publish", claims, 2)
+		conn.rooms["tenant-a:room-1"] = struct{}{}
+		service.rooms["tenant-a:room-1"] = map[string]*clientConn{conn.id: conn}
+		if err := service.handleLeave(conn, protocol.Message{ID: "leave", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
+			t.Fatalf("expected leave presence publish error, got %v", err)
+		}
+	})
+
+	t.Run("presence publish", func(t *testing.T) {
+		service := newRuntimeUnitService(t)
+		defer service.Close()
+		store := &fakeRuntimeStore{publishPresenceErr: expected}
+		service.store = store
+		conn := runtimeTestConn(service, "conn-presence-publish", claims, 2)
+		if err := service.handlePresence(conn, protocol.Message{
+			ID:      "presence",
+			Room:    "tenant-a:room-1",
+			Payload: json.RawMessage(`{"cursor":{"x":1}}`),
+		}); !errors.Is(err, expected) {
+			t.Fatalf("expected presence publish error, got %v", err)
+		}
+	})
+}
+
+func TestRuntimeHandleClientMessageParseError(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	conn := runtimeTestConn(service, "conn-parse", &auth.Claims{Tenant: "tenant-a"}, 2)
+	if err := service.handleClientMessage(conn, []byte(`{"t":"JOIN","id":"parse-1","room":"tenant-b:room-1"}`)); err != nil {
+		t.Fatalf("parse error should be enqueued, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "ERROR" {
+		t.Fatalf("unexpected parse error response: %+v", got)
+	}
+}
+
+func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	sender := runtimeTestConn(service, "conn-sender", &auth.Claims{Tenant: "tenant-a"}, 2)
+	receiver := runtimeTestConn(service, "conn-receiver", &auth.Claims{Tenant: "tenant-a"}, 4)
+	service.rooms["tenant-a:room-1"] = map[string]*clientConn{
+		sender.id:   sender,
+		receiver.id: receiver,
+	}
+	service.presence["tenant-a:room-1"] = map[string]json.RawMessage{
+		sender.id:   json.RawMessage(`{"cursor":{"x":1}}`),
+		receiver.id: json.RawMessage(`{"cursor":{"x":2}}`),
+	}
+
+	members, presence, nextCursor, err := service.snapshotRoom("tenant-a:room-1", &protocol.JoinMeta{Limit: 1})
+	if err != nil {
+		t.Fatalf("snapshot room: %v", err)
+	}
+	if len(members) != 1 || nextCursor == "" || len(presence) != 1 {
+		t.Fatalf("expected paginated snapshot with presence, members=%v presence=%v next=%q", members, presence, nextCursor)
+	}
+
+	if err := service.broadcastEvent(cluster.PublishedEvent{
+		Room:                "tenant-a:room-1",
+		Event:               "doc.update",
+		Payload:             json.RawMessage(`{"ok":true}`),
+		ExcludeSenderConnID: sender.id,
+	}, false); err != nil {
+		t.Fatalf("broadcast event excluding sender: %v", err)
+	}
+	if got := readRuntimeOutbound(t, receiver); got.T != "EVENT" {
+		t.Fatalf("unexpected receiver event: %+v", got)
+	}
+	select {
+	case got := <-sender.send:
+		t.Fatalf("sender should have been excluded, got %+v", got)
+	default:
+	}
+
+	overflow := runtimeTestConn(service, "conn-overflow", &auth.Claims{Tenant: "tenant-a"}, 1)
+	overflow.closed = true
+	overflow.send <- outboundMessage{T: "FULL"}
+	service.rooms["tenant-a:overflow"] = map[string]*clientConn{overflow.id: overflow}
+	if err := service.broadcastEvent(cluster.PublishedEvent{Room: "tenant-a:overflow", Event: "doc.update"}, false); err == nil {
+		t.Fatalf("expected broadcast event overflow")
+	}
+	if err := service.broadcastPresenceEvent(cluster.PresenceEvent{Room: "tenant-a:overflow", ConnID: "conn-other"}); err == nil {
+		t.Fatalf("expected broadcast presence overflow")
+	}
+
+	yjsOverflow := &yjsConn{id: "yjs-overflow", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{}), closed: true}
+	yjsOverflow.send <- []byte("full")
+	service.yjsRooms["tenant-a:doc-1"] = map[string]*yjsConn{yjsOverflow.id: yjsOverflow}
+	if err := service.broadcastYJSEvent(cluster.YJSEvent{Room: "tenant-a:doc-1", Kind: cluster.YJSEventUpdate, Update: []byte("update")}); err == nil {
+		t.Fatalf("expected yjs broadcast overflow")
+	}
+}
+
+func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	store := &fakeRuntimeStore{}
+	service.store = store
+	conn := runtimeTestConn(service, "conn-lifecycle", &auth.Claims{Tenant: "tenant-a"}, 2)
+	conn.claims.Subject = "user-1"
+	service.registerConn(conn)
+	if store.touchedConnID != conn.id || store.touchedMeta.Subject != "user-1" || store.touchedMeta.Tenant != "tenant-a" {
+		t.Fatalf("unexpected touched connection: id=%q meta=%+v", store.touchedConnID, store.touchedMeta)
+	}
+
+	receiver := runtimeTestConn(service, "conn-receiver", &auth.Claims{Tenant: "tenant-a"}, 2)
+	conn.rooms["tenant-a:room-1"] = struct{}{}
+	service.rooms["tenant-a:room-1"] = map[string]*clientConn{
+		conn.id:     conn,
+		receiver.id: receiver,
+	}
+	service.presence["tenant-a:room-1"] = map[string]json.RawMessage{
+		conn.id: json.RawMessage(`{"cursor":{"x":1}}`),
+	}
+	conn.closed = true
+	service.unregisterConn(conn)
+
+	if store.cleanupNodeID != service.cfg.NodeID || store.cleanupConnID != conn.id {
+		t.Fatalf("unexpected cleanup call: node=%q conn=%q", store.cleanupNodeID, store.cleanupConnID)
+	}
+	if len(store.publishedPresence) != 1 || !store.publishedPresence[0].Offline || store.publishedPresence[0].ConnID != conn.id {
+		t.Fatalf("unexpected published offline presence: %+v", store.publishedPresence)
+	}
+	if got := readRuntimeOutbound(t, receiver); got.T != "PRESENCE" {
+		t.Fatalf("expected receiver offline presence, got %+v", got)
+	}
+	if _, ok := service.rooms["tenant-a:room-1"][conn.id]; ok {
+		t.Fatalf("expected connection to be removed from room")
+	}
+}
+
+func TestRuntimeYJSStoreErrors(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	expected := errors.New("yjs store failed")
+	store := &fakeRuntimeStore{yjsErr: expected}
+	service.store = store
+	if _, err := service.loadYJSDocument("tenant-a:doc-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected load yjs error, got %v", err)
+	}
+
+	store.yjsErr = nil
+	store.appendErr = expected
+	if _, err := service.storeYJSEvent(cluster.YJSEvent{
+		Room:   "tenant-a:doc-1",
+		Kind:   cluster.YJSEventUpdate,
+		Update: []byte("update"),
+	}); !errors.Is(err, expected) {
+		t.Fatalf("expected append yjs error, got %v", err)
+	}
+
+	store.appendErr = nil
+	store.storeSnapshotErr = expected
+	if _, err := service.storeYJSEvent(cluster.YJSEvent{
+		Room:   "tenant-a:doc-1",
+		Kind:   cluster.YJSEventSnapshot,
+		Update: []byte("snapshot"),
+	}); !errors.Is(err, expected) {
+		t.Fatalf("expected store yjs snapshot error, got %v", err)
+	}
 }
 
 func TestRuntimeEmitPresenceAndLeaveSuccessBranches(t *testing.T) {
@@ -678,8 +849,14 @@ type fakeRuntimeStore struct {
 	roomErr    error
 	synced     []stats.Snapshot
 
+	touchedConnID string
+	touchedMeta   cluster.ConnectionMeta
+	cleanupNodeID string
+	cleanupConnID string
+
 	publishEventErr    error
 	publishPresenceErr error
+	publishedPresence  []cluster.PresenceEvent
 	joinErr            error
 	leaveErr           error
 	setPresenceErr     error
@@ -707,7 +884,10 @@ func (s *fakeRuntimeStore) Subscribe(context.Context, func(cluster.PublishedEven
 	return nil
 }
 
-func (s *fakeRuntimeStore) PublishPresence(context.Context, cluster.PresenceEvent) error {
+func (s *fakeRuntimeStore) PublishPresence(_ context.Context, event cluster.PresenceEvent) error {
+	if s.publishPresenceErr == nil {
+		s.publishedPresence = append(s.publishedPresence, event)
+	}
 	return s.publishPresenceErr
 }
 
@@ -723,7 +903,9 @@ func (s *fakeRuntimeStore) SubscribeYJSEvents(context.Context, func(cluster.YJSE
 	return nil
 }
 
-func (s *fakeRuntimeStore) TouchConnection(context.Context, string, cluster.ConnectionMeta) error {
+func (s *fakeRuntimeStore) TouchConnection(_ context.Context, connID string, meta cluster.ConnectionMeta) error {
+	s.touchedConnID = connID
+	s.touchedMeta = meta
 	return nil
 }
 
@@ -890,7 +1072,9 @@ func (s *fakeRuntimeStore) StoreYJSSnapshot(_ context.Context, _ string, snapsho
 	return nil
 }
 
-func (s *fakeRuntimeStore) CleanupConnection(context.Context, string, string) error {
+func (s *fakeRuntimeStore) CleanupConnection(_ context.Context, nodeID string, connID string) error {
+	s.cleanupNodeID = nodeID
+	s.cleanupConnID = connID
 	return nil
 }
 

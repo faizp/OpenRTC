@@ -55,6 +55,9 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	if _, _, err := threadPathParts("threads/bad%20thread/comments"); err == nil {
 		t.Fatalf("expected unsafe thread id to fail")
 	}
+	if _, _, err := threadPathParts("threads"); err == nil {
+		t.Fatalf("expected incomplete thread path to fail")
+	}
 	userID, userChild, err := roomUserPathParts("users/user-1/subscription-settings")
 	if err != nil {
 		t.Fatalf("room user path rejected: %v", err)
@@ -79,6 +82,9 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	if _, _, err := roomUserPathParts("users/bad%20user/subscription-settings"); err == nil {
 		t.Fatalf("expected unsafe room user id to fail")
 	}
+	if _, _, err := roomUserPathParts("users"); err == nil {
+		t.Fatalf("expected incomplete room user path to fail")
+	}
 	if _, _, err := roomUserPathParts("users/%zz/subscription-settings"); err == nil {
 		t.Fatalf("expected malformed room user escape to fail")
 	}
@@ -96,6 +102,9 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	}
 	if _, _, err := inboxNotificationActionParts("/v1/inbox-notifications/%zz/read"); err == nil {
 		t.Fatalf("expected malformed notification escape to fail")
+	}
+	if _, _, err := inboxNotificationActionParts("/v1/inbox-notifications"); err == nil {
+		t.Fatalf("expected incomplete notification action path to fail")
 	}
 
 	invalidPaths := []string{
@@ -1248,6 +1257,10 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid thread id 400, got %d", resp.Code)
 	}
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed thread create body 400, got %d", resp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", `{"id":"thread-1","comment":{"id":"comment-1","userId":"user-1","body":[]}}`)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid comment body 400, got %d", resp.Code)
@@ -1274,6 +1287,14 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-1","userId":"user-1","body":{}}`)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("expected missing thread 404, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed comment body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-1","userId":"user-1","body":[]}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid add-comment body 400, got %d", resp.Code)
 	}
 	store.addCommentErr = errors.New("add comment failed")
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-1","userId":"user-1","body":{}}`)
@@ -1842,12 +1863,48 @@ func TestAdminRoomAndStorageErrorBranches(t *testing.T) {
 	store := &fakeAdminStore{}
 	handler := newTestAdminService(verifier, store).Handler()
 
+	noAuthCases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "create room", method: http.MethodPost, path: "/v1/rooms", body: `{"id":"tenant-a:room-1","metadata":{}}`},
+		{name: "list rooms", method: http.MethodGet, path: "/v1/rooms"},
+		{name: "get room", method: http.MethodGet, path: "/v1/rooms/tenant-a%3Aroom-1"},
+		{name: "update room", method: http.MethodPatch, path: "/v1/rooms/tenant-a%3Aroom-1", body: `{"metadata":{}}`},
+		{name: "delete room", method: http.MethodDelete, path: "/v1/rooms/tenant-a%3Aroom-1"},
+		{name: "active users", method: http.MethodGet, path: "/v1/rooms/tenant-a%3Aroom-1/active_users"},
+		{name: "get storage", method: http.MethodGet, path: "/v1/rooms/tenant-a%3Aroom-1/storage"},
+		{name: "set storage", method: http.MethodPut, path: "/v1/rooms/tenant-a%3Aroom-1/storage", body: `{}`},
+		{name: "delete storage", method: http.MethodDelete, path: "/v1/rooms/tenant-a%3Aroom-1/storage"},
+		{name: "patch storage", method: http.MethodPatch, path: "/v1/rooms/tenant-a%3Aroom-1/storage/json-patch", body: `[{"op":"test","path":"","value":{}}]`},
+	}
+	for _, tc := range noAuthCases {
+		t.Run("no auth "+tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("expected no-auth %s to return 401, got %d", tc.name, response.Code)
+			}
+		})
+	}
+
 	store.listRoomsErr = errors.New("list failed")
 	resp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms", "")
 	if resp.Code != http.StatusInternalServerError {
 		t.Fatalf("expected list rooms failure 500, got %d", resp.Code)
 	}
 	store.listRoomsErr = nil
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms?limit=bad", "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid room list limit 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms?cursor=bad", "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid room list cursor 400, got %d", resp.Code)
+	}
 
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1", "")
 	if resp.Code != http.StatusNotFound {
@@ -1861,6 +1918,18 @@ func TestAdminRoomAndStorageErrorBranches(t *testing.T) {
 	store.getRoomErr = nil
 
 	updateBody := `{"metadata":{"title":"Published"}}`
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed room update body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1", `{"metadata":[]}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid room update metadata 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1", `{"defaultAccesses":["room:delete"]}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid room update access 400, got %d", resp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1", updateBody)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("expected update missing room 404, got %d", resp.Code)
@@ -1894,12 +1963,22 @@ func TestAdminRoomAndStorageErrorBranches(t *testing.T) {
 	}
 	store.getStorageErr = nil
 
+	resp = performAdminRequest(handler, token, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/storage", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed storage body 400, got %d", resp.Code)
+	}
+
 	store.setStorageErr = errors.New("set storage failed")
 	resp = performAdminRequest(handler, token, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/storage", `{"title":"Stored"}`)
 	if resp.Code != http.StatusInternalServerError {
 		t.Fatalf("expected set storage failure 500, got %d", resp.Code)
 	}
 	store.setStorageErr = nil
+
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/storage/json-patch", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed storage patch body 400, got %d", resp.Code)
+	}
 
 	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/storage/json-patch", `[{"op":"replace","path":"/title","value":"Patched"}]`)
 	if resp.Code != http.StatusNotFound {

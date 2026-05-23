@@ -546,6 +546,12 @@ func TestRedisYJSDocumentRejectsInvalidCompaction(t *testing.T) {
 	if err := store.CompactYJSDocument(ctx, "tenant-a:doc-1", 0, nil); err == nil {
 		t.Fatalf("expected empty snapshot rejection")
 	}
+	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", nil); err == nil {
+		t.Fatalf("expected empty yjs update rejection")
+	}
+	if err := store.StoreYJSSnapshot(ctx, "tenant-a:doc-1", nil); err == nil {
+		t.Fatalf("expected empty yjs snapshot rejection")
+	}
 	if err := store.StoreYJSSnapshot(ctx, "tenant-a:doc-1", []byte("snapshot")); err != nil {
 		t.Fatalf("store initial snapshot: %v", err)
 	}
@@ -635,6 +641,10 @@ func TestRedisRoomRecordLifecycle(t *testing.T) {
 		MetadataSet:        true,
 		DefaultAccesses:    []string{},
 		DefaultAccessesSet: true,
+		UsersAccesses: map[string][]string{
+			"user-owner": {PermissionRoomWrite},
+		},
+		UsersAccessesSet: true,
 		GroupsAccesses: map[string][]string{
 			"editors": {PermissionRoomWrite},
 		},
@@ -654,6 +664,12 @@ func TestRedisRoomRecordLifecycle(t *testing.T) {
 	}
 	if !updated.Allows("user-viewer", []string{"editors"}, "publish") {
 		t.Fatalf("expected updated group write grant to allow publish")
+	}
+	if !updated.Allows("user-owner", nil, "publish") {
+		t.Fatalf("expected updated user write grant to allow publish")
+	}
+	if updated.Allows("user-viewer", []string{"missing-group"}, "join") {
+		t.Fatalf("expected missing group grant to fall back to private defaults")
 	}
 
 	if _, err := store.CreateRoom(ctx, RoomRecord{ID: "tenant-a:room-2"}); err != nil {
@@ -778,6 +794,13 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-0"}); err != nil {
 		t.Fatalf("create second thread: %v", err)
 	}
+	tieTime := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-1"), "created_at", tieTime).Err(); err != nil {
+		t.Fatalf("seed thread-1 tie time: %v", err)
+	}
+	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-0"), "created_at", tieTime).Err(); err != nil {
+		t.Fatalf("seed thread-0 tie time: %v", err)
+	}
 	if err := store.client.SAdd(ctx, roomThreadsKey("tenant-a:room-1"), "missing-thread").Err(); err != nil {
 		t.Fatalf("seed missing thread id: %v", err)
 	}
@@ -787,6 +810,9 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	}
 	if len(threads) != 2 {
 		t.Fatalf("unexpected thread count: %+v", threads)
+	}
+	if threads[0].ID != "thread-0" || threads[1].ID != "thread-1" {
+		t.Fatalf("expected equal timestamp threads to sort by id, got %+v", threads)
 	}
 	threadIDs := map[string]bool{threads[0].ID: true, threads[1].ID: true}
 	if !threadIDs["thread-1"] || !threadIDs["thread-0"] {
@@ -853,6 +879,9 @@ func TestRedisInboxNotificationLifecycle(t *testing.T) {
 	if _, err := store.GetInboxNotification(ctx, "user-2", "in_1"); !errors.Is(err, ErrInboxNotFound) {
 		t.Fatalf("expected user mismatch to hide notification, got %v", err)
 	}
+	if _, err := store.MarkInboxNotificationRead(ctx, "missing-notification"); !errors.Is(err, ErrInboxNotFound) {
+		t.Fatalf("expected missing notification read failure, got %v", err)
+	}
 	read, err := store.MarkInboxNotificationRead(ctx, "in_1")
 	if err != nil {
 		t.Fatalf("mark read: %v", err)
@@ -873,6 +902,16 @@ func TestRedisInboxNotificationLifecycle(t *testing.T) {
 	}
 	if len(unread.Data) != 1 || unread.Data[0].ID != "in_2" {
 		t.Fatalf("unexpected unread list: %+v", unread)
+	}
+	if err := store.client.ZAdd(ctx, userInboxKey("user-1"), redis.Z{Score: 1, Member: "missing-notification"}).Err(); err != nil {
+		t.Fatalf("seed stale inbox id: %v", err)
+	}
+	defaultLimitList, err := store.ListInboxNotifications(ctx, "user-1", InboxNotificationListFilter{})
+	if err != nil {
+		t.Fatalf("list inbox notifications with default limit: %v", err)
+	}
+	if len(defaultLimitList.Data) < 1 {
+		t.Fatalf("expected default limit list to skip stale id and return existing notifications: %+v", defaultLimitList)
 	}
 	if err := store.DeleteInboxNotification(ctx, "user-1", "in_1"); err != nil {
 		t.Fatalf("delete inbox notification: %v", err)
@@ -945,6 +984,34 @@ func TestRedisInboxNotificationLifecycle(t *testing.T) {
 	}
 	if len(roomSettingsList.Data) != 1 || roomSettingsList.NextCursor == 0 {
 		t.Fatalf("unexpected room subscription settings list: %+v", roomSettingsList)
+	}
+	defaultRoomSettingsList, err := store.ListRoomSubscriptionSettings(ctx, "user-1", 0, 0)
+	if err != nil {
+		t.Fatalf("list room subscription settings with default limit: %v", err)
+	}
+	if len(defaultRoomSettingsList.Data) != 2 {
+		t.Fatalf("unexpected default room subscription settings list: %+v", defaultRoomSettingsList)
+	}
+	if err := store.client.HSet(ctx, roomSubscriptionSettingsKey("tenant-a:broken-room", "user-1"), map[string]any{
+		"room_id":       "tenant-a:broken-room",
+		"user_id":       "user-1",
+		"threads":       "all",
+		"text_mentions": "mine",
+		"updated_at":    "not-time",
+	}).Err(); err != nil {
+		t.Fatalf("seed broken room subscription settings: %v", err)
+	}
+	if err := store.client.ZAdd(ctx, userRoomSubscriptionSettingsKey("user-1"), redis.Z{Score: 1, Member: "tenant-a:broken-room"}).Err(); err != nil {
+		t.Fatalf("index broken room subscription settings: %v", err)
+	}
+	if _, err := store.ListRoomSubscriptionSettings(ctx, "user-1", 0, 50); err == nil {
+		t.Fatalf("expected broken room subscription settings to fail listing")
+	}
+	if err := store.client.Del(ctx, roomSubscriptionSettingsKey("tenant-a:broken-room", "user-1")).Err(); err != nil {
+		t.Fatalf("delete broken room subscription settings: %v", err)
+	}
+	if err := store.client.ZRem(ctx, userRoomSubscriptionSettingsKey("user-1"), "tenant-a:broken-room").Err(); err != nil {
+		t.Fatalf("unindex broken room subscription settings: %v", err)
 	}
 	if err := store.DeleteRoomSubscriptionSettings(ctx, "tenant-a:room-1", "user-1"); err != nil {
 		t.Fatalf("delete room subscription settings: %v", err)
@@ -1366,8 +1433,16 @@ func TestRedisStorageLifecycleAndPatch(t *testing.T) {
 	if _, err := store.GetStorage(ctx, "tenant-a:doc-1"); !errors.Is(err, ErrStorageNotFound) {
 		t.Fatalf("expected storage not found, got %v", err)
 	}
+	if _, err := store.SetStorage(ctx, "tenant-a:doc-1", json.RawMessage(`{"broken":`)); err == nil {
+		t.Fatalf("expected invalid storage JSON to fail")
+	}
 	if _, err := store.SetStorage(ctx, "tenant-a:doc-1", json.RawMessage(`[]`)); !errors.Is(err, ErrStoragePatch) {
 		t.Fatalf("expected non-object storage rejection, got %v", err)
+	}
+	if _, err := store.ApplyStoragePatch(ctx, "tenant-a:missing", []JSONPatchOperation{
+		{Op: "add", Path: "/title", Value: json.RawMessage(`"Draft"`)},
+	}, 1024); !errors.Is(err, ErrStorageNotFound) {
+		t.Fatalf("expected missing storage patch failure, got %v", err)
 	}
 
 	stored, err := store.SetStorage(ctx, "tenant-a:doc-1", json.RawMessage(`{"layers":["base"],"meta":{"title":"Draft"}}`))

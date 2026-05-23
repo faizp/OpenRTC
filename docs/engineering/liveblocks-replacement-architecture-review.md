@@ -4,26 +4,33 @@ Date: 2026-05-23
 
 ## Source-backed baseline
 
+External documentation was refreshed on 2026-05-23 against current primary
+sources.
+
 - Liveblocks positions the product around collaborative editing, comments, notifications, presence, rooms, permissions, storage, REST APIs, and managed Yjs/text-editor sync.
 - Liveblocks Yjs permanently stores Yjs room data and recommends editor-specific plugins for Tiptap, BlockNote, and Lexical when using those editors.
-- Liveblocks text-editor products integrate persisted editor documents with comments, mentions, notifications, server-side editing, and version history.
+- Liveblocks text-editor products integrate persisted editor documents with comments, mentions, notifications, server-side editing, multiplayer undo/redo, and version history.
 - Liveblocks stores comments, realtime text/storage/Yjs data, notifications, room metadata/accesses, and webhook delivery data as distinct durable product surfaces.
 - Liveblocks REST APIs include room CRUD, active users, ephemeral presence, broadcast events, storage read/init/delete/JSON Patch, Yjs document mutation, and notification/subscription settings.
 - Yjs is a CRDT layer that automatically merges concurrent updates and has editor bindings plus persistence providers. Presence/awareness should remain ephemeral and separate from persisted document state.
-- Redis Pub/Sub has at-most-once delivery semantics. It is appropriate for best-effort live fan-out, not as the source of truth for durable document recovery.
+- Redis Pub/Sub has at-most-once delivery semantics. It is appropriate for best-effort live fan-out, not as the source of truth for durable document recovery. Redis Streams or a separate durable log are the better Redis-native fit when replay, acknowledgements, or consumer cursors are required.
 - Cloudflare Durable Objects are a useful reference architecture for room-affine coordination and long-lived WebSocket workloads, especially when paired with WebSocket hibernation at the edge.
 - OWASP recommends explicit WebSocket Origin allowlists, message-level authorization, input validation, rate limiting, and security logging.
 
 References:
-- https://liveblocks.io/docs/ready-made-features/multiplayer/sync-engine/liveblocks-yjs
+- https://liveblocks.io/docs/ready-made-features/multiplayer-editing/sync-engine/liveblocks-yjs
+- https://liveblocks.io/docs/collaboration-features/multiplayer/text-editor
+- https://liveblocks.io/docs/ready-made-features/text-editor/lexical
+- https://liveblocks.io/docs/platform/sync-datastore/liveblocks-storage
 - https://liveblocks.io/docs/platform/data-storage
-- https://liveblocks.io/docs/collaboration-features/multiplayer/text-editor/lexical
 - https://liveblocks.io/docs/collaboration-features/notifications
 - https://liveblocks.io/docs/api-reference/rest-api-endpoints
 - https://docs.yjs.dev/
 - https://docs.yjs.dev/getting-started/adding-awareness
 - https://redis.io/docs/latest/develop/pubsub/
+- https://redis.io/docs/latest/develop/use-cases/streaming/
 - https://developers.cloudflare.com/durable-objects/best-practices/websockets/
+- https://developers.cloudflare.com/durable-objects/
 - https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html
 - https://www.rfc-editor.org/info/rfc8725/
 

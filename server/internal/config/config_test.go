@@ -141,6 +141,27 @@ func TestLoadFromMapRejectsInvalidEnvironment(t *testing.T) {
 			message: "OPENRTC_NODE_ID is required",
 		},
 		{
+			name: "missing auth issuer",
+			mutate: func(env map[string]string) {
+				delete(env, "OPENRTC_AUTH_ISSUER")
+			},
+			message: "OPENRTC_AUTH_ISSUER is required",
+		},
+		{
+			name: "missing auth audience",
+			mutate: func(env map[string]string) {
+				delete(env, "OPENRTC_AUTH_AUDIENCE")
+			},
+			message: "OPENRTC_AUTH_AUDIENCE is required",
+		},
+		{
+			name: "missing auth jwks url",
+			mutate: func(env map[string]string) {
+				delete(env, "OPENRTC_AUTH_JWKS_URL")
+			},
+			message: "OPENRTC_AUTH_JWKS_URL is required",
+		},
+		{
 			name: "bad separator",
 			mutate: func(env map[string]string) {
 				env["OPENRTC_TENANT_SEPARATOR"] = "::"
@@ -168,6 +189,41 @@ func TestLoadFromMapRejectsInvalidEnvironment(t *testing.T) {
 				env["OPENRTC_LIMIT_ROOMS_PER_CONNECTION"] = "0"
 			},
 			message: "OPENRTC_LIMIT_ROOMS_PER_CONNECTION must be a positive integer",
+		},
+		{
+			name: "bad payload limit",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_PAYLOAD_MAX_BYTES"] = "bad"
+			},
+			message: "OPENRTC_LIMIT_PAYLOAD_MAX_BYTES must be a positive integer",
+		},
+		{
+			name: "bad envelope limit",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_ENVELOPE_MAX_BYTES"] = "bad"
+			},
+			message: "OPENRTC_LIMIT_ENVELOPE_MAX_BYTES must be a positive integer",
+		},
+		{
+			name: "bad yjs limit",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_YJS_MAX_BYTES"] = "bad"
+			},
+			message: "OPENRTC_LIMIT_YJS_MAX_BYTES must be a positive integer",
+		},
+		{
+			name: "bad emits limit",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_EMITS_PER_SECOND"] = "bad"
+			},
+			message: "OPENRTC_LIMIT_EMITS_PER_SECOND must be a positive integer",
+		},
+		{
+			name: "bad outbound queue depth",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH"] = "bad"
+			},
+			message: "OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH must be a positive integer",
 		},
 	}
 	for _, tc := range tests {

@@ -1121,6 +1121,9 @@ func (s *RedisStore) LoadYJSDocument(ctx context.Context, room string) (YJSDocum
 }
 
 func (s *RedisStore) AppendYJSUpdate(ctx context.Context, room string, update []byte) (int64, error) {
+	if len(update) == 0 {
+		return 0, errors.New("yjs update is required")
+	}
 	seq, err := s.client.Incr(ctx, roomYJSSequenceKey(room)).Result()
 	if err != nil {
 		return 0, err
@@ -1142,6 +1145,9 @@ func (s *RedisStore) AppendYJSUpdate(ctx context.Context, room string, update []
 }
 
 func (s *RedisStore) StoreYJSSnapshot(ctx context.Context, room string, snapshot []byte) error {
+	if len(snapshot) == 0 {
+		return errors.New("snapshot is required")
+	}
 	current, err := s.loadYJSSnapshotRecord(ctx, room)
 	if err != nil {
 		return err

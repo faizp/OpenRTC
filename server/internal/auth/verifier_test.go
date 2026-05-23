@@ -111,6 +111,42 @@ func TestVerifierRejectsInvalidTokens(t *testing.T) {
 	}
 }
 
+func TestVerifierRejectsMissingSigningKey(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				{
+					"kty": "RSA",
+					"kid": "runtime-key",
+					"n":   base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.PublicKey.E)).Bytes()),
+				},
+			},
+		})
+	}))
+	defer jwksServer.Close()
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
+		Issuer:    "https://issuer.example.com",
+		Audience:  []string{"openrtc-clients"},
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
+	token.Header["kid"] = "missing-key"
+	rawToken, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	verifier := NewVerifier("https://issuer.example.com", "openrtc-clients", jwksServer.URL)
+	if _, err := verifier.Verify(context.Background(), rawToken); err == nil || !strings.Contains(err.Error(), "missing-key") {
+		t.Fatalf("expected missing key verification error, got %v", err)
+	}
+}
+
 func TestVerifierRejectsJWKSHTTPError(t *testing.T) {
 	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -121,6 +157,16 @@ func TestVerifierRejectsJWKSHTTPError(t *testing.T) {
 	_, err := verifier.lookupKey(context.Background(), "runtime-key")
 	if err == nil {
 		t.Fatalf("expected jwks status error")
+	}
+}
+
+func TestVerifierRejectsJWKSTransportError(t *testing.T) {
+	verifier := NewVerifier("https://issuer.example.com", "openrtc-clients", "https://issuer.example.com/jwks.json")
+	verifier.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.Canceled
+	})}
+	if _, err := verifier.fetchKeys(context.Background()); err == nil {
+		t.Fatalf("expected jwks transport error")
 	}
 }
 
@@ -142,6 +188,12 @@ func TestVerifierLookupKeyCacheBranches(t *testing.T) {
 	if _, err := verifier.lookupKey(context.Background(), "missing-key"); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected missing key error, got %v", err)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestVerifierFetchKeysRejectsMalformedJWKS(t *testing.T) {
