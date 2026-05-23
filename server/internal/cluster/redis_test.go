@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -370,6 +371,135 @@ func TestRedisPublishAndYJSWriteErrors(t *testing.T) {
 	}
 }
 
+func TestRedisCommandFailureBranches(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	expected := errors.New("hook failed")
+	hook := &redisCommandFailureHook{}
+	store.client.AddHook(hook)
+
+	hook.processFailures = map[string]error{"exists": expected}
+	if _, err := store.CreateRoom(ctx, RoomRecord{ID: "tenant-a:exists-room"}); !errors.Is(err, expected) {
+		t.Fatalf("expected create room exists failure, got %v", err)
+	}
+	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-exists"}); !errors.Is(err, expected) {
+		t.Fatalf("expected create thread exists failure, got %v", err)
+	}
+	if _, err := store.CreateInboxNotification(ctx, InboxNotificationRecord{ID: "in_exists", UserID: "user-1", Kind: "thread"}); !errors.Is(err, expected) {
+		t.Fatalf("expected inbox exists failure, got %v", err)
+	}
+	hook.clear()
+
+	if _, err := store.CreateRoom(ctx, RoomRecord{ID: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("seed room: %v", err)
+	}
+	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-1"}); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := store.CreateInboxNotification(ctx, InboxNotificationRecord{ID: "in_1", UserID: "user-1", Kind: "thread"}); err != nil {
+		t.Fatalf("seed inbox notification: %v", err)
+	}
+	if err := store.SyncStats(ctx, "node-a", stats.Snapshot{ActiveConnections: 1}); err != nil {
+		t.Fatalf("seed stats: %v", err)
+	}
+	if err := store.SetEphemeralPresence(ctx, "conn-1", "tenant-a:room-1", json.RawMessage(`{"ok":true}`), time.Minute); err != nil {
+		t.Fatalf("seed ephemeral presence: %v", err)
+	}
+	if _, err := store.SetStorage(ctx, "tenant-a:room-1", json.RawMessage(`{"title":"Draft"}`)); err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
+
+	hook.processFailures = map[string]error{"hgetall": expected}
+	if _, err := store.UpdateRoom(ctx, "tenant-a:room-1", RoomUpdate{MetadataSet: true, Metadata: json.RawMessage(`{}`)}); !errors.Is(err, expected) {
+		t.Fatalf("expected update room hgetall failure, got %v", err)
+	}
+	if _, err := store.ListThreads(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected list threads hgetall failure, got %v", err)
+	}
+	if _, err := store.MarkInboxNotificationRead(ctx, "in_1"); !errors.Is(err, expected) {
+		t.Fatalf("expected mark inbox hgetall failure, got %v", err)
+	}
+	if _, err := store.ActiveUsers(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected active users hgetall failure, got %v", err)
+	}
+	if _, err := store.AggregateStats(ctx); !errors.Is(err, expected) {
+		t.Fatalf("expected aggregate stats hgetall failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.processFailures = map[string]error{"get": expected}
+	if _, err := store.ApplyStoragePatch(ctx, "tenant-a:room-1", []JSONPatchOperation{
+		{Op: "replace", Path: "/title", Value: json.RawMessage(`"Published"`)},
+	}, 1024); !errors.Is(err, expected) {
+		t.Fatalf("expected storage patch get failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.pipelineFailures = map[string]error{"set": expected}
+	if _, err := store.ApplyStoragePatch(ctx, "tenant-a:room-1", []JSONPatchOperation{
+		{Op: "replace", Path: "/title", Value: json.RawMessage(`"Published"`)},
+	}, 1024); !errors.Is(err, expected) {
+		t.Fatalf("expected storage patch pipeline failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.processFailures = map[string]error{"lrange": expected}
+	if _, err := store.LoadYJSDocument(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected yjs legacy update failure, got %v", err)
+	}
+	if _, err := store.ListThreads(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected thread comments lrange failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.processFailure = func(cmd redis.Cmder) error {
+		if strings.ToLower(cmd.Name()) != "get" || len(cmd.Args()) < 2 {
+			return nil
+		}
+		key, _ := cmd.Args()[1].(string)
+		if key == roomYJSSnapshotKey("tenant-a:room-1") {
+			return expected
+		}
+		return nil
+	}
+	if _, err := store.LoadYJSDocument(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected yjs legacy snapshot get failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.processFailures = map[string]error{"zrangebyscore": expected}
+	if _, err := store.LoadYJSDocument(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected yjs sequenced update failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.processFailures = map[string]error{"zadd": expected}
+	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:room-1", []byte("update")); !errors.Is(err, expected) {
+		t.Fatalf("expected yjs append zadd failure, got %v", err)
+	}
+	hook.clear()
+
+	if err := store.client.SAdd(ctx, nodeConnsKey("node-a"), "stale-conn").Err(); err != nil {
+		t.Fatalf("seed stale connection: %v", err)
+	}
+	hook.pipelineFailures = map[string]error{"del": expected}
+	if err := store.ReconcileNode(ctx, "node-a"); !errors.Is(err, expected) {
+		t.Fatalf("expected reconcile cleanup failure, got %v", err)
+	}
+	hook.clear()
+}
+
 func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	redisServer, err := miniredis.Run()
 	if err != nil {
@@ -692,6 +822,15 @@ func TestRedisRoomRecordLifecycle(t *testing.T) {
 	if len(list.Rooms) != 2 || list.Rooms[0].ID != "tenant-a:room-1" || list.Rooms[1].ID != "tenant-a:room-2" {
 		t.Fatalf("unexpected room list: %+v", list.Rooms)
 	}
+	if err := store.client.Set(ctx, "room::record", "malformed", 0).Err(); err != nil {
+		t.Fatalf("seed malformed room record key: %v", err)
+	}
+	if _, err := store.ListRooms(ctx, "", 0, 100); err != nil {
+		t.Fatalf("malformed room record key should be ignored: %v", err)
+	}
+	if err := store.client.Del(ctx, "room::record").Err(); err != nil {
+		t.Fatalf("delete malformed room record key: %v", err)
+	}
 	if err := store.client.HSet(ctx, roomRecordKey("tenant-a:broken"), map[string]any{
 		"id":         "tenant-a:broken",
 		"metadata":   "{}",
@@ -789,6 +928,9 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	}
 	if _, err := store.AddComment(ctx, "tenant-a:room-1", "missing-thread", CommentRecord{ID: "comment-3", UserID: "user-3", Body: json.RawMessage(`{}`)}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected missing thread, got %v", err)
+	}
+	if _, err := store.AddComment(ctx, "tenant-a:room-1", "thread-1", CommentRecord{ID: "comment-invalid", UserID: "user-3", Body: json.RawMessage(`{`)}); err == nil {
+		t.Fatalf("expected invalid added comment to fail")
 	}
 
 	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-0"}); err != nil {
@@ -1701,6 +1843,13 @@ func TestApplyJSONPatchRejectsInvalidOperations(t *testing.T) {
 			},
 		},
 		{
+			name:     "move invalid source pointer",
+			document: json.RawMessage(`{"title":"Draft"}`),
+			operations: []JSONPatchOperation{
+				{Op: "move", From: "missing", Path: "/copy"},
+			},
+		},
+		{
 			name:     "remove root",
 			document: json.RawMessage(`{"title":"Draft"}`),
 			operations: []JSONPatchOperation{
@@ -1736,6 +1885,13 @@ func TestApplyJSONPatchRejectsInvalidOperations(t *testing.T) {
 			},
 		},
 		{
+			name:     "add through scalar array element",
+			document: json.RawMessage(`{"items":[true]}`),
+			operations: []JSONPatchOperation{
+				{Op: "add", Path: "/items/0/title", Value: json.RawMessage(`"Draft"`)},
+			},
+		},
+		{
 			name:     "remove array append token",
 			document: json.RawMessage(`{"items":[true]}`),
 			operations: []JSONPatchOperation{
@@ -1761,6 +1917,13 @@ func TestApplyJSONPatchRejectsInvalidOperations(t *testing.T) {
 			document: json.RawMessage(`{"items":[true]}`),
 			operations: []JSONPatchOperation{
 				{Op: "remove", Path: "/items/0/value"},
+			},
+		},
+		{
+			name:     "remove missing nested object path",
+			document: json.RawMessage(`{"items":[{}]}`),
+			operations: []JSONPatchOperation{
+				{Op: "remove", Path: "/items/0/missing/value"},
 			},
 		},
 		{
@@ -1871,4 +2034,56 @@ func receiveClusterTestValue[T any](t *testing.T, ch <-chan T, label string) T {
 		t.Fatalf("timed out waiting for %s", label)
 		return zero
 	}
+}
+
+type redisCommandFailureHook struct {
+	processFailures  map[string]error
+	pipelineFailures map[string]error
+	processFailure   func(redis.Cmder) error
+}
+
+func (h *redisCommandFailureHook) clear() {
+	h.processFailures = nil
+	h.pipelineFailures = nil
+	h.processFailure = nil
+}
+
+func (h *redisCommandFailureHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *redisCommandFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if err := h.failureFor(cmd, h.processFailures); err != nil {
+			return err
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *redisCommandFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			if err := h.failureFor(cmd, h.pipelineFailures); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+func (h *redisCommandFailureHook) failureFor(cmd redis.Cmder, failures map[string]error) error {
+	if len(failures) == 0 {
+		if h.processFailure != nil {
+			return h.processFailure(cmd)
+		}
+		return nil
+	}
+	if err := failures[strings.ToLower(cmd.Name())]; err != nil {
+		return err
+	}
+	if h.processFailure != nil {
+		return h.processFailure(cmd)
+	}
+	return nil
 }
