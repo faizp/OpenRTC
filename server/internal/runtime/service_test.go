@@ -500,6 +500,22 @@ func TestHandleYJSFrameBranches(t *testing.T) {
 		expectWebSocketClose(t, ws, "invalid yjs kind")
 	})
 
+	t.Run("client snapshot rejected", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameSnapshot}, []byte("snapshot")...)); err != nil {
+			t.Fatalf("write client snapshot yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "client yjs snapshot rejected")
+	})
+
 	t.Run("store append error", func(t *testing.T) {
 		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
 			"tenant":  "tenant-a",

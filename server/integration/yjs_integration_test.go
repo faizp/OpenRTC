@@ -23,7 +23,7 @@ const (
 	yjsTestSnapshotFrame byte = 2
 )
 
-func TestYJSPersistsUpdatesAndSnapshotsForReconnect(t *testing.T) {
+func TestYJSPersistsUpdatesAndRejectsClientSnapshotsForReconnect(t *testing.T) {
 	jwks, signToken := newJWKS(t)
 	defer jwks.Close()
 
@@ -56,15 +56,11 @@ func TestYJSPersistsUpdatesAndSnapshotsForReconnect(t *testing.T) {
 	connA := yjsConnect(t, server.URL, "tenant-a:doc-1", token)
 	mustWriteYJSFrame(t, connA, yjsTestUpdateFrame, []byte("incremental-update"))
 	mustWriteYJSFrame(t, connA, yjsTestSnapshotFrame, []byte("full-snapshot"))
-	connA.Close()
+	expectYJSClose(t, connA)
 
 	connB := yjsConnect(t, server.URL, "tenant-a:doc-1", token)
 	defer connB.Close()
 	kind, payload := readYJSFrame(t, connB)
-	if kind != yjsTestSnapshotFrame || string(payload) != "full-snapshot" {
-		t.Fatalf("expected persisted snapshot, got kind=%d payload=%q", kind, string(payload))
-	}
-	kind, payload = readYJSFrame(t, connB)
 	if kind != yjsTestUpdateFrame || string(payload) != "incremental-update" {
 		t.Fatalf("expected persisted incremental update after snapshot, got kind=%d payload=%q", kind, string(payload))
 	}

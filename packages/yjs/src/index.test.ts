@@ -163,7 +163,7 @@ assert.equal(textA.toString(), textB.toString());
 assert.equal(textA.length, 2);
 
 providerA.sendSnapshot();
-assert.equal(socketA.sent.at(-1)?.[0], 2);
+assert.equal(socketA.sent.at(-1)?.[0], 1);
 
 providerA.destroy();
 providerB.destroy();

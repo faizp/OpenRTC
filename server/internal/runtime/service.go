@@ -335,7 +335,7 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		kind := payload[0]
-		if kind != yjsFrameUpdate && kind != yjsFrameSnapshot {
+		if kind != yjsFrameUpdate {
 			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
 			return
 		}

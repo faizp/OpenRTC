@@ -155,7 +155,7 @@ export class OpenRTCYjsProvider {
   }
 
   sendSnapshot(): void {
-    this.sendFrame(FRAME_SNAPSHOT, Y.encodeStateAsUpdate(this.doc));
+    this.sendFrame(FRAME_UPDATE, Y.encodeStateAsUpdate(this.doc));
   }
 
   on<K extends keyof OpenRTCYjsProviderEventMap>(
