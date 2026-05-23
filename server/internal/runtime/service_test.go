@@ -538,6 +538,18 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("expected handle presence broadcast overflow")
 	}
+	leaver := runtimeTestConn(service, "conn-leaver", sender.claims, 1)
+	blockedReceiver := runtimeTestConn(service, "conn-blocked", sender.claims, 1)
+	blockedReceiver.closed = true
+	blockedReceiver.send <- outboundMessage{T: "FULL"}
+	leaver.rooms["tenant-a:leave-overflow"] = struct{}{}
+	service.rooms["tenant-a:leave-overflow"] = map[string]*clientConn{
+		leaver.id:          leaver,
+		blockedReceiver.id: blockedReceiver,
+	}
+	if err := service.handleLeave(leaver, protocol.Message{ID: "leave-overflow", Room: "tenant-a:leave-overflow"}); err == nil {
+		t.Fatalf("expected handle leave broadcast overflow")
+	}
 
 	yjsOverflow := &yjsConn{id: "yjs-overflow", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{}), closed: true}
 	yjsOverflow.send <- []byte("full")

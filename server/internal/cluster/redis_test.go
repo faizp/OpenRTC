@@ -427,6 +427,9 @@ func TestRedisCommandFailureBranches(t *testing.T) {
 	if _, err := store.ListThreads(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
 		t.Fatalf("expected list threads hgetall failure, got %v", err)
 	}
+	if _, err := store.ListInboxNotifications(ctx, "user-1", InboxNotificationListFilter{Limit: 50}); !errors.Is(err, expected) {
+		t.Fatalf("expected list inbox hgetall failure, got %v", err)
+	}
 	if _, err := store.MarkInboxNotificationRead(ctx, "in_1"); !errors.Is(err, expected) {
 		t.Fatalf("expected mark inbox hgetall failure, got %v", err)
 	}
@@ -451,6 +454,12 @@ func TestRedisCommandFailureBranches(t *testing.T) {
 		{Op: "replace", Path: "/title", Value: json.RawMessage(`"Published"`)},
 	}, 1024); !errors.Is(err, expected) {
 		t.Fatalf("expected storage patch pipeline failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.pipelineFailures = map[string]error{"hset": expected}
+	if _, err := store.UpdateRoom(ctx, "tenant-a:room-1", RoomUpdate{MetadataSet: true, Metadata: json.RawMessage(`{"status":"published"}`)}); !errors.Is(err, expected) {
+		t.Fatalf("expected update room hset pipeline failure, got %v", err)
 	}
 	hook.clear()
 
@@ -490,12 +499,27 @@ func TestRedisCommandFailureBranches(t *testing.T) {
 	}
 	hook.clear()
 
+	hook.processFailures = map[string]error{"exists": expected}
+	if _, err := store.AddComment(ctx, "tenant-a:room-1", "thread-1", CommentRecord{ID: "comment-exists-fail", UserID: "user-1", Body: json.RawMessage(`{}`)}); !errors.Is(err, expected) {
+		t.Fatalf("expected add comment exists failure, got %v", err)
+	}
+	if _, err := store.SnapshotRoom(ctx, "tenant-a:room-1"); !errors.Is(err, expected) {
+		t.Fatalf("expected snapshot ephemeral exists failure, got %v", err)
+	}
+	hook.clear()
+
 	if err := store.client.SAdd(ctx, nodeConnsKey("node-a"), "stale-conn").Err(); err != nil {
 		t.Fatalf("seed stale connection: %v", err)
 	}
 	hook.pipelineFailures = map[string]error{"del": expected}
 	if err := store.ReconcileNode(ctx, "node-a"); !errors.Is(err, expected) {
 		t.Fatalf("expected reconcile cleanup failure, got %v", err)
+	}
+	hook.clear()
+
+	hook.processFailures = map[string]error{"exists": expected}
+	if err := store.ReconcileNode(ctx, "node-a"); !errors.Is(err, expected) {
+		t.Fatalf("expected reconcile exists failure, got %v", err)
 	}
 	hook.clear()
 }
@@ -936,6 +960,12 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-0"}); err != nil {
 		t.Fatalf("create second thread: %v", err)
 	}
+	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-0"), "created_at", "not-time").Err(); err != nil {
+		t.Fatalf("corrupt thread record: %v", err)
+	}
+	if _, err := store.ListThreads(ctx, "tenant-a:room-1"); err == nil {
+		t.Fatalf("expected corrupt thread record to fail listing")
+	}
 	tieTime := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-1"), "created_at", tieTime).Err(); err != nil {
 		t.Fatalf("seed thread-1 tie time: %v", err)
@@ -1023,6 +1053,15 @@ func TestRedisInboxNotificationLifecycle(t *testing.T) {
 	}
 	if _, err := store.MarkInboxNotificationRead(ctx, "missing-notification"); !errors.Is(err, ErrInboxNotFound) {
 		t.Fatalf("expected missing notification read failure, got %v", err)
+	}
+	if err := store.client.HSet(ctx, inboxNotificationKey("in_2"), "notified_at", "not-time").Err(); err != nil {
+		t.Fatalf("corrupt inbox notification: %v", err)
+	}
+	if _, err := store.MarkInboxNotificationRead(ctx, "in_2"); err == nil {
+		t.Fatalf("expected corrupt notification read to fail")
+	}
+	if err := store.client.HSet(ctx, inboxNotificationKey("in_2"), "notified_at", created.NotifiedAt.Format(time.RFC3339Nano)).Err(); err != nil {
+		t.Fatalf("restore inbox notification: %v", err)
 	}
 	read, err := store.MarkInboxNotificationRead(ctx, "in_1")
 	if err != nil {
