@@ -173,6 +173,17 @@ func TestRoomFromYJSPath(t *testing.T) {
 	}
 }
 
+func TestHandleYJSMissingToken(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	recorder := httptest.NewRecorder()
+	service.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/tenant-a%3Adoc-1", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing yjs token 401, got %d", recorder.Code)
+	}
+}
+
 func TestConnectionQueueHelpers(t *testing.T) {
 	service := &Service{}
 	client := &clientConn{
@@ -360,6 +371,19 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("duplicate join snapshot", func(t *testing.T) {
+		service := newRuntimeUnitService(t)
+		defer service.Close()
+		store := &fakeRuntimeStore{snapshotErr: expected}
+		service.store = store
+		conn := runtimeTestConn(service, "conn-duplicate-snapshot", claims, 2)
+		conn.rooms["tenant-a:room-1"] = struct{}{}
+		service.rooms["tenant-a:room-1"] = map[string]*clientConn{conn.id: conn}
+		if err := service.handleJoin(conn, protocol.Message{ID: "join", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
+			t.Fatalf("expected duplicate join snapshot error, got %v", err)
+		}
+	})
+
 	t.Run("leave room write", func(t *testing.T) {
 		service := newRuntimeUnitService(t)
 		defer service.Close()
@@ -495,6 +519,23 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 	}
 	if err := service.broadcastPresenceEvent(cluster.PresenceEvent{Room: "tenant-a:overflow", ConnID: "conn-other"}); err == nil {
 		t.Fatalf("expected broadcast presence overflow")
+	}
+	sender.claims.Publish = []string{"tenant-a:*"}
+	sender.claims.Presence = []string{"tenant-a:*"}
+	if err := service.handleEmit(sender, protocol.Message{
+		ID:      "emit-overflow",
+		Room:    "tenant-a:overflow",
+		Event:   "doc.update",
+		Payload: json.RawMessage(`{"ok":true}`),
+	}); err == nil {
+		t.Fatalf("expected handle emit broadcast overflow")
+	}
+	if err := service.handlePresence(sender, protocol.Message{
+		ID:      "presence-overflow",
+		Room:    "tenant-a:overflow",
+		Payload: json.RawMessage(`{"ok":true}`),
+	}); err == nil {
+		t.Fatalf("expected handle presence broadcast overflow")
 	}
 
 	yjsOverflow := &yjsConn{id: "yjs-overflow", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{}), closed: true}

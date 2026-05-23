@@ -1501,6 +1501,10 @@ func TestAdminNotificationErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid limit 400, got %d", resp.Code)
 	}
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/inbox-notifications?cursor=bad", "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid notification cursor 400, got %d", resp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/inbox-notifications/trigger", `{"userId":"user-1","kind":"$bad-kind"}`)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid notification kind 400, got %d", resp.Code)
@@ -1516,6 +1520,12 @@ func TestAdminNotificationErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("expected notification not found 404, got %d", resp.Code)
 	}
+	store.getInboxNotificationErr = errors.New("get failed")
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/inbox-notifications/in_1", "")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected notification get failure 500, got %d", resp.Code)
+	}
+	store.getInboxNotificationErr = cluster.ErrInboxNotFound
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/inbox-notifications/in_1/read", "")
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("expected read missing notification 404, got %d", resp.Code)
@@ -1638,6 +1648,10 @@ func TestAdminNotificationErrorBranches(t *testing.T) {
 		t.Fatalf("expected list room settings failure 500, got %d", resp.Code)
 	}
 	store.listRoomSubscriptionSettingsErr = nil
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/room-subscription-settings?limit=99", "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid room settings limit 400, got %d", resp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/room-subscription-settings?cursor=bad", "")
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid room settings cursor 400, got %d", resp.Code)
@@ -1964,6 +1978,19 @@ func TestAdminRoomAndStorageErrorBranches(t *testing.T) {
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms?cursor=bad", "")
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid room list cursor 400, got %d", resp.Code)
+	}
+	roomReq := httptest.NewRequest(http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1", nil)
+	roomReq.URL.Path = "/v1/rooms/%zz"
+	roomReq.Header.Set("Authorization", "Bearer "+token)
+	roomResp := httptest.NewRecorder()
+	newTestAdminService(verifier, store).handleRoom(roomResp, roomReq)
+	if roomResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed room path 400, got %d", roomResp.Code)
+	}
+
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed create room body 400, got %d", resp.Code)
 	}
 
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1", "")
