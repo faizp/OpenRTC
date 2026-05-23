@@ -14,14 +14,25 @@ import (
 	runtimeapp "github.com/openrtc/openrtc/server/internal/runtime"
 )
 
-func main() {
-	if err := run(context.Background(), config.LoadFromOS, func(cfg config.RuntimeConfig, logger *log.Logger) (runtimeService, error) {
+var (
+	exit              = os.Exit
+	loadConfig        = config.LoadFromOS
+	newRuntimeService = func(cfg config.RuntimeConfig, logger *log.Logger) (runtimeService, error) {
 		return runtimeapp.NewService(cfg, logger)
-	}, func(server *http.Server) error {
+	}
+	listenAndServe = func(server *http.Server) error {
 		return server.ListenAndServe()
-	}, os.Stdout); err != nil {
+	}
+)
+
+func main() {
+	mainWithDeps(loadConfig, newRuntimeService, listenAndServe, os.Stdout)
+}
+
+func mainWithDeps(loadConfig func() (config.RuntimeConfig, error), newService func(config.RuntimeConfig, *log.Logger) (runtimeService, error), listenAndServe func(*http.Server) error, logOutput io.Writer) {
+	if err := run(context.Background(), loadConfig, newService, listenAndServe, logOutput); err != nil {
 		log.Print(err)
-		os.Exit(1)
+		exit(1)
 	}
 }
 

@@ -24,15 +24,18 @@ import (
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
-const (
+var (
 	heartbeatInterval = 15 * time.Second
 	reconcileInterval = 30 * time.Second
-	defaultJoinLimit  = 100
-	yjsPathPrefix     = "/yjs/"
-	yjsFrameUpdate    = byte(cluster.YJSEventUpdate)
-	yjsFrameSnapshot  = byte(cluster.YJSEventSnapshot)
-	writeWait         = 5 * time.Second
-	readWait          = 30 * time.Second
+)
+
+const (
+	defaultJoinLimit = 100
+	yjsPathPrefix    = "/yjs/"
+	yjsFrameUpdate   = byte(cluster.YJSEventUpdate)
+	yjsFrameSnapshot = byte(cluster.YJSEventSnapshot)
+	writeWait        = 5 * time.Second
+	readWait         = 30 * time.Second
 )
 
 type Service struct {

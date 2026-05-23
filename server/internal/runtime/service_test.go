@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/gorilla/websocket"
 
 	"github.com/openrtc/openrtc/server/internal/auth"
 	"github.com/openrtc/openrtc/server/internal/cluster"
@@ -811,6 +812,59 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeBackgroundLoopsTickAndStop(t *testing.T) {
+	oldHeartbeatInterval := heartbeatInterval
+	oldReconcileInterval := reconcileInterval
+	heartbeatInterval = time.Millisecond
+	reconcileInterval = time.Millisecond
+	defer func() {
+		heartbeatInterval = oldHeartbeatInterval
+		reconcileInterval = oldReconcileInterval
+	}()
+
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+	store := &fakeRuntimeStore{
+		touchCh:     make(chan string, 1),
+		reconcileCh: make(chan string, 1),
+	}
+	service.store = store
+
+	serverWS, clientWS, cleanup := runtimeTestWebSocketPair(t)
+	defer cleanup()
+	conn := &clientConn{
+		id:      "conn-heartbeat",
+		ws:      serverWS,
+		service: service,
+		claims:  &auth.Claims{Tenant: "tenant-a"},
+		done:    make(chan struct{}),
+	}
+	conn.claims.Subject = "user-1"
+	go service.heartbeatLoop(conn)
+	if got := receiveRuntimeTestValue(t, store.touchCh, "touch connection"); got != conn.id {
+		t.Fatalf("unexpected touched connection: %s", got)
+	}
+	close(conn.done)
+	_ = clientWS.Close()
+
+	serverYJS, clientYJS, yjsCleanup := runtimeTestWebSocketPair(t)
+	defer yjsCleanup()
+	yjs := &yjsConn{
+		id:   "yjs-heartbeat",
+		ws:   serverYJS,
+		done: make(chan struct{}),
+	}
+	go service.yjsHeartbeatLoop(yjs)
+	time.Sleep(5 * time.Millisecond)
+	close(yjs.done)
+	_ = clientYJS.Close()
+
+	go service.reconcileLoop()
+	if got := receiveRuntimeTestValue(t, store.reconcileCh, "reconcile node"); got != service.cfg.NodeID {
+		t.Fatalf("unexpected reconciled node: %s", got)
+	}
+}
+
 func TestEmitLimiter(t *testing.T) {
 	limiter := &emitLimiter{limit: 1}
 	if !limiter.Allow() {
@@ -884,6 +938,48 @@ func readRuntimeOutbound(t *testing.T, conn *clientConn) outboundMessage {
 	}
 }
 
+func receiveRuntimeTestValue[T any](t *testing.T, ch <-chan T, label string) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(time.Second):
+		var zero T
+		t.Fatalf("timed out waiting for %s", label)
+		return zero
+	}
+}
+
+func runtimeTestWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn, func()) {
+	t.Helper()
+	done := make(chan struct{})
+	serverConn := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		serverConn <- ws
+		<-done
+	}))
+	client, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[len("http"):], nil)
+	if err != nil {
+		close(done)
+		server.Close()
+		t.Fatalf("dial websocket: %v", err)
+	}
+	serverWS := receiveRuntimeTestValue(t, serverConn, "server websocket")
+	cleanup := func() {
+		close(done)
+		_ = serverWS.Close()
+		_ = client.Close()
+		server.Close()
+	}
+	return serverWS, client, cleanup
+}
+
 type fakeRuntimeStore struct {
 	healthyErr error
 	roomRecord cluster.RoomRecord
@@ -892,6 +988,7 @@ type fakeRuntimeStore struct {
 
 	touchedConnID string
 	touchedMeta   cluster.ConnectionMeta
+	touchCh       chan string
 	cleanupNodeID string
 	cleanupConnID string
 
@@ -911,6 +1008,7 @@ type fakeRuntimeStore struct {
 	storedSnapshot     []byte
 	storeSnapshotErr   error
 	publishYJSErr      error
+	reconcileCh        chan string
 }
 
 func (s *fakeRuntimeStore) Healthy(context.Context) error {
@@ -947,6 +1045,9 @@ func (s *fakeRuntimeStore) SubscribeYJSEvents(context.Context, func(cluster.YJSE
 func (s *fakeRuntimeStore) TouchConnection(_ context.Context, connID string, meta cluster.ConnectionMeta) error {
 	s.touchedConnID = connID
 	s.touchedMeta = meta
+	if s.touchCh != nil {
+		s.touchCh <- connID
+	}
 	return nil
 }
 
@@ -1119,7 +1220,10 @@ func (s *fakeRuntimeStore) CleanupConnection(_ context.Context, nodeID string, c
 	return nil
 }
 
-func (s *fakeRuntimeStore) ReconcileNode(context.Context, string) error {
+func (s *fakeRuntimeStore) ReconcileNode(_ context.Context, nodeID string) error {
+	if s.reconcileCh != nil {
+		s.reconcileCh <- nodeID
+	}
 	return nil
 }
 

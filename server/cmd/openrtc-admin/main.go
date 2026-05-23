@@ -14,14 +14,25 @@ import (
 	"github.com/openrtc/openrtc/server/internal/config"
 )
 
-func main() {
-	if err := run(context.Background(), config.LoadFromOS, func(cfg config.RuntimeConfig, logger *log.Logger) (adminService, error) {
+var (
+	exit            = os.Exit
+	loadConfig      = config.LoadFromOS
+	newAdminService = func(cfg config.RuntimeConfig, logger *log.Logger) (adminService, error) {
 		return admin.NewService(cfg, logger)
-	}, func(server *http.Server) error {
+	}
+	listenAndServe = func(server *http.Server) error {
 		return server.ListenAndServe()
-	}, os.Stdout); err != nil {
+	}
+)
+
+func main() {
+	mainWithDeps(loadConfig, newAdminService, listenAndServe, os.Stdout)
+}
+
+func mainWithDeps(loadConfig func() (config.RuntimeConfig, error), newService func(config.RuntimeConfig, *log.Logger) (adminService, error), listenAndServe func(*http.Server) error, logOutput io.Writer) {
+	if err := run(context.Background(), loadConfig, newService, listenAndServe, logOutput); err != nil {
 		log.Print(err)
-		os.Exit(1)
+		exit(1)
 	}
 }
 

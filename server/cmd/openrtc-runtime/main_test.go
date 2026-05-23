@@ -12,6 +12,86 @@ import (
 	"github.com/openrtc/openrtc/server/internal/config"
 )
 
+func TestMainExitsWhenConfigFails(t *testing.T) {
+	originalExit := exit
+	originalLoadConfig := loadConfig
+	originalNewService := newRuntimeService
+	originalListenAndServe := listenAndServe
+	defer func() {
+		exit = originalExit
+		loadConfig = originalLoadConfig
+		newRuntimeService = originalNewService
+		listenAndServe = originalListenAndServe
+	}()
+
+	var exitCode int
+	exit = func(code int) {
+		exitCode = code
+		panic("exit")
+	}
+	loadConfig = func() (config.RuntimeConfig, error) { return config.RuntimeConfig{}, errors.New("bad env") }
+	newRuntimeService = func(config.RuntimeConfig, *log.Logger) (runtimeService, error) {
+		t.Fatalf("new service should not be called after config failure")
+		return nil, nil
+	}
+	listenAndServe = func(*http.Server) error {
+		t.Fatalf("listen should not be called after config failure")
+		return nil
+	}
+	defer func() {
+		recovered := recover()
+		if recovered != "exit" {
+			t.Fatalf("expected exit panic, got %v", recovered)
+		}
+		if exitCode != 1 {
+			t.Fatalf("expected exit code 1, got %d", exitCode)
+		}
+	}()
+
+	main()
+}
+
+func TestMainReturnsWithoutExit(t *testing.T) {
+	originalExit := exit
+	originalLoadConfig := loadConfig
+	originalNewService := newRuntimeService
+	originalListenAndServe := listenAndServe
+	defer func() {
+		exit = originalExit
+		loadConfig = originalLoadConfig
+		newRuntimeService = originalNewService
+		listenAndServe = originalListenAndServe
+	}()
+
+	exit = func(code int) {
+		t.Fatalf("main should not exit on success, got %d", code)
+	}
+	loadConfig = func() (config.RuntimeConfig, error) { return runtimeCommandTestConfig(), nil }
+	newRuntimeService = func(config.RuntimeConfig, *log.Logger) (runtimeService, error) {
+		return &stubRuntimeService{handler: http.NewServeMux()}, nil
+	}
+	listenAndServe = func(*http.Server) error { return http.ErrServerClosed }
+
+	main()
+}
+
+func TestMainWithDepsReturnsWithoutExit(t *testing.T) {
+	originalExit := exit
+	defer func() { exit = originalExit }()
+
+	exit = func(code int) {
+		t.Fatalf("mainWithDeps should not exit on success, got %d", code)
+	}
+	mainWithDeps(
+		func() (config.RuntimeConfig, error) { return runtimeCommandTestConfig(), nil },
+		func(config.RuntimeConfig, *log.Logger) (runtimeService, error) {
+			return &stubRuntimeService{handler: http.NewServeMux()}, nil
+		},
+		func(*http.Server) error { return http.ErrServerClosed },
+		io.Discard,
+	)
+}
+
 func TestRunStartsRuntimeServerAndClosesService(t *testing.T) {
 	service := &stubRuntimeService{handler: http.NewServeMux()}
 	cfg := runtimeCommandTestConfig()
