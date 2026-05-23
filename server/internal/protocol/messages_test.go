@@ -20,6 +20,13 @@ func TestParseJoinMessage(t *testing.T) {
 	}
 }
 
+func TestParseErrorMessage(t *testing.T) {
+	err := &ParseError{Message: "bad request"}
+	if err.Error() != "bad request" {
+		t.Fatalf("unexpected parse error string: %q", err.Error())
+	}
+}
+
 func TestParseValidMessageVariants(t *testing.T) {
 	join, err := ParseClientMessage([]byte(`{"t":"JOIN","id":"req-1","room":"tenant-a:room-1","meta":{"limit":25,"cursor":"conn-1"}}`), ParseOptions{})
 	if err != nil {

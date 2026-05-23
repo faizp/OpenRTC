@@ -65,6 +65,9 @@ func TestVerifierValidateAndClaimsAuthorize(t *testing.T) {
 	if !claims.Allows("join", "tenant-a:room-1", true, ":") {
 		t.Fatalf("expected join to be allowed")
 	}
+	if !claims.Allows("publish", "tenant-a:room-1", true, ":") {
+		t.Fatalf("expected publish to be allowed")
+	}
 	if claims.Allows("publish", "tenant-b:room-1", true, ":") {
 		t.Fatalf("expected publish to be rejected")
 	}
@@ -81,6 +84,12 @@ func TestVerifierValidateAndClaimsAuthorize(t *testing.T) {
 	}
 	if (&Claims{Join: []string{"["}}).Allows("join", "tenant-a:room-1", false, ":") {
 		t.Fatalf("expected invalid glob pattern to be ignored")
+	}
+	if !(&Claims{Scope: "presence:tenant-a:*"}).Allows("presence", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected scope presence pattern to allow room")
+	}
+	if (&Claims{Scope: "publish:tenant-a:*"}).Allows("join", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected unrelated scope action to be ignored")
 	}
 	groups = (&Claims{
 		GroupIDs: []string{"", "engineering", "engineering"},

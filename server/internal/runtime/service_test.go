@@ -2,8 +2,12 @@ package runtimeapp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
 	"github.com/openrtc/openrtc/server/internal/auth"
@@ -80,6 +85,50 @@ func TestNewServiceRejectsInvalidRedisURL(t *testing.T) {
 	if service, err := NewService(cfg, nil); err == nil {
 		_ = service.Close()
 		t.Fatalf("expected invalid redis URL to fail")
+	}
+}
+
+func TestNewServiceClosesStoreOnSubscriptionFailures(t *testing.T) {
+	cfg := runtimeTestConfig()
+	cfg.Mode = config.ModeCluster
+	cfg.Redis = &struct {
+		URL           string
+		ChannelPrefix string
+	}{
+		URL:           "redis://example.invalid:6379",
+		ChannelPrefix: "openrtc-test:",
+	}
+	expected := errors.New("subscribe failed")
+	oldNewClusterStore := newClusterStore
+	defer func() {
+		newClusterStore = oldNewClusterStore
+	}()
+
+	tests := []struct {
+		name  string
+		store *fakeRuntimeStore
+	}{
+		{name: "events", store: &fakeRuntimeStore{subscribeErr: expected}},
+		{name: "presence", store: &fakeRuntimeStore{subscribePresenceErr: expected}},
+		{name: "yjs", store: &fakeRuntimeStore{subscribeYJSErr: expected}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			newClusterStore = func(string, string) (cluster.Store, error) {
+				return tc.store, nil
+			}
+			service, err := NewService(cfg, nil)
+			if err == nil {
+				_ = service.Close()
+				t.Fatalf("expected subscription failure")
+			}
+			if !errors.Is(err, expected) {
+				t.Fatalf("expected subscription error, got %v", err)
+			}
+			if !tc.store.closed {
+				t.Fatalf("expected store to be closed after subscription failure")
+			}
+		})
 	}
 }
 
@@ -174,6 +223,101 @@ func TestRoomFromYJSPath(t *testing.T) {
 	}
 }
 
+func TestHandleWSAuthUpgradeAndHelloBranches(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	recorder := httptest.NewRecorder()
+	service.handleWS(recorder, httptest.NewRequest(http.MethodGet, "/ws", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing token 401, got %d", recorder.Code)
+	}
+
+	recorder = httptest.NewRecorder()
+	service.handleWS(recorder, httptest.NewRequest(http.MethodGet, "/ws?token=not-a-jwt", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected invalid token 401, got %d", recorder.Code)
+	}
+
+	authorized, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+		"tenant": "tenant-a",
+		"join":   []string{"tenant-a:*"},
+	})
+	defer cleanup()
+	recorder = httptest.NewRecorder()
+	authorized.handleWS(recorder, httptest.NewRequest(http.MethodGet, "/ws?token="+url.QueryEscape(token), nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected non-websocket upgrade 400, got %d", recorder.Code)
+	}
+
+	server := httptest.NewServer(authorized.Handler())
+	defer server.Close()
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[len("http"):]+"/ws?token="+url.QueryEscape(token), nil)
+	if err != nil {
+		t.Fatalf("dial runtime websocket: %v", err)
+	}
+	var hello outboundMessage
+	if err := ws.ReadJSON(&hello); err != nil {
+		t.Fatalf("read hello: %v", err)
+	}
+	if hello.T != "HELLO" {
+		t.Fatalf("unexpected hello message: %+v", hello)
+	}
+	if err := ws.WriteControl(websocket.PongMessage, []byte("pong"), time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("write runtime pong: %v", err)
+	}
+	_ = ws.Close()
+
+	overflow, overflowToken, overflowCleanup := newRuntimeAuthorizedService(t, map[string]any{
+		"tenant": "tenant-a",
+		"join":   []string{"tenant-a:*"},
+	})
+	defer overflowCleanup()
+	overflow.cfg.Limits.OutboundQueueDepth = 0
+	overflowServer := httptest.NewServer(overflow.Handler())
+	defer overflowServer.Close()
+	overflowWS, _, err := websocket.DefaultDialer.Dial("ws"+overflowServer.URL[len("http"):]+"/ws?token="+url.QueryEscape(overflowToken), nil)
+	if err != nil {
+		t.Fatalf("dial overflow runtime websocket: %v", err)
+	}
+	expectWebSocketClose(t, overflowWS, "runtime hello enqueue overflow")
+
+	errorService, errorToken, errorCleanup := newRuntimeAuthorizedService(t, map[string]any{
+		"tenant":  "tenant-a",
+		"join":    []string{"tenant-a:*"},
+		"publish": []string{"tenant-a:*"},
+		"scope":   "join:tenant-a:* publish:tenant-a:*",
+	})
+	defer errorCleanup()
+	errorServer := httptest.NewServer(errorService.Handler())
+	defer errorServer.Close()
+	errorWS, _, err := websocket.DefaultDialer.Dial("ws"+errorServer.URL[len("http"):]+"/ws?token="+url.QueryEscape(errorToken), nil)
+	if err != nil {
+		t.Fatalf("dial runtime error websocket: %v", err)
+	}
+	var errorHello outboundMessage
+	if err := errorWS.ReadJSON(&errorHello); err != nil {
+		t.Fatalf("read error websocket hello: %v", err)
+	}
+	if err := errorWS.WriteJSON(map[string]any{"t": "JOIN", "id": "join-error", "room": "tenant-a:room-1"}); err != nil {
+		t.Fatalf("write error websocket join: %v", err)
+	}
+	var joined outboundMessage
+	if err := errorWS.ReadJSON(&joined); err != nil {
+		t.Fatalf("read error websocket join: %v", err)
+	}
+	blocked := runtimeTestConn(errorService, "conn-blocked", &auth.Claims{Tenant: "tenant-a"}, 1)
+	blocked.closed = true
+	blocked.send <- outboundMessage{T: "FULL"}
+	errorService.mu.Lock()
+	errorService.rooms["tenant-a:room-1"] = map[string]*clientConn{blocked.id: blocked}
+	errorService.mu.Unlock()
+	if err := errorWS.WriteJSON(map[string]any{"t": "EMIT", "id": "emit-error", "room": "tenant-a:room-1", "event": "doc.update", "payload": map[string]any{"ok": true}}); err != nil {
+		t.Fatalf("write error websocket emit: %v", err)
+	}
+	expectWebSocketClose(t, errorWS, "runtime client message error")
+}
+
 func TestHandleYJSMissingToken(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()
@@ -183,6 +327,254 @@ func TestHandleYJSMissingToken(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected missing yjs token 401, got %d", recorder.Code)
 	}
+}
+
+func TestHandleYJSAuthUpgradeAndDocumentBranches(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	recorder := httptest.NewRecorder()
+	service.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid yjs path 400, got %d", recorder.Code)
+	}
+
+	recorder = httptest.NewRecorder()
+	service.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/tenant-a%3Adoc-1?token=not-a-jwt", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected invalid yjs token 401, got %d", recorder.Code)
+	}
+
+	joinDenied, deniedToken, deniedCleanup := newRuntimeAuthorizedService(t, map[string]any{
+		"tenant": "tenant-a",
+	})
+	defer deniedCleanup()
+	recorder = httptest.NewRecorder()
+	joinDenied.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/tenant-a%3Adoc-1?token="+url.QueryEscape(deniedToken), nil))
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected yjs join forbidden 403, got %d", recorder.Code)
+	}
+
+	authorized, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+		"tenant":  "tenant-a",
+		"join":    []string{"tenant-a:*"},
+		"publish": []string{"tenant-a:*"},
+		"scope":   "join:tenant-a:* publish:tenant-a:*",
+	})
+	defer cleanup()
+	authorized.cfg.Limits.OutboundQueueDepth = 4
+	recorder = httptest.NewRecorder()
+	authorized.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/tenant-a%3Adoc-1?token="+url.QueryEscape(token), nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected non-websocket yjs upgrade 400, got %d", recorder.Code)
+	}
+
+	store := &fakeRuntimeStore{
+		yjsDocument: cluster.YJSDocument{
+			Snapshot: []byte("snapshot"),
+			Updates:  [][]byte{[]byte("update-1")},
+		},
+	}
+	authorized.store = store
+	server := httptest.NewServer(authorized.Handler())
+	defer server.Close()
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[len("http"):]+"/yjs/tenant-a%3Adoc-1?token="+url.QueryEscape(token), nil)
+	if err != nil {
+		t.Fatalf("dial yjs websocket: %v", err)
+	}
+	_, snapshot, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("read yjs snapshot: %v", err)
+	}
+	if len(snapshot) == 0 || snapshot[0] != yjsFrameSnapshot || string(snapshot[1:]) != "snapshot" {
+		t.Fatalf("unexpected yjs snapshot frame: %v", snapshot)
+	}
+	_, update, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("read yjs update: %v", err)
+	}
+	if len(update) == 0 || update[0] != yjsFrameUpdate || string(update[1:]) != "update-1" {
+		t.Fatalf("unexpected yjs update frame: %v", update)
+	}
+	if err := ws.WriteControl(websocket.PongMessage, []byte("pong"), time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("write yjs pong: %v", err)
+	}
+	_ = ws.Close()
+}
+
+func TestHandleYJSFrameBranches(t *testing.T) {
+	t.Run("initial send error", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant": "tenant-a",
+			"join":   []string{"tenant-a:*"},
+			"scope":  "join:tenant-a:*",
+		})
+		defer cleanup()
+		service.store = &fakeRuntimeStore{yjsDocument: cluster.YJSDocument{Snapshot: []byte("snapshot")}}
+		oldSendInitialYJSDocument := sendInitialYJSDocument
+		sendInitialYJSDocument = func(*yjsConn, cluster.YJSDocument) error {
+			return errors.New("initial send failed")
+		}
+		defer func() {
+			sendInitialYJSDocument = oldSendInitialYJSDocument
+		}()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		expectWebSocketClose(t, ws, "yjs initial send error")
+	})
+
+	t.Run("load error", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		service.store = &fakeRuntimeStore{yjsErr: errors.New("load failed")}
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		expectWebSocketClose(t, ws, "yjs load error")
+	})
+
+	t.Run("invalid frame shape", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.TextMessage, []byte("bad")); err != nil {
+			t.Fatalf("write invalid yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "invalid yjs frame")
+	})
+
+	t.Run("publish forbidden", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant": "tenant-a",
+			"join":   []string{"tenant-a:*"},
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("update")...)); err != nil {
+			t.Fatalf("write forbidden yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "forbidden yjs publish")
+	})
+
+	t.Run("rate limited", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		service.cfg.Limits.EmitsPerSecond = 0
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("update")...)); err != nil {
+			t.Fatalf("write rate limited yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "rate limited yjs publish")
+	})
+
+	t.Run("invalid kind", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, []byte{99, 'x'}); err != nil {
+			t.Fatalf("write invalid kind yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "invalid yjs kind")
+	})
+
+	t.Run("store append error", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		service.store = &fakeRuntimeStore{roomRecord: runtimeWritableRoomRecord(), appendErr: errors.New("append failed")}
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("update")...)); err != nil {
+			t.Fatalf("write append error yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "yjs append error")
+	})
+
+	t.Run("broadcast overflow", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		service.store = &fakeRuntimeStore{roomRecord: runtimeWritableRoomRecord()}
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		blocked := &yjsConn{id: "blocked-yjs", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{}), closed: true}
+		blocked.send <- []byte("full")
+		service.mu.Lock()
+		service.yjsRooms["tenant-a:doc-1"][blocked.id] = blocked
+		service.mu.Unlock()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("update")...)); err != nil {
+			t.Fatalf("write overflow yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "yjs broadcast overflow")
+	})
+
+	t.Run("publish error", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		service.store = &fakeRuntimeStore{roomRecord: runtimeWritableRoomRecord(), publishYJSErr: errors.New("publish failed")}
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("update")...)); err != nil {
+			t.Fatalf("write publish error yjs frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "yjs publish error")
+	})
+
+	t.Run("successful update", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		store := &fakeRuntimeStore{roomRecord: runtimeWritableRoomRecord(), appendCh: make(chan []byte, 1)}
+		service.store = store
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("client-update")...)); err != nil {
+			t.Fatalf("write successful yjs frame: %v", err)
+		}
+		if got := receiveRuntimeTestValue(t, store.appendCh, "stored yjs update"); string(got) != "client-update" {
+			t.Fatalf("unexpected stored yjs update: %q", string(got))
+		}
+	})
 }
 
 func TestConnectionQueueHelpers(t *testing.T) {
@@ -468,6 +860,43 @@ func TestRuntimeHandleClientMessageParseError(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, conn); got.T != "ERROR" {
 		t.Fatalf("unexpected parse error response: %+v", got)
+	}
+}
+
+func TestRuntimeHandleClientMessageDispatchesValidTypes(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	claims := &auth.Claims{
+		Tenant:   "tenant-a",
+		Join:     []string{"tenant-a:*"},
+		Publish:  []string{"tenant-a:*"},
+		Presence: []string{"tenant-a:*"},
+	}
+	conn := runtimeTestConn(service, "conn-dispatch", claims, 8)
+	if err := service.handleClientMessage(conn, []byte(`{"t":"JOIN","id":"join-1","room":"tenant-a:room-1"}`)); err != nil {
+		t.Fatalf("dispatch join: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.ID != "join-1" {
+		t.Fatalf("unexpected join dispatch response: %+v", got)
+	}
+	if err := service.handleClientMessage(conn, []byte(`{"t":"EMIT","id":"emit-1","room":"tenant-a:room-1","event":"doc.update","payload":{"ok":true}}`)); err != nil {
+		t.Fatalf("dispatch emit: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "EVENT" || got.Event != "doc.update" {
+		t.Fatalf("unexpected emit dispatch response: %+v", got)
+	}
+	if err := service.handleClientMessage(conn, []byte(`{"t":"PRESENCE_SET","id":"presence-1","room":"tenant-a:room-1","payload":{"cursor":{"x":1}}}`)); err != nil {
+		t.Fatalf("dispatch presence: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "PRESENCE" {
+		t.Fatalf("unexpected presence dispatch response: %+v", got)
+	}
+	if err := service.handleClientMessage(conn, []byte(`{"t":"LEAVE","id":"leave-1","room":"tenant-a:room-1"}`)); err != nil {
+		t.Fatalf("dispatch leave: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "LEFT" || got.ID != "leave-1" {
+		t.Fatalf("unexpected leave dispatch response: %+v", got)
 	}
 }
 
@@ -824,6 +1253,37 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	}
 }
 
+func TestSendYJSDocument(t *testing.T) {
+	conn := &yjsConn{
+		send: make(chan []byte, 2),
+		done: make(chan struct{}),
+	}
+	if err := sendYJSDocument(conn, cluster.YJSDocument{
+		Snapshot: []byte("snapshot"),
+		Updates:  [][]byte{[]byte("update")},
+	}); err != nil {
+		t.Fatalf("send yjs document: %v", err)
+	}
+	if frame := <-conn.send; len(frame) == 0 || frame[0] != yjsFrameSnapshot || string(frame[1:]) != "snapshot" {
+		t.Fatalf("unexpected snapshot frame: %v", frame)
+	}
+	if frame := <-conn.send; len(frame) == 0 || frame[0] != yjsFrameUpdate || string(frame[1:]) != "update" {
+		t.Fatalf("unexpected update frame: %v", frame)
+	}
+
+	closedSnapshot := &yjsConn{done: make(chan struct{})}
+	close(closedSnapshot.done)
+	if err := sendYJSDocument(closedSnapshot, cluster.YJSDocument{Snapshot: []byte("snapshot")}); err == nil {
+		t.Fatalf("expected closed snapshot enqueue to fail")
+	}
+
+	closedUpdate := &yjsConn{done: make(chan struct{})}
+	close(closedUpdate.done)
+	if err := sendYJSDocument(closedUpdate, cluster.YJSDocument{Updates: [][]byte{[]byte("update")}}); err == nil {
+		t.Fatalf("expected closed update enqueue to fail")
+	}
+}
+
 func TestRuntimeBackgroundLoopsTickAndStop(t *testing.T) {
 	oldHeartbeatInterval := heartbeatInterval
 	oldReconcileInterval := reconcileInterval
@@ -875,6 +1335,106 @@ func TestRuntimeBackgroundLoopsTickAndStop(t *testing.T) {
 	if got := receiveRuntimeTestValue(t, store.reconcileCh, "reconcile node"); got != service.cfg.NodeID {
 		t.Fatalf("unexpected reconciled node: %s", got)
 	}
+
+	cancelService := newRuntimeUnitService(t)
+	defer cancelService.Close()
+	serverYJSCancel, clientYJSCancel, yjsCancelCleanup := runtimeTestWebSocketPair(t)
+	defer yjsCancelCleanup()
+	yjsCancel := &yjsConn{
+		id:   "yjs-cancel",
+		ws:   serverYJSCancel,
+		done: make(chan struct{}),
+	}
+	yjsExited := make(chan struct{})
+	go func() {
+		cancelService.yjsHeartbeatLoop(yjsCancel)
+		close(yjsExited)
+	}()
+	cancelService.cancel()
+	receiveRuntimeTestSignal(t, yjsExited, "yjs heartbeat service cancel")
+	_ = clientYJSCancel.Close()
+}
+
+func TestRuntimeWriteLoopsSendAndExit(t *testing.T) {
+	serverWS, clientWS, cleanup := runtimeTestWebSocketPair(t)
+	defer cleanup()
+	conn := &clientConn{
+		ws:   serverWS,
+		send: make(chan outboundMessage, 1),
+		done: make(chan struct{}),
+	}
+	exited := make(chan struct{})
+	go func() {
+		conn.writeLoop()
+		close(exited)
+	}()
+	conn.send <- outboundMessage{T: "HELLO", ID: "req-1"}
+	var message outboundMessage
+	if err := clientWS.ReadJSON(&message); err != nil {
+		t.Fatalf("read runtime websocket message: %v", err)
+	}
+	if message.T != "HELLO" || message.ID != "req-1" {
+		t.Fatalf("unexpected runtime websocket message: %+v", message)
+	}
+	close(conn.done)
+	receiveRuntimeTestSignal(t, exited, "runtime write loop exit")
+
+	serverYJS, clientYJS, yjsCleanup := runtimeTestWebSocketPair(t)
+	defer yjsCleanup()
+	yjs := &yjsConn{
+		ws:   serverYJS,
+		send: make(chan []byte, 1),
+		done: make(chan struct{}),
+	}
+	yjsExited := make(chan struct{})
+	go func() {
+		yjs.writeLoop()
+		close(yjsExited)
+	}()
+	yjs.send <- append([]byte{yjsFrameUpdate}, []byte("update")...)
+	messageType, frame, err := clientYJS.ReadMessage()
+	if err != nil {
+		t.Fatalf("read yjs websocket message: %v", err)
+	}
+	if messageType != websocket.BinaryMessage || string(frame) != string(append([]byte{yjsFrameUpdate}, []byte("update")...)) {
+		t.Fatalf("unexpected yjs websocket frame: type=%d frame=%v", messageType, frame)
+	}
+	close(yjs.done)
+	receiveRuntimeTestSignal(t, yjsExited, "yjs write loop exit")
+}
+
+func TestRuntimeWriteLoopsExitOnWriteError(t *testing.T) {
+	serverWS, _, cleanup := runtimeTestWebSocketPair(t)
+	defer cleanup()
+	conn := &clientConn{
+		ws:   serverWS,
+		send: make(chan outboundMessage, 1),
+		done: make(chan struct{}),
+	}
+	exited := make(chan struct{})
+	go func() {
+		conn.writeLoop()
+		close(exited)
+	}()
+	_ = serverWS.Close()
+	conn.send <- outboundMessage{T: "HELLO"}
+	receiveRuntimeTestSignal(t, exited, "runtime write loop write error")
+
+	serverYJS, _, yjsCleanup := runtimeTestWebSocketPair(t)
+	defer yjsCleanup()
+	yjs := &yjsConn{
+		ws:   serverYJS,
+		send: make(chan []byte, 1),
+		done: make(chan struct{}),
+	}
+	yjsExited := make(chan struct{})
+	go func() {
+		yjs.writeLoop()
+		close(yjsExited)
+	}()
+	_ = serverYJS.Close()
+	yjs.send <- append([]byte{yjsFrameUpdate}, []byte("update")...)
+	receiveRuntimeTestSignal(t, yjsExited, "yjs write loop write error")
 }
 
 func TestEmitLimiter(t *testing.T) {
@@ -899,6 +1459,85 @@ func TestNewConnIDShape(t *testing.T) {
 	}
 }
 
+func TestNewConnIDPanicsWhenRandomReadFails(t *testing.T) {
+	oldRandomRead := randomRead
+	randomRead = func([]byte) (int, error) {
+		return 0, errors.New("random failed")
+	}
+	defer func() {
+		randomRead = oldRandomRead
+		if recovered := recover(); recovered == nil {
+			t.Fatalf("expected newConnID to panic")
+		}
+	}()
+
+	_ = newConnID()
+}
+
+func newRuntimeAuthorizedService(t *testing.T, extraClaims map[string]any) (*Service, string, func()) {
+	t.Helper()
+	jwks, signToken := newRuntimeJWKS(t)
+	cfg := runtimeTestConfig()
+	cfg.Auth.JWKSURL = jwks.URL
+	service, err := NewService(cfg, nil)
+	if err != nil {
+		jwks.Close()
+		t.Fatalf("new authorized runtime service: %v", err)
+	}
+	cleanup := func() {
+		_ = service.Close()
+		jwks.Close()
+	}
+	return service, signToken(t, extraClaims), cleanup
+}
+
+func newRuntimeJWKS(t *testing.T) (*httptest.Server, func(*testing.T, map[string]any) string) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate runtime jwks key: %v", err)
+	}
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				{
+					"kty": "RSA",
+					"kid": "runtime-key",
+					"n":   base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.PublicKey.E)).Bytes()),
+				},
+			},
+		})
+	}))
+	signToken := func(t *testing.T, extraClaims map[string]any) string {
+		t.Helper()
+		claims := jwt.MapClaims{
+			"iss": "https://issuer.example.com",
+			"aud": "openrtc-clients",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"sub": "user-1",
+		}
+		for key, value := range extraClaims {
+			claims[key] = value
+		}
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+		token.Header["kid"] = "runtime-key"
+		raw, err := token.SignedString(privateKey)
+		if err != nil {
+			t.Fatalf("sign runtime token: %v", err)
+		}
+		return raw
+	}
+	return jwks, signToken
+}
+
+func runtimeWritableRoomRecord() cluster.RoomRecord {
+	return cluster.RoomRecord{
+		ID:              "tenant-a:doc-1",
+		DefaultAccesses: []string{cluster.PermissionRoomWrite},
+	}
+}
+
 func runtimeTestConfig() config.RuntimeConfig {
 	cfg := config.RuntimeConfig{}
 	cfg.Auth.Issuer = "https://issuer.example.com"
@@ -908,6 +1547,7 @@ func runtimeTestConfig() config.RuntimeConfig {
 	cfg.Server.WSPath = "/ws"
 	cfg.Limits.OutboundQueueDepth = 1
 	cfg.Limits.EmitsPerSecond = 100
+	cfg.Limits.YJSMaxBytes = 1024
 	cfg.Tenant.EnforcePrefix = true
 	cfg.Tenant.Separator = ":"
 	return cfg
@@ -962,6 +1602,38 @@ func receiveRuntimeTestValue[T any](t *testing.T, ch <-chan T, label string) T {
 	}
 }
 
+func receiveRuntimeTestSignal(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func dialRuntimeYJS(t *testing.T, service *Service, token string) (*websocket.Conn, func()) {
+	t.Helper()
+	server := httptest.NewServer(service.Handler())
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[len("http"):]+"/yjs/tenant-a%3Adoc-1?token="+url.QueryEscape(token), nil)
+	if err != nil {
+		server.Close()
+		t.Fatalf("dial runtime yjs websocket: %v", err)
+	}
+	cleanup := func() {
+		_ = ws.Close()
+		server.Close()
+	}
+	return ws, cleanup
+}
+
+func expectWebSocketClose(t *testing.T, ws *websocket.Conn, label string) {
+	t.Helper()
+	_ = ws.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := ws.ReadMessage(); err == nil {
+		t.Fatalf("expected websocket close for %s", label)
+	}
+}
+
 func runtimeTestWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn, func()) {
 	t.Helper()
 	done := make(chan struct{})
@@ -1004,23 +1676,28 @@ type fakeRuntimeStore struct {
 	cleanupNodeID string
 	cleanupConnID string
 
-	publishEventErr    error
-	publishPresenceErr error
-	publishedPresence  []cluster.PresenceEvent
-	joinErr            error
-	leaveErr           error
-	setPresenceErr     error
-	snapshot           cluster.Snapshot
-	snapshotErr        error
-	yjsDocument        cluster.YJSDocument
-	yjsErr             error
-	appendSeq          int64
-	appendedUpdate     []byte
-	appendErr          error
-	storedSnapshot     []byte
-	storeSnapshotErr   error
-	publishYJSErr      error
-	reconcileCh        chan string
+	publishEventErr      error
+	publishPresenceErr   error
+	publishedPresence    []cluster.PresenceEvent
+	joinErr              error
+	leaveErr             error
+	setPresenceErr       error
+	snapshot             cluster.Snapshot
+	snapshotErr          error
+	yjsDocument          cluster.YJSDocument
+	yjsErr               error
+	appendSeq            int64
+	appendedUpdate       []byte
+	appendCh             chan []byte
+	appendErr            error
+	storedSnapshot       []byte
+	storeSnapshotErr     error
+	publishYJSErr        error
+	reconcileCh          chan string
+	subscribeErr         error
+	subscribePresenceErr error
+	subscribeYJSErr      error
+	closed               bool
 }
 
 func (s *fakeRuntimeStore) Healthy(context.Context) error {
@@ -1032,7 +1709,7 @@ func (s *fakeRuntimeStore) PublishEvent(context.Context, cluster.PublishedEvent)
 }
 
 func (s *fakeRuntimeStore) Subscribe(context.Context, func(cluster.PublishedEvent)) error {
-	return nil
+	return s.subscribeErr
 }
 
 func (s *fakeRuntimeStore) PublishPresence(_ context.Context, event cluster.PresenceEvent) error {
@@ -1043,7 +1720,7 @@ func (s *fakeRuntimeStore) PublishPresence(_ context.Context, event cluster.Pres
 }
 
 func (s *fakeRuntimeStore) SubscribePresence(context.Context, func(cluster.PresenceEvent)) error {
-	return nil
+	return s.subscribePresenceErr
 }
 
 func (s *fakeRuntimeStore) PublishYJSEvent(context.Context, cluster.YJSEvent) error {
@@ -1051,7 +1728,7 @@ func (s *fakeRuntimeStore) PublishYJSEvent(context.Context, cluster.YJSEvent) er
 }
 
 func (s *fakeRuntimeStore) SubscribeYJSEvents(context.Context, func(cluster.YJSEvent)) error {
-	return nil
+	return s.subscribeYJSErr
 }
 
 func (s *fakeRuntimeStore) TouchConnection(_ context.Context, connID string, meta cluster.ConnectionMeta) error {
@@ -1212,6 +1889,9 @@ func (s *fakeRuntimeStore) AppendYJSUpdate(_ context.Context, _ string, update [
 		return 0, s.appendErr
 	}
 	s.appendedUpdate = append([]byte(nil), update...)
+	if s.appendCh != nil {
+		s.appendCh <- append([]byte(nil), update...)
+	}
 	if s.appendSeq == 0 {
 		s.appendSeq = 1
 	}
@@ -1249,5 +1929,6 @@ func (s *fakeRuntimeStore) AggregateStats(context.Context) (stats.Snapshot, erro
 }
 
 func (s *fakeRuntimeStore) Close() error {
+	s.closed = true
 	return nil
 }

@@ -124,12 +124,6 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 	}
 
 	meta := envelope["meta"]
-	if len(meta) > 0 {
-		if !json.Valid(meta) {
-			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Meta must be an object when present"}
-		}
-	}
-
 	switch message.Type {
 	case TypeJoin:
 		if len(meta) > 0 {

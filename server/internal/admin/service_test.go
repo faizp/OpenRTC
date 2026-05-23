@@ -154,6 +154,21 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	}
 }
 
+func TestNewRecordIDPanicsWhenRandomReadFails(t *testing.T) {
+	oldRandomRead := randomRead
+	randomRead = func([]byte) (int, error) {
+		return 0, errors.New("random failed")
+	}
+	defer func() {
+		randomRead = oldRandomRead
+		if recovered := recover(); recovered == nil {
+			t.Fatalf("expected newRecordID to panic")
+		}
+	}()
+
+	_ = newRecordID("th")
+}
+
 func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {
 	cfg := config.RuntimeConfig{}
 	cfg.Tenant.EnforcePrefix = true
@@ -564,6 +579,12 @@ func TestNotificationValidation(t *testing.T) {
 	}
 	if err := validateActivityData(json.RawMessage(`{"bad":`), true, 128); err == nil || err.Code != openrtcerr.CodeBadRequest {
 		t.Fatalf("expected invalid activityData JSON to fail, got %v", err)
+	}
+	if err := validateActivityData(json.RawMessage(`[]`), true, 128); err == nil || err.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected array activityData to fail, got %v", err)
+	}
+	if err := validateActivityData(json.RawMessage(`null`), true, 128); err == nil || err.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected null activityData to fail, got %v", err)
 	}
 	if !unreadOnlyQuery("unread:true", "") || !unreadOnlyQuery("", "true") || unreadOnlyQuery("unread:false", "") {
 		t.Fatalf("unexpected unread query parsing")
@@ -1063,6 +1084,10 @@ func TestAdminCreateRoomAndActiveUsersErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid create access 400, got %d", resp.Code)
 	}
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms", `{"id":"tenant-a:bad room","metadata":{"title":"Draft"}}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid create room id 400, got %d", resp.Code)
+	}
 
 	store.createRoomErr = cluster.ErrRoomAlreadyExists
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms", `{"id":"tenant-a:room-1","metadata":{"title":"Draft"}}`)
@@ -1086,6 +1111,11 @@ func TestAdminCreateRoomAndActiveUsersErrorBranches(t *testing.T) {
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/active_users", "")
 	if resp.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected active users POST 405, got %d", resp.Code)
+	}
+	noStoreHandler := newTestAdminService(verifier, nil).Handler()
+	resp = performAdminRequest(noStoreHandler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/active_users", "")
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected active users without store 503, got %d", resp.Code)
 	}
 
 	forbiddenVerifier, forbiddenToken, forbiddenCleanup := newAdminTestVerifier(t, map[string]any{

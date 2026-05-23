@@ -25,6 +25,8 @@ import (
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
+var randomRead = rand.Read
+
 type Service struct {
 	cfg      config.RuntimeConfig
 	logger   *log.Logger
@@ -1481,14 +1483,14 @@ func validateActivityData(data json.RawMessage, optional bool, maxBytes int) *pr
 	if len(data) > maxBytes {
 		return &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "activityData exceeds max size"}
 	}
-	if !json.Valid(data) || data[0] != '{' {
-		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData must be a JSON object"}
-	}
 	var values map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if err := decoder.Decode(&values); err != nil {
 		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData must be valid JSON"}
+	}
+	if values == nil {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "activityData must be a JSON object"}
 	}
 	for _, value := range values {
 		switch value.(type) {
@@ -1611,7 +1613,7 @@ func commentRecordFromRequest(room string, threadID string, request CommentCreat
 
 func newRecordID(prefix string) string {
 	raw := make([]byte, 12)
-	if _, err := rand.Read(raw); err != nil {
+	if _, err := randomRead(raw); err != nil {
 		panic(err)
 	}
 	return prefix + "_" + hex.EncodeToString(raw)
@@ -1703,9 +1705,6 @@ func readNotificationSettings(w http.ResponseWriter, r *http.Request, maxBytes i
 	if err := json.Compact(&compacted, raw); err != nil {
 		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "notification settings must be valid JSON"}
 	}
-	if compacted.Len() > maxBytes {
-		return nil, &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "notification settings exceed max size"}
-	}
 	return json.RawMessage(compacted.Bytes()), nil
 }
 
@@ -1720,9 +1719,6 @@ func readStorageDocument(w http.ResponseWriter, r *http.Request, maxBytes int) (
 	var compacted bytes.Buffer
 	if err := json.Compact(&compacted, raw); err != nil {
 		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage document must be valid JSON"}
-	}
-	if compacted.Len() > maxBytes {
-		return nil, &protocol.ParseError{Code: openrtcerr.CodePayloadTooLarge, Message: "storage document exceeds max size"}
 	}
 	document := json.RawMessage(compacted.Bytes())
 	if err := cluster.ValidateStorageDocument(document); err != nil {

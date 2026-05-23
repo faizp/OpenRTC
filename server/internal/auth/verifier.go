@@ -61,7 +61,7 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error)
 		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg(), jwt.SigningMethodRS384.Alg(), jwt.SigningMethodRS512.Alg()}),
 	)
 
-	token, err := parser.ParseWithClaims(rawToken, claims, func(token *jwt.Token) (interface{}, error) {
+	_, err := parser.ParseWithClaims(rawToken, claims, func(token *jwt.Token) (interface{}, error) {
 		kid, _ := token.Header["kid"].(string)
 		key, err := v.lookupKey(ctx, kid)
 		if err != nil {
@@ -71,9 +71,6 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error)
 	})
 	if err != nil {
 		return nil, err
-	}
-	if !token.Valid {
-		return nil, errors.New("token is invalid")
 	}
 	return claims, nil
 }

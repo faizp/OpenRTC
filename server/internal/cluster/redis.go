@@ -299,26 +299,18 @@ func (s *RedisStore) Subscribe(ctx context.Context, handler func(PublishedEvent)
 		return err
 	}
 
+	go closePubSubOnDone(ctx, pubsub)
 	go func() {
 		defer pubsub.Close()
-		channel := pubsub.Channel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case message, ok := <-channel:
-				if !ok {
-					return
-				}
-				var event PublishedEvent
-				if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
-					continue
-				}
-				if event.Room == "" || event.Event == "" {
-					continue
-				}
-				handler(event)
+		for message := range pubsub.Channel() {
+			var event PublishedEvent
+			if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
+				continue
 			}
+			if event.Room == "" || event.Event == "" {
+				continue
+			}
+			handler(event)
 		}
 	}()
 
@@ -340,26 +332,18 @@ func (s *RedisStore) SubscribePresence(ctx context.Context, handler func(Presenc
 		return err
 	}
 
+	go closePubSubOnDone(ctx, pubsub)
 	go func() {
 		defer pubsub.Close()
-		channel := pubsub.Channel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case message, ok := <-channel:
-				if !ok {
-					return
-				}
-				var event PresenceEvent
-				if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
-					continue
-				}
-				if event.Room == "" || event.ConnID == "" {
-					continue
-				}
-				handler(event)
+		for message := range pubsub.Channel() {
+			var event PresenceEvent
+			if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
+				continue
 			}
+			if event.Room == "" || event.ConnID == "" {
+				continue
+			}
+			handler(event)
 		}
 	}()
 
@@ -367,10 +351,7 @@ func (s *RedisStore) SubscribePresence(ctx context.Context, handler func(Presenc
 }
 
 func (s *RedisStore) PublishYJSEvent(ctx context.Context, event YJSEvent) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
+	payload, _ := json.Marshal(event)
 	return s.client.Publish(ctx, s.channelPrefix+"yjs:"+event.Room, payload).Err()
 }
 
@@ -381,30 +362,27 @@ func (s *RedisStore) SubscribeYJSEvents(ctx context.Context, handler func(YJSEve
 		return err
 	}
 
+	go closePubSubOnDone(ctx, pubsub)
 	go func() {
 		defer pubsub.Close()
-		channel := pubsub.Channel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case message, ok := <-channel:
-				if !ok {
-					return
-				}
-				var event YJSEvent
-				if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
-					continue
-				}
-				if event.Room == "" || len(event.Update) == 0 {
-					continue
-				}
-				handler(event)
+		for message := range pubsub.Channel() {
+			var event YJSEvent
+			if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
+				continue
 			}
+			if event.Room == "" || len(event.Update) == 0 {
+				continue
+			}
+			handler(event)
 		}
 	}()
 
 	return nil
+}
+
+func closePubSubOnDone(ctx context.Context, pubsub *redis.PubSub) {
+	<-ctx.Done()
+	_ = pubsub.Close()
 }
 
 func (s *RedisStore) TouchConnection(ctx context.Context, connID string, meta ConnectionMeta) error {
@@ -1128,13 +1106,10 @@ func (s *RedisStore) AppendYJSUpdate(ctx context.Context, room string, update []
 	if err != nil {
 		return 0, err
 	}
-	record, err := encodeYJSUpdateRecord(yjsUpdateRecord{
+	record := encodeYJSUpdateRecord(yjsUpdateRecord{
 		Seq:    seq,
 		Update: append([]byte(nil), update...),
 	})
-	if err != nil {
-		return 0, err
-	}
 	if err := s.client.ZAdd(ctx, roomYJSUpdatesV2Key(room), redis.Z{
 		Score:  float64(seq),
 		Member: record,
@@ -1169,14 +1144,11 @@ func (s *RedisStore) CompactYJSDocument(ctx context.Context, room string, checkp
 		CheckpointSeq: checkpointSeq,
 		Snapshot:      append([]byte(nil), snapshot...),
 	}
-	raw, err := encodeYJSSnapshotRecord(record)
-	if err != nil {
-		return err
-	}
+	raw := encodeYJSSnapshotRecord(record)
 	pipe := s.client.TxPipeline()
 	pipe.Set(ctx, roomYJSSnapshotV2Key(room), raw, 0)
 	pipe.ZRemRangeByScore(ctx, roomYJSUpdatesV2Key(room), "-inf", strconv.FormatInt(checkpointSeq, 10))
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
@@ -1288,10 +1260,7 @@ func (s *RedisStore) loadYJSSnapshotRecord(ctx context.Context, room string) (yj
 }
 
 func (s *RedisStore) storeYJSSnapshotRecord(ctx context.Context, room string, record yjsSnapshotRecord) error {
-	raw, err := encodeYJSSnapshotRecord(record)
-	if err != nil {
-		return err
-	}
+	raw := encodeYJSSnapshotRecord(record)
 	return s.client.Set(ctx, roomYJSSnapshotV2Key(room), raw, 0).Err()
 }
 
@@ -1682,10 +1651,7 @@ func ApplyJSONPatch(document json.RawMessage, operations []JSONPatchOperation) (
 		}
 		root = next
 	}
-	raw, err := json.Marshal(root)
-	if err != nil {
-		return nil, err
-	}
+	raw, _ := json.Marshal(root)
 	if !isJSONObject(raw) {
 		return nil, fmt.Errorf("%w: storage root must remain a JSON object", ErrStoragePatch)
 	}
@@ -1835,10 +1801,7 @@ func applyJSONPatchOperation(root any, operation JSONPatchOperation) (any, error
 		if err != nil {
 			return nil, err
 		}
-		withoutSource, err := removeJSONValue(root, from)
-		if err != nil {
-			return nil, err
-		}
+		withoutSource, _ := removeJSONValue(root, from)
 		return addJSONValue(withoutSource, tokens, value)
 	default:
 		return nil, fmt.Errorf("%w: unsupported operation %q", ErrStoragePatch, operation.Op)
@@ -2052,12 +2015,9 @@ func isJSONObject(raw json.RawMessage) bool {
 	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
-func encodeYJSUpdateRecord(record yjsUpdateRecord) (string, error) {
-	raw, err := json.Marshal(record)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
+func encodeYJSUpdateRecord(record yjsUpdateRecord) string {
+	raw, _ := json.Marshal(record)
+	return string(raw)
 }
 
 func decodeYJSUpdateRecord(raw string) (yjsUpdateRecord, error) {
@@ -2071,12 +2031,9 @@ func decodeYJSUpdateRecord(raw string) (yjsUpdateRecord, error) {
 	return record, nil
 }
 
-func encodeYJSSnapshotRecord(record yjsSnapshotRecord) (string, error) {
-	raw, err := json.Marshal(record)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
+func encodeYJSSnapshotRecord(record yjsSnapshotRecord) string {
+	raw, _ := json.Marshal(record)
+	return string(raw)
 }
 
 func decodeYJSSnapshotRecord(raw string) (yjsSnapshotRecord, error) {

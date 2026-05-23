@@ -522,6 +522,34 @@ func TestRedisCommandFailureBranches(t *testing.T) {
 		t.Fatalf("expected reconcile exists failure, got %v", err)
 	}
 	hook.clear()
+
+	if _, err := store.CreateRoom(ctx, RoomRecord{ID: "tenant-a:vanishing"}); err != nil {
+		t.Fatalf("seed vanishing room: %v", err)
+	}
+	deleteClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	defer deleteClient.Close()
+	deletedRoom := false
+	hook.processFailure = func(cmd redis.Cmder) error {
+		if strings.ToLower(cmd.Name()) != "hgetall" || len(cmd.Args()) < 2 {
+			return nil
+		}
+		key, _ := cmd.Args()[1].(string)
+		if key == roomRecordKey("tenant-a:vanishing") && !deletedRoom {
+			deletedRoom = true
+			if err := deleteClient.Del(ctx, key).Err(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	rooms, err := store.ListRooms(ctx, "tenant-a:vanishing", 0, 10)
+	if err != nil {
+		t.Fatalf("vanishing room list should skip missing record: %v", err)
+	}
+	if len(rooms.Rooms) != 0 {
+		t.Fatalf("expected vanished room to be skipped, got %+v", rooms.Rooms)
+	}
+	hook.clear()
 }
 
 func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
@@ -648,14 +676,8 @@ func TestRedisYJSDocumentSkipsInvalidSequencedRecords(t *testing.T) {
 	if err := store.CompactYJSDocument(ctx, "tenant-a:doc-1", 5, []byte("checkpoint-5")); err != nil {
 		t.Fatalf("compact initial checkpoint: %v", err)
 	}
-	oldRecord, err := encodeYJSUpdateRecord(yjsUpdateRecord{Seq: 4, Update: []byte("old")})
-	if err != nil {
-		t.Fatalf("encode old update: %v", err)
-	}
-	currentRecord, err := encodeYJSUpdateRecord(yjsUpdateRecord{Seq: 6, Update: []byte("current")})
-	if err != nil {
-		t.Fatalf("encode current update: %v", err)
-	}
+	oldRecord := encodeYJSUpdateRecord(yjsUpdateRecord{Seq: 4, Update: []byte("old")})
+	currentRecord := encodeYJSUpdateRecord(yjsUpdateRecord{Seq: 6, Update: []byte("current")})
 	if err := store.client.ZAdd(ctx, roomYJSUpdatesV2Key("tenant-a:doc-1"),
 		redis.Z{Score: 4, Member: oldRecord},
 		redis.Z{Score: 5.5, Member: `{`},
@@ -966,6 +988,21 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if _, err := store.ListThreads(ctx, "tenant-a:room-1"); err == nil {
 		t.Fatalf("expected corrupt thread record to fail listing")
 	}
+	earlyTime := time.Date(2026, 5, 23, 11, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	lateTime := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-0"), "created_at", earlyTime).Err(); err != nil {
+		t.Fatalf("restore thread-0 time: %v", err)
+	}
+	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-1"), "created_at", lateTime).Err(); err != nil {
+		t.Fatalf("seed thread-1 later time: %v", err)
+	}
+	threads, err := store.ListThreads(ctx, "tenant-a:room-1")
+	if err != nil {
+		t.Fatalf("list ordered threads: %v", err)
+	}
+	if len(threads) != 2 || threads[0].ID != "thread-0" || threads[1].ID != "thread-1" {
+		t.Fatalf("expected threads to sort by creation time, got %+v", threads)
+	}
 	tieTime := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	if err := store.client.HSet(ctx, roomThreadKey("tenant-a:room-1", "thread-1"), "created_at", tieTime).Err(); err != nil {
 		t.Fatalf("seed thread-1 tie time: %v", err)
@@ -976,7 +1013,7 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if err := store.client.SAdd(ctx, roomThreadsKey("tenant-a:room-1"), "missing-thread").Err(); err != nil {
 		t.Fatalf("seed missing thread id: %v", err)
 	}
-	threads, err := store.ListThreads(ctx, "tenant-a:room-1")
+	threads, err = store.ListThreads(ctx, "tenant-a:room-1")
 	if err != nil {
 		t.Fatalf("list threads: %v", err)
 	}

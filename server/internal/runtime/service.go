@@ -27,6 +27,17 @@ import (
 var (
 	heartbeatInterval = 15 * time.Second
 	reconcileInterval = 30 * time.Second
+	newClusterStore   = func(url string, channelPrefix string) (cluster.Store, error) {
+		return cluster.NewRedisStore(url, channelPrefix)
+	}
+	randomRead            = rand.Read
+	clientMessageHandlers = map[protocol.MessageType]func(*Service, *clientConn, protocol.Message) error{
+		protocol.TypeJoin:        (*Service).handleJoin,
+		protocol.TypeLeave:       (*Service).handleLeave,
+		protocol.TypeEmit:        (*Service).handleEmit,
+		protocol.TypePresenceSet: (*Service).handlePresence,
+	}
+	sendInitialYJSDocument = sendYJSDocument
 )
 
 const (
@@ -129,7 +140,7 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 	}
 
 	if cfg.Redis != nil {
-		store, err := cluster.NewRedisStore(cfg.Redis.URL, cfg.Redis.ChannelPrefix)
+		store, err := newClusterStore(cfg.Redis.URL, cfg.Redis.ChannelPrefix)
 		if err != nil {
 			cancel()
 			return nil, err
@@ -295,15 +306,8 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 		conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
 		return
 	}
-	if len(document.Snapshot) > 0 {
-		if err := conn.enqueueFrame(yjsFrameSnapshot, document.Snapshot); err != nil {
-			return
-		}
-	}
-	for _, update := range document.Updates {
-		if err := conn.enqueueFrame(yjsFrameUpdate, update); err != nil {
-			return
-		}
+	if err := sendInitialYJSDocument(conn, document); err != nil {
+		return
 	}
 
 	ws.SetReadLimit(int64(s.cfg.Limits.YJSMaxBytes + 1))
@@ -378,24 +382,21 @@ func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {
 		})
 	}
 
-	switch message.Type {
-	case protocol.TypeJoin:
-		return s.handleJoin(conn, message)
-	case protocol.TypeLeave:
-		return s.handleLeave(conn, message)
-	case protocol.TypeEmit:
-		return s.handleEmit(conn, message)
-	case protocol.TypePresenceSet:
-		return s.handlePresence(conn, message)
-	default:
-		return conn.enqueue(outboundMessage{
-			T: "ERROR",
-			Payload: openrtcerr.APIError{
-				Code:    openrtcerr.CodeBadRequest,
-				Message: "unsupported message type",
-			},
-		})
+	return clientMessageHandlers[message.Type](s, conn, message)
+}
+
+func sendYJSDocument(conn *yjsConn, document cluster.YJSDocument) error {
+	if len(document.Snapshot) > 0 {
+		if err := conn.enqueueFrame(yjsFrameSnapshot, document.Snapshot); err != nil {
+			return err
+		}
 	}
+	for _, update := range document.Updates {
+		if err := conn.enqueueFrame(yjsFrameUpdate, update); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
@@ -1044,7 +1045,7 @@ func (s *Service) checkOrigin(r *http.Request) bool {
 
 func newConnID() string {
 	raw := make([]byte, 12)
-	if _, err := rand.Read(raw); err != nil {
+	if _, err := randomRead(raw); err != nil {
 		panic(err)
 	}
 	return hex.EncodeToString(raw)
@@ -1061,9 +1062,6 @@ func roomFromYJSPath(pathValue string) (string, error) {
 	room, err := url.PathUnescape(escaped)
 	if err != nil {
 		return "", errors.New("room must be URL-escaped")
-	}
-	if room == "" {
-		return "", errors.New("room is required")
 	}
 	if err := protocol.ValidateRoomName(room); err != nil {
 		return "", err
