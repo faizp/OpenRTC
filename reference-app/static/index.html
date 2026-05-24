@@ -26,9 +26,9 @@
       --amber-soft: #fef3c7;
       --red: #b91c1c;
       --red-soft: #fee2e2;
-      --shadow: 0 8px 24px rgba(21, 31, 48, 0.08);
+      --shadow: 0 10px 28px rgba(21, 31, 48, 0.07);
       --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --sans: "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     * {
@@ -49,6 +49,10 @@
       letter-spacing: 0;
     }
 
+    body.is-busy {
+      cursor: progress;
+    }
+
     button,
     input,
     select,
@@ -59,13 +63,15 @@
     button {
       min-height: 34px;
       border: 1px solid var(--line-strong);
-      border-radius: 7px;
+      border-radius: 6px;
       background: var(--surface);
       color: var(--text);
       padding: 7px 10px;
       cursor: pointer;
       font-weight: 650;
+      font-size: 12px;
       white-space: nowrap;
+      transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
     }
 
     button:hover {
@@ -84,6 +90,11 @@
       color: #ffffff;
     }
 
+    button:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+
     button.danger {
       border-color: #ef9a9a;
       color: var(--red);
@@ -99,7 +110,7 @@
     textarea {
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: 7px;
+      border-radius: 6px;
       background: #ffffff;
       color: var(--text);
       outline: none;
@@ -155,9 +166,9 @@
       position: sticky;
       top: 0;
       z-index: 5;
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto;
       align-items: center;
-      justify-content: space-between;
       gap: 16px;
       min-height: 58px;
       padding: 10px 18px;
@@ -207,6 +218,14 @@
       gap: 8px;
     }
 
+    .top-actions {
+      justify-content: flex-end;
+    }
+
+    .button-row {
+      align-items: stretch;
+    }
+
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -214,7 +233,7 @@
       min-height: 28px;
       padding: 4px 9px;
       border: 1px solid var(--line);
-      border-radius: 999px;
+      border-radius: 6px;
       background: var(--surface-2);
       color: var(--muted);
       font-size: 12px;
@@ -246,13 +265,14 @@
       grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
       gap: 14px;
       padding: 14px;
+      align-items: start;
     }
 
     .sidebar,
     .panel {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 7px;
       box-shadow: var(--shadow);
     }
 
@@ -267,11 +287,16 @@
 
     .main {
       min-width: 0;
+      width: 100%;
+      overflow: hidden;
       display: grid;
       gap: 12px;
     }
 
     .tabs {
+      position: sticky;
+      top: 72px;
+      z-index: 4;
       display: flex;
       gap: 4px;
       overflow-x: auto;
@@ -280,6 +305,8 @@
       border-radius: 8px;
       padding: 4px;
       box-shadow: var(--shadow);
+      min-width: 0;
+      max-width: 100%;
     }
 
     .tab-button {
@@ -298,6 +325,9 @@
     .panel {
       display: none;
       padding: 14px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
     }
 
     .panel.active {
@@ -308,8 +338,18 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
       gap: 10px;
       margin-bottom: 12px;
+    }
+
+    .panel-header > .button-row,
+    .panel-header > button {
+      flex-shrink: 0;
+    }
+
+    .panel-header > div {
+      min-width: 0;
     }
 
     .panel-header h2,
@@ -444,6 +484,8 @@
       overflow: auto;
       border: 1px solid var(--line);
       border-radius: 8px;
+      min-width: 0;
+      max-width: 100%;
     }
 
     table {
@@ -539,6 +581,30 @@
       background: var(--surface-2);
     }
 
+    .sidebar-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .sidebar-actions .primary {
+      grid-column: span 2;
+    }
+
+    .toolbar-actions {
+      justify-content: flex-end;
+    }
+
+    .form-card {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .full-width {
+      width: 100%;
+    }
+
     .divider {
       height: 1px;
       background: var(--line);
@@ -560,10 +626,12 @@
       .topbar {
         align-items: flex-start;
         flex-direction: column;
+        display: flex;
       }
 
       .top-actions {
         width: 100%;
+        justify-content: flex-start;
       }
 
       .workspace {
@@ -581,6 +649,12 @@
 
       button {
         white-space: normal;
+      }
+
+      .sidebar-actions,
+      .sidebar-actions .primary {
+        grid-template-columns: 1fr;
+        grid-column: auto;
       }
     }
   </style>
@@ -602,8 +676,8 @@
           <span class="status-pill"><span class="dot" id="ws-dot"></span><span id="ws-status">WS closed</span></span>
           <span class="status-pill"><span class="dot" id="yjs-dot"></span><span id="yjs-status">Yjs closed</span></span>
         </div>
-        <button type="button" onclick="loadConfig()">Refresh</button>
-        <button type="button" class="primary" onclick="runSmokeProbe()">Probe all</button>
+        <button type="button" onclick="runAction('ops-output', loadConfig)">Refresh</button>
+        <button type="button" class="primary" onclick="runAction('probe-log', runSmokeProbe)">Probe all</button>
       </div>
     </header>
 
@@ -640,10 +714,10 @@
             <label>Admin scope
               <input id="admin-scope" value="publish:* presence:* rooms:* storage:* comments:* notifications:*" autocomplete="off">
             </label>
-            <div class="button-row">
-              <button type="button" class="primary" onclick="issueTokens()">Issue tokens</button>
-              <button type="button" onclick="connectAndJoin()">Connect + join</button>
-              <button type="button" class="danger" onclick="disconnectAll()">Disconnect</button>
+            <div class="button-row sidebar-actions">
+              <button type="button" class="primary" onclick="runAction('probe-log', issueTokens)">Issue tokens</button>
+              <button type="button" onclick="runAction('realtime-log', connectAndJoin)">Connect + join</button>
+              <button type="button" class="danger" onclick="runAction('realtime-log', disconnectAll)">Disconnect</button>
             </div>
           </div>
         </div>
@@ -694,7 +768,7 @@
               <h2>Implemented Surface Map</h2>
               <p>Repo-backed runtime/admin/package surfaces exposed by this console.</p>
             </div>
-            <button type="button" onclick="runSmokeProbe()">Probe all</button>
+            <button type="button" onclick="runAction('probe-log', runSmokeProbe)">Probe all</button>
           </div>
           <div class="metric-strip">
             <div class="metric"><b id="metric-events">0</b><span>Events seen</span></div>
@@ -791,9 +865,9 @@
               <p>JSON WebSocket room lifecycle, client events, client presence, and admin fan-out.</p>
             </div>
             <div class="button-row">
-              <button type="button" class="primary" onclick="connectAndJoin()">Connect + join</button>
-              <button type="button" onclick="joinRoom()">Join</button>
-              <button type="button" onclick="leaveRoom()">Leave</button>
+              <button type="button" class="primary" onclick="runAction('realtime-log', connectAndJoin)">Connect + join</button>
+              <button type="button" onclick="runAction('realtime-log', joinRoom)">Join</button>
+              <button type="button" onclick="runAction('realtime-log', leaveRoom)">Leave</button>
             </div>
           </div>
           <div class="grid two">
@@ -805,8 +879,8 @@
                 <textarea id="event-payload"></textarea>
               </label>
               <div class="button-row">
-                <button type="button" class="primary" onclick="sendClientEvent()">Send client event</button>
-                <button type="button" onclick="sendAdminPublish()">Admin publish</button>
+                <button type="button" class="primary" onclick="runAction('realtime-log', sendClientEvent)">Send client event</button>
+                <button type="button" onclick="runAction('realtime-log', sendAdminPublish)">Admin publish</button>
               </div>
             </div>
             <div class="grid">
@@ -817,9 +891,9 @@
                 <input id="admin-presence-conn" value="admin-console">
               </label>
               <div class="button-row">
-                <button type="button" class="primary" onclick="setClientPresence()">Set client presence</button>
-                <button type="button" onclick="setAdminPresence()">Set admin presence</button>
-                <button type="button" onclick="loadActiveUsers()">Active users</button>
+                <button type="button" class="primary" onclick="runAction('realtime-log', setClientPresence)">Set client presence</button>
+                <button type="button" onclick="runAction('realtime-log', setAdminPresence)">Set admin presence</button>
+                <button type="button" onclick="runAction('realtime-log', loadActiveUsers)">Active users</button>
               </div>
             </div>
           </div>
@@ -836,9 +910,9 @@
               <p>Room metadata, access grants, and active-user reads.</p>
             </div>
             <div class="button-row">
-              <button type="button" onclick="listRooms()">List</button>
-              <button type="button" onclick="getRoom()">Get</button>
-              <button type="button" class="danger" onclick="deleteRoom()">Delete</button>
+              <button type="button" onclick="runAction('probe-log', listRooms)">List</button>
+              <button type="button" onclick="runAction('probe-log', getRoom)">Get</button>
+              <button type="button" class="danger" onclick="runAction('probe-log', deleteRoom)">Delete</button>
             </div>
           </div>
           <div class="grid three">
@@ -857,12 +931,12 @@
               <div class="grid">
                 <h3>Create body</h3>
                 <textarea id="room-create-body"></textarea>
-                <button type="button" class="primary" onclick="createRoom()">Create room</button>
+                <button type="button" class="primary" onclick="runAction('probe-log', createRoom)">Create room</button>
               </div>
               <div class="grid">
                 <h3>Patch body</h3>
                 <textarea id="room-update-body"></textarea>
-                <button type="button" onclick="updateRoom()">Patch room</button>
+                <button type="button" onclick="runAction('probe-log', updateRoom)">Patch room</button>
               </div>
             </div>
           </div>
@@ -879,20 +953,20 @@
               <p>Durable room JSON, typed storage roots, and atomic JSON Patch.</p>
             </div>
             <div class="button-row">
-              <button type="button" onclick="getStorage()">Get</button>
-              <button type="button" class="danger" onclick="deleteStorage()">Delete</button>
+              <button type="button" onclick="runAction('probe-log', getStorage)">Get</button>
+              <button type="button" class="danger" onclick="runAction('probe-log', deleteStorage)">Delete</button>
             </div>
           </div>
           <div class="split">
             <div class="grid">
               <h3>Storage document</h3>
               <textarea id="storage-body"></textarea>
-              <button type="button" class="primary" onclick="putStorage()">Put storage</button>
+              <button type="button" class="primary" onclick="runAction('probe-log', putStorage)">Put storage</button>
             </div>
             <div class="grid">
               <h3>JSON Patch</h3>
               <textarea id="storage-patch-body"></textarea>
-              <button type="button" onclick="patchStorage()">Apply patch</button>
+              <button type="button" onclick="runAction('probe-log', patchStorage)">Apply patch</button>
             </div>
           </div>
           <div class="section">
@@ -907,13 +981,13 @@
               <h2>Threads</h2>
               <p>Durable room threads and comments.</p>
             </div>
-            <button type="button" onclick="listThreads()">List threads</button>
+            <button type="button" onclick="runAction('probe-log', listThreads)">List threads</button>
           </div>
           <div class="grid two">
             <div class="grid">
               <h3>Create thread</h3>
               <textarea id="thread-create-body"></textarea>
-              <button type="button" class="primary" onclick="createThread()">Create thread</button>
+              <button type="button" class="primary" onclick="runAction('probe-log', createThread)">Create thread</button>
             </div>
             <div class="grid">
               <h3>Add comment</h3>
@@ -921,7 +995,7 @@
                 <input id="thread-id" value="thread-1">
               </label>
               <textarea id="comment-create-body"></textarea>
-              <button type="button" onclick="addComment()">Add comment</button>
+              <button type="button" onclick="runAction('probe-log', addComment)">Add comment</button>
             </div>
           </div>
           <div class="section">
@@ -937,8 +1011,8 @@
               <p>Inbox notification CRUD, project settings, and room subscription settings.</p>
             </div>
             <div class="button-row">
-              <button type="button" onclick="listNotifications()">List inbox</button>
-              <button type="button" onclick="clearNotifications()" class="danger">Clear inbox</button>
+              <button type="button" onclick="runAction('probe-log', listNotifications)">List inbox</button>
+              <button type="button" onclick="runAction('probe-log', clearNotifications)" class="danger">Clear inbox</button>
             </div>
           </div>
           <div class="grid three">
@@ -960,21 +1034,21 @@
               <div class="grid">
                 <h3>Trigger notification</h3>
                 <textarea id="notification-body"></textarea>
-                <button type="button" class="primary" onclick="triggerNotification()">Trigger</button>
+                <button type="button" class="primary" onclick="runAction('probe-log', triggerNotification)">Trigger</button>
               </div>
               <div class="grid">
                 <h3>User notification actions</h3>
                 <div class="button-row">
-                  <button type="button" onclick="getNotification()">Get one</button>
-                  <button type="button" onclick="markNotificationRead()">Mark read</button>
-                  <button type="button" class="danger" onclick="deleteNotification()">Delete one</button>
+                  <button type="button" onclick="runAction('probe-log', getNotification)">Get one</button>
+                  <button type="button" onclick="runAction('probe-log', markNotificationRead)">Mark read</button>
+                  <button type="button" class="danger" onclick="runAction('probe-log', deleteNotification)">Delete one</button>
                 </div>
                 <h3>Notification settings</h3>
                 <textarea id="notification-settings-body"></textarea>
                 <div class="button-row">
-                  <button type="button" onclick="getNotificationSettings()">Get settings</button>
-                  <button type="button" onclick="setNotificationSettings()">Set settings</button>
-                  <button type="button" class="danger" onclick="deleteNotificationSettings()">Reset settings</button>
+                  <button type="button" onclick="runAction('probe-log', getNotificationSettings)">Get settings</button>
+                  <button type="button" onclick="runAction('probe-log', setNotificationSettings)">Set settings</button>
+                  <button type="button" class="danger" onclick="runAction('probe-log', deleteNotificationSettings)">Reset settings</button>
                 </div>
               </div>
             </div>
@@ -984,10 +1058,10 @@
             <div class="grid two">
               <textarea id="subscription-settings-body"></textarea>
               <div class="button-row">
-                <button type="button" onclick="getRoomSubscriptionSettings()">Get room setting</button>
-                <button type="button" onclick="setRoomSubscriptionSettings()">Set room setting</button>
-                <button type="button" onclick="listRoomSubscriptionSettings()">List room settings</button>
-                <button type="button" class="danger" onclick="deleteRoomSubscriptionSettings()">Reset room setting</button>
+                <button type="button" onclick="runAction('probe-log', getRoomSubscriptionSettings)">Get room setting</button>
+                <button type="button" onclick="runAction('probe-log', setRoomSubscriptionSettings)">Set room setting</button>
+                <button type="button" onclick="runAction('probe-log', listRoomSubscriptionSettings)">List room settings</button>
+                <button type="button" class="danger" onclick="runAction('probe-log', deleteRoomSubscriptionSettings)">Reset room setting</button>
               </div>
             </div>
           </div>
@@ -1004,8 +1078,8 @@
               <p>Connects to the persisted binary sync endpoint and checks replay and rejection behavior.</p>
             </div>
             <div class="button-row">
-              <button type="button" class="primary" onclick="connectYjs()">Connect Yjs</button>
-              <button type="button" class="danger" onclick="disconnectYjs()">Close Yjs</button>
+              <button type="button" class="primary" onclick="runAction('yjs-log', connectYjs)">Connect Yjs</button>
+              <button type="button" class="danger" onclick="runAction('yjs-log', disconnectYjs)">Close Yjs</button>
             </div>
           </div>
           <div class="grid two">
@@ -1014,9 +1088,9 @@
                 <textarea id="yjs-update-text"></textarea>
               </label>
               <div class="button-row">
-                <button type="button" class="primary" onclick="sendYjsUpdate()">Send 0x01 update</button>
-                <button type="button" onclick="reconnectYjs()">Reconnect and replay</button>
-                <button type="button" class="danger" onclick="sendYjsSnapshot()">Try forbidden 0x02 snapshot</button>
+                <button type="button" class="primary" onclick="runAction('yjs-log', sendYjsUpdate)">Send 0x01 update</button>
+                <button type="button" onclick="runAction('yjs-log', reconnectYjs)">Reconnect and replay</button>
+                <button type="button" class="danger" onclick="runAction('yjs-log', sendYjsSnapshot)">Try forbidden 0x02 snapshot</button>
               </div>
             </div>
             <div class="grid">
@@ -1033,9 +1107,9 @@
               <p>Health, readiness, metrics, and aggregate stats.</p>
             </div>
             <div class="button-row">
-              <button type="button" onclick="checkHealth()">Health</button>
-              <button type="button" onclick="loadStats()">Stats</button>
-              <button type="button" onclick="loadMetrics()">Metrics</button>
+              <button type="button" onclick="runAction('ops-output', checkHealth)">Health</button>
+              <button type="button" onclick="runAction('probe-log', loadStats)">Stats</button>
+              <button type="button" onclick="runAction('ops-output', loadMetrics)">Metrics</button>
             </div>
           </div>
           <div class="grid two">
@@ -1071,6 +1145,8 @@
         admin: 0,
         yjs: 0,
       },
+      yjsFrames: [],
+      actionDepth: 0,
     };
 
     const samples = {
@@ -1170,6 +1246,7 @@
       const randomID = Math.floor(Math.random() * 9000) + 1000;
       byId("username").value = "user-" + randomID;
       byId("notification-user").value = "user-" + randomID;
+      bindSessionInputs();
       resetSamples();
       loadConfig();
       renderState();
@@ -1187,6 +1264,59 @@
         panel.classList.toggle("active", panel.id === "tab-" + tab);
       });
     }
+
+    function bindSessionInputs() {
+      ["username", "tenant", "groups", "client-access", "admin-scope"].forEach((id) => {
+        byId(id).addEventListener("input", () => {
+          state.clientToken = "";
+          state.adminToken = "";
+          resetSamples();
+          renderState();
+        });
+      });
+      byId("notification-user").addEventListener("input", () => {
+        setJSON("notification-body", samples.notification());
+      });
+    }
+
+    async function runAction(logID, action) {
+      state.actionDepth += 1;
+      document.body.classList.add("is-busy");
+      setButtonsDisabled(true);
+      try {
+        await action();
+      } catch (error) {
+        reportActionError(logID, error);
+      } finally {
+        state.actionDepth -= 1;
+        if (state.actionDepth <= 0) {
+          state.actionDepth = 0;
+          document.body.classList.remove("is-busy");
+          setButtonsDisabled(false);
+        }
+      }
+    }
+
+    function setButtonsDisabled(disabled) {
+      document.querySelectorAll("button").forEach((button) => {
+        button.disabled = disabled;
+      });
+    }
+
+    function reportActionError(logID, error) {
+      const message = error && error.message ? error.message : String(error);
+      log(logID || "probe-log", message, "err", "action failed");
+    }
+
+    window.addEventListener("unhandledrejection", (event) => {
+      event.preventDefault();
+      reportActionError("probe-log", event.reason);
+    });
+
+    window.addEventListener("error", (event) => {
+      event.preventDefault();
+      reportActionError("probe-log", event.error || event.message);
+    });
 
     function resetSamples() {
       setJSON("event-payload", samples.eventPayload());
@@ -1280,7 +1410,8 @@
 
     async function connectAndJoin() {
       await connectWS();
-      setTimeout(() => joinRoom(), 150);
+      joinRoom();
+      await waitUntil(() => state.members.size > 0, 5000, "room join confirmation");
     }
 
     async function connectWS() {
@@ -1294,26 +1425,51 @@
       state.connId = "";
       state.room = currentRoom();
       state.ws = new WebSocket(state.config.wsURL + "?token=" + encodeURIComponent(token));
+      const socket = state.ws;
       setDot("ws-dot", "warn");
       byId("ws-status").textContent = "WS connecting";
 
-      state.ws.addEventListener("open", () => {
-        setDot("ws-dot", "ok");
-        byId("ws-status").textContent = "WS open";
-        log("realtime-log", "WebSocket open", "ok");
-        renderState();
-      });
-      state.ws.addEventListener("message", (event) => handleWSMessage(event.data));
-      state.ws.addEventListener("close", (event) => {
-        setDot("ws-dot", "");
-        byId("ws-status").textContent = "WS closed";
-        log("realtime-log", "WebSocket closed " + (event.reason || event.code || ""), "warn");
-        renderState();
-      });
-      state.ws.addEventListener("error", () => {
-        setDot("ws-dot", "err");
-        byId("ws-status").textContent = "WS error";
-        log("realtime-log", "WebSocket error", "err");
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const settleOpen = () => {
+          settled = true;
+          resolve();
+        };
+        const settleFailure = (message) => {
+          if (!settled) {
+            settled = true;
+            reject(new Error(message));
+          }
+        };
+
+        socket.addEventListener("open", () => {
+          setDot("ws-dot", "ok");
+          byId("ws-status").textContent = "WS open";
+          log("realtime-log", "WebSocket open", "ok");
+          renderState();
+          settleOpen();
+        });
+        socket.addEventListener("message", (event) => handleWSMessage(event.data));
+        socket.addEventListener("close", (event) => {
+          if (state.ws !== socket) {
+            return;
+          }
+          state.ws = null;
+          setDot("ws-dot", "");
+          byId("ws-status").textContent = "WS closed";
+          log("realtime-log", "WebSocket closed " + (event.reason || event.code || ""), "warn");
+          renderState();
+          settleFailure("WebSocket closed before opening");
+        });
+        socket.addEventListener("error", () => {
+          if (state.ws !== socket) {
+            return;
+          }
+          setDot("ws-dot", "err");
+          byId("ws-status").textContent = "WS error";
+          log("realtime-log", "WebSocket error", "err");
+          settleFailure("WebSocket connection failed");
+        });
       });
     }
 
@@ -1613,34 +1769,62 @@
       disconnectYjs();
       const url = state.config.yjsURL + "/" + enc(currentRoom()) + "?token=" + encodeURIComponent(token);
       state.yjs = new WebSocket(url);
+      const socket = state.yjs;
       state.yjs.binaryType = "arraybuffer";
       setDot("yjs-dot", "warn");
       byId("yjs-status").textContent = "Yjs connecting";
-      state.yjs.addEventListener("open", () => {
-        setDot("yjs-dot", "ok");
-        byId("yjs-status").textContent = "Yjs open";
-        log("yjs-log", "Yjs WebSocket open", "ok");
-      });
-      state.yjs.addEventListener("message", async (event) => {
-        const bytes = new Uint8Array(await toArrayBuffer(event.data));
-        state.counters.yjs += 1;
-        renderState();
-        log("yjs-log", {
-          kind: bytes[0],
-          bytes: bytes.length,
-          payloadHex: bytesToHex(bytes.slice(1)),
-          payloadText: decodeBytes(bytes.slice(1)),
-        }, "ok", "frame");
-      });
-      state.yjs.addEventListener("close", (event) => {
-        setDot("yjs-dot", "");
-        byId("yjs-status").textContent = "Yjs closed";
-        log("yjs-log", "Yjs closed " + (event.reason || event.code || ""), "warn");
-      });
-      state.yjs.addEventListener("error", () => {
-        setDot("yjs-dot", "err");
-        byId("yjs-status").textContent = "Yjs error";
-        log("yjs-log", "Yjs error", "err");
+
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const settleOpen = () => {
+          settled = true;
+          resolve();
+        };
+        const settleFailure = (message) => {
+          if (!settled) {
+            settled = true;
+            reject(new Error(message));
+          }
+        };
+
+        socket.addEventListener("open", () => {
+          setDot("yjs-dot", "ok");
+          byId("yjs-status").textContent = "Yjs open";
+          log("yjs-log", "Yjs WebSocket open", "ok");
+          settleOpen();
+        });
+        socket.addEventListener("message", async (event) => {
+          const bytes = new Uint8Array(await toArrayBuffer(event.data));
+          const frame = {
+            kind: bytes[0],
+            bytes: bytes.length,
+            payloadHex: bytesToHex(bytes.slice(1)),
+            payloadText: decodeBytes(bytes.slice(1)),
+          };
+          state.yjsFrames.push(frame);
+          state.counters.yjs += 1;
+          renderState();
+          log("yjs-log", frame, "ok", "frame");
+        });
+        socket.addEventListener("close", (event) => {
+          if (state.yjs !== socket) {
+            return;
+          }
+          state.yjs = null;
+          setDot("yjs-dot", "");
+          byId("yjs-status").textContent = "Yjs closed";
+          log("yjs-log", "Yjs closed " + (event.reason || event.code || ""), "warn");
+          settleFailure("Yjs WebSocket closed before opening");
+        });
+        socket.addEventListener("error", () => {
+          if (state.yjs !== socket) {
+            return;
+          }
+          setDot("yjs-dot", "err");
+          byId("yjs-status").textContent = "Yjs error";
+          log("yjs-log", "Yjs error", "err");
+          settleFailure("Yjs WebSocket connection failed");
+        });
       });
     }
 
@@ -1729,7 +1913,9 @@
 
     async function runSmokeProbe() {
       activateTab("overview");
-      const probeRoom = currentTenant() + ":console-" + Date.now();
+      const stamp = Date.now();
+      const probeRoom = currentTenant() + ":console-" + stamp;
+      const deleteProbeRoom = currentTenant() + ":delete-" + stamp;
       byId("room").value = probeRoom;
       syncRoomFields();
       log("probe-log", "Starting smoke probe for " + probeRoom, "warn");
@@ -1738,19 +1924,75 @@
         await issueTokens();
         await checkHealth();
         await adminJSON("/v1/rooms", { method: "POST", body: samples.roomCreate() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()), {}, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()), { method: "PATCH", body: samples.roomUpdate() }, "probe-log");
         await adminJSON("/v1/rooms?prefix=" + encodeURIComponent(roomPrefixFrom(currentRoom())) + "&limit=10", {}, "probe-log");
+
+        await adminJSON("/v1/rooms", {
+          method: "POST",
+          body: {
+            id: deleteProbeRoom,
+            metadata: { source: "dev-console-delete-probe" },
+            defaultAccesses: ["room:read"],
+          },
+        }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(deleteProbeRoom), { method: "DELETE" }, "probe-log");
+
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "PUT", body: samples.storage() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", {}, "probe-log");
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage/json-patch", { method: "PATCH", body: samples.storagePatch() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "DELETE" }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "PUT", body: samples.storage() }, "probe-log");
+
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", { method: "POST", body: samples.threadCreate() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads/thread-1/comments", { method: "POST", body: samples.commentCreate() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", {}, "probe-log");
+
         const notification = await adminJSON("/v1/inbox-notifications/trigger", { method: "POST", body: samples.notification() }, "probe-log");
         if (notification.body && notification.body.id) {
           byId("notification-id").value = notification.body.id;
+          await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications/" + enc(notification.body.id), {}, "probe-log");
+          await adminJSON("/v1/inbox-notifications/" + enc(notification.body.id) + "/read", { method: "POST" }, "probe-log");
+          await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications/" + enc(notification.body.id), { method: "DELETE" }, "probe-log");
         }
         await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications?limit=10", {}, "probe-log");
+
+        await adminJSON("/v1/users/" + enc(notificationUser()) + "/notification-settings", { method: "POST", body: samples.notificationSettings() }, "probe-log");
+        await adminJSON("/v1/users/" + enc(notificationUser()) + "/notification-settings", {}, "probe-log");
+        await adminJSON("/v1/users/" + enc(notificationUser()) + "/notification-settings", { method: "DELETE" }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/users/" + enc(notificationUser()) + "/subscription-settings", {
+          method: "POST",
+          body: samples.subscriptionSettings(),
+        }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/users/" + enc(notificationUser()) + "/subscription-settings", {}, "probe-log");
+        await adminJSON("/v1/users/" + enc(notificationUser()) + "/room-subscription-settings", {}, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/users/" + enc(notificationUser()) + "/subscription-settings", { method: "DELETE" }, "probe-log");
+
+        await connectAndJoin();
+        setClientPresence();
+        await waitUntil(() => state.connId && state.presence.has(state.connId), 5000, "client presence echo");
+        const eventsBeforeClient = state.counters.events;
+        sendClientEvent();
+        await waitUntil(() => state.counters.events > eventsBeforeClient, 5000, "client event fan-out");
+        const eventsBeforeAdmin = state.counters.events;
+        await sendAdminPublish();
+        await waitUntil(() => state.counters.events > eventsBeforeAdmin, 5000, "admin publish fan-out");
+        await setAdminPresence();
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/active_users", {}, "probe-log");
+
+        const yjsFramesBefore = state.yjsFrames.length;
+        await connectYjs();
+        sendYjsUpdate();
+        await reconnectYjs();
+        await waitUntil(() => state.yjsFrames.length > yjsFramesBefore, 5000, "Yjs replay frame");
+        sendYjsSnapshot();
+        await waitUntil(() => !state.yjs || state.yjs.readyState === WebSocket.CLOSED, 5000, "Yjs snapshot rejection");
+
         await loadStats();
-        log("probe-log", "Smoke probe finished", "ok");
+        log("probe-log", "Full console probe finished", "ok");
       } catch (error) {
         log("probe-log", error.message, "err", "probe failed");
+        throw error;
       }
     }
 
@@ -1943,6 +2185,17 @@
 
     function delay(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function waitUntil(predicate, timeoutMs, label) {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (predicate()) {
+          return;
+        }
+        await delay(50);
+      }
+      throw new Error("Timed out waiting for " + label);
     }
 
     async function toArrayBuffer(data) {

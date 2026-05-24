@@ -82,7 +82,7 @@ func main() {
 	mux.Handle("/admin", adminProxy)
 	mux.Handle("/runtime/", runtimeProxy)
 	mux.Handle("/runtime", runtimeProxy)
-	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(appDir, "static"))))
+	mux.Handle("/", noStore(http.FileServer(http.Dir(filepath.Join(appDir, "static")))))
 
 	log.Printf("Reference app: http://localhost:%s", appPort)
 	log.Printf("Runtime WS:    ws://localhost:%s/ws", runtimePort)
@@ -212,6 +212,13 @@ func reverseProxy(prefix string, target string) http.Handler {
 		req.Host = targetURL.Host
 	}
 	return proxy
+}
+
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func findReferenceAppDir() string {
