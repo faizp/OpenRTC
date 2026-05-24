@@ -3,244 +3,1968 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenRTC Chat — Reference App</title>
+  <link rel="icon" href="data:,">
+  <title>OpenRTC Dev Console</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1117; color: #e1e4e8; height: 100vh; display: flex; flex-direction: column; }
-    .header { padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; }
-    .header h1 { font-size: 16px; font-weight: 600; }
-    .status { width: 8px; height: 8px; border-radius: 50%; background: #f85149; }
-    .status.connected { background: #3fb950; }
-    .status-text { font-size: 12px; color: #8b949e; }
-    .setup { max-width: 400px; margin: 80px auto; padding: 24px; }
-    .setup h2 { margin-bottom: 16px; font-size: 20px; }
-    .setup input, .setup button { width: 100%; padding: 10px 12px; margin-bottom: 10px; border-radius: 6px; border: 1px solid #30363d; font-size: 14px; }
-    .setup input { background: #0d1117; color: #e1e4e8; }
-    .setup button { background: #238636; color: #fff; border: none; cursor: pointer; font-weight: 600; }
-    .setup button:hover { background: #2ea043; }
-    .chat { display: none; flex: 1; flex-direction: column; }
-    .chat.active { display: flex; }
-    .room-bar { padding: 8px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; font-size: 13px; }
-    .room-bar .room-name { font-weight: 600; }
-    .presence { color: #8b949e; font-size: 12px; }
-    .messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
-    .message { margin-bottom: 12px; }
-    .message .sender { font-weight: 600; font-size: 13px; color: #58a6ff; }
-    .message .time { font-size: 11px; color: #484f58; margin-left: 8px; }
-    .message .text { margin-top: 2px; font-size: 14px; line-height: 1.4; }
-    .message.system { color: #8b949e; font-style: italic; font-size: 12px; }
-    .input-bar { padding: 12px 20px; background: #161b22; border-top: 1px solid #30363d; display: flex; gap: 8px; }
-    .input-bar input { flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e1e4e8; font-size: 14px; }
-    .input-bar button { padding: 10px 20px; border-radius: 6px; border: none; background: #238636; color: #fff; cursor: pointer; font-weight: 600; }
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --surface: #ffffff;
+      --surface-2: #f9fafb;
+      --line: #d7dde5;
+      --line-strong: #aeb8c6;
+      --text: #172033;
+      --muted: #627085;
+      --muted-2: #8792a2;
+      --accent: #0f766e;
+      --accent-strong: #0b5f59;
+      --blue: #2563eb;
+      --blue-soft: #dbeafe;
+      --green: #15803d;
+      --green-soft: #dcfce7;
+      --amber: #b45309;
+      --amber-soft: #fef3c7;
+      --red: #b91c1c;
+      --red-soft: #fee2e2;
+      --shadow: 0 8px 24px rgba(21, 31, 48, 0.08);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 7px 10px;
+      cursor: pointer;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+      color: var(--accent-strong);
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #ffffff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-strong);
+      color: #ffffff;
+    }
+
+    button.danger {
+      border-color: #ef9a9a;
+      color: var(--red);
+    }
+
+    button.danger:hover {
+      background: var(--red-soft);
+      color: var(--red);
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #ffffff;
+      color: var(--text);
+      outline: none;
+    }
+
+    input,
+    select {
+      height: 36px;
+      padding: 0 10px;
+    }
+
+    textarea {
+      min-height: 118px;
+      resize: vertical;
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+      tab-size: 2;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.13);
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 58px;
+      padding: 10px 18px;
+      background: rgba(255, 255, 255, 0.96);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 210px;
+    }
+
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(15, 118, 110, 0.95), rgba(37, 99, 235, 0.9)),
+        #0f766e;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.1;
+    }
+
+    .brand small {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .top-actions,
+    .status-row,
+    .button-row,
+    .inline-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 4px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--muted-2);
+    }
+
+    .dot.ok {
+      background: var(--green);
+    }
+
+    .dot.warn {
+      background: var(--amber);
+    }
+
+    .dot.err {
+      background: var(--red);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .sidebar,
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .sidebar {
+      align-self: start;
+      position: sticky;
+      top: 72px;
+      max-height: calc(100vh - 86px);
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      gap: 12px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 4px;
+      box-shadow: var(--shadow);
+    }
+
+    .tab-button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+
+    .tab-button.active {
+      background: #e9f5f3;
+      color: var(--accent-strong);
+    }
+
+    .panel {
+      display: none;
+      padding: 14px;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .panel-header h2,
+    .section h3 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+    }
+
+    .panel-header p,
+    .section p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .section {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+
+    .section:first-child {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
+    }
+
+    .grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grid.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric {
+      min-height: 68px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+      padding: 10px;
+    }
+
+    .metric b {
+      display: block;
+      font-size: 20px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .output,
+    .log {
+      min-height: 180px;
+      max-height: 360px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #101827;
+      color: #d8e2f1;
+      padding: 10px;
+    }
+
+    .log {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .log-entry {
+      border-bottom: 1px solid rgba(216, 226, 241, 0.12);
+      padding-bottom: 8px;
+    }
+
+    .log-entry:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .log-entry .meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+      color: #a8b8cc;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .log-entry.ok .meta {
+      color: #8ee6aa;
+    }
+
+    .log-entry.warn .meta {
+      color: #f5c36b;
+    }
+
+    .log-entry.err .meta {
+      color: #f9a8a8;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+      background: var(--surface);
+    }
+
+    th,
+    td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 12px;
+    }
+
+    th {
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .badge.ok {
+      color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .badge.info {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .badge.warn {
+      color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .badge.err {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .compact-list {
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .compact-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 7px 9px;
+      background: var(--surface-2);
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--line);
+      margin: 12px 0;
+    }
+
+    @media (max-width: 1120px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        max-height: none;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .top-actions {
+        width: 100%;
+      }
+
+      .workspace {
+        padding: 10px;
+      }
+
+      .grid.two,
+      .grid.three,
+      .grid.four,
+      .field-row,
+      .metric-strip,
+      .split {
+        grid-template-columns: 1fr;
+      }
+
+      button {
+        white-space: normal;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>OpenRTC Chat</h1>
-    <div class="status" id="status-dot"></div>
-    <span class="status-text" id="status-text">Disconnected</span>
-  </div>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <h1>OpenRTC Dev Console</h1>
+          <small id="config-line">Loading local config</small>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="status-row">
+          <span class="status-pill"><span class="dot" id="runtime-dot"></span><span id="runtime-status">Runtime</span></span>
+          <span class="status-pill"><span class="dot" id="admin-dot"></span><span id="admin-status">Admin</span></span>
+          <span class="status-pill"><span class="dot" id="ws-dot"></span><span id="ws-status">WS closed</span></span>
+          <span class="status-pill"><span class="dot" id="yjs-dot"></span><span id="yjs-status">Yjs closed</span></span>
+        </div>
+        <button type="button" onclick="loadConfig()">Refresh</button>
+        <button type="button" class="primary" onclick="runSmokeProbe()">Probe all</button>
+      </div>
+    </header>
 
-  <div class="setup" id="setup">
-    <h2>Join Chat</h2>
-    <input type="text" id="username-input" placeholder="Username" autofocus>
-    <input type="text" id="room-input" placeholder="Room name" value="general">
-    <button onclick="connect()">Connect</button>
-  </div>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="section">
+          <div class="panel-header">
+            <div>
+              <h2>Session</h2>
+              <p>JWTs, tenant, room, and grant mode.</p>
+            </div>
+          </div>
+          <div class="grid">
+            <label>Username
+              <input id="username" autocomplete="off">
+            </label>
+            <div class="field-row">
+              <label>Tenant
+                <input id="tenant" value="demo" autocomplete="off">
+              </label>
+              <label>Groups
+                <input id="groups" value="editors" autocomplete="off">
+              </label>
+            </div>
+            <label>Room
+              <input id="room" value="demo:general" autocomplete="off" oninput="syncRoomFields()">
+            </label>
+            <label>Client access
+              <select id="client-access">
+                <option value="direct">Direct wildcard claims</option>
+                <option value="grants">Room grants only</option>
+              </select>
+            </label>
+            <label>Admin scope
+              <input id="admin-scope" value="publish:* presence:* rooms:* storage:* comments:* notifications:*" autocomplete="off">
+            </label>
+            <div class="button-row">
+              <button type="button" class="primary" onclick="issueTokens()">Issue tokens</button>
+              <button type="button" onclick="connectAndJoin()">Connect + join</button>
+              <button type="button" class="danger" onclick="disconnectAll()">Disconnect</button>
+            </div>
+          </div>
+        </div>
 
-  <div class="chat" id="chat">
-    <div class="room-bar">
-      <span class="room-name" id="room-label"></span>
-      <span class="presence" id="presence-display"></span>
-    </div>
-    <div class="messages" id="messages"></div>
-    <div class="input-bar">
-      <input type="text" id="msg-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMessage()">
-      <button onclick="sendMessage()">Send</button>
+        <div class="section">
+          <h3>Connection</h3>
+          <ul class="compact-list" style="margin-top: 8px;">
+            <li><span>Client token</span><span id="client-token-state" class="badge warn">missing</span></li>
+            <li><span>Admin token</span><span id="admin-token-state" class="badge warn">missing</span></li>
+            <li><span>Connection ID</span><span id="conn-id" class="mono muted">none</span></li>
+            <li><span>Room members</span><span id="member-count" class="badge info">0</span></li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <h3>Current Room Presence</h3>
+          <div class="table-wrap" style="margin-top: 8px;">
+            <table style="min-width: 300px;">
+              <thead>
+                <tr>
+                  <th>Conn</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody id="presence-body">
+                <tr><td colspan="2" class="muted">No presence yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <nav class="tabs" aria-label="Console tabs">
+          <button type="button" class="tab-button active" data-tab="overview">Overview</button>
+          <button type="button" class="tab-button" data-tab="realtime">Realtime</button>
+          <button type="button" class="tab-button" data-tab="rooms">Rooms</button>
+          <button type="button" class="tab-button" data-tab="storage">Storage</button>
+          <button type="button" class="tab-button" data-tab="threads">Threads</button>
+          <button type="button" class="tab-button" data-tab="notifications">Notifications</button>
+          <button type="button" class="tab-button" data-tab="yjs">Yjs</button>
+          <button type="button" class="tab-button" data-tab="ops">Ops</button>
+        </nav>
+
+        <section class="panel active" id="tab-overview">
+          <div class="panel-header">
+            <div>
+              <h2>Implemented Surface Map</h2>
+              <p>Repo-backed runtime/admin/package surfaces exposed by this console.</p>
+            </div>
+            <button type="button" onclick="runSmokeProbe()">Probe all</button>
+          </div>
+          <div class="metric-strip">
+            <div class="metric"><b id="metric-events">0</b><span>Events seen</span></div>
+            <div class="metric"><b id="metric-presence">0</b><span>Presence peers</span></div>
+            <div class="metric"><b id="metric-admin">0</b><span>Admin calls</span></div>
+            <div class="metric"><b id="metric-yjs">0</b><span>Yjs frames</span></div>
+          </div>
+          <div class="section">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Surface</th>
+                    <th>Status</th>
+                    <th>Where</th>
+                    <th>Console action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Realtime rooms and events</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">/ws</td>
+                    <td>Connect, join, emit, leave</td>
+                  </tr>
+                  <tr>
+                    <td>Full presence path</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">PRESENCE_SET, /v1/presence, active_users</td>
+                    <td>Client state, admin state, active user read</td>
+                  </tr>
+                  <tr>
+                    <td>Room metadata and grants</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">/v1/rooms</td>
+                    <td>Create, list, read, patch, delete</td>
+                  </tr>
+                  <tr>
+                    <td>Durable JSON and typed storage</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">/v1/rooms/{room}/storage</td>
+                    <td>Get, put, delete, JSON Patch</td>
+                  </tr>
+                  <tr>
+                    <td>Threads and comments</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">/v1/rooms/{room}/threads</td>
+                    <td>Create thread, append comment, list</td>
+                  </tr>
+                  <tr>
+                    <td>Inbox notifications and settings</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">/v1/inbox-notifications, /v1/users</td>
+                    <td>Trigger, list, read, delete, settings</td>
+                  </tr>
+                  <tr>
+                    <td>Yjs document sync transport</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">/yjs/{room}, @openrtc/yjs</td>
+                    <td>Binary connect, update send, replay, snapshot rejection</td>
+                  </tr>
+                  <tr>
+                    <td>CRDT conflict resolution</td>
+                    <td><span class="badge info">Yjs-owned</span></td>
+                    <td class="mono">@openrtc/yjs</td>
+                    <td>Transport probe here; semantic merge in Yjs package tests</td>
+                  </tr>
+                  <tr>
+                    <td>Rich text editor helpers</td>
+                    <td><span class="badge info">package helpers</span></td>
+                    <td class="mono">@openrtc/rich-text</td>
+                    <td>Tiptap, Lexical, BlockNote binding shapes listed in package</td>
+                  </tr>
+                  <tr>
+                    <td>Hosted editor examples</td>
+                    <td><span class="badge warn">not embedded</span></td>
+                    <td class="mono">reference-app/static</td>
+                    <td>This console has probes, not a Tiptap/Lexical editor canvas</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Smoke Probe Log</h3>
+            <div class="log" id="probe-log" style="margin-top: 8px;"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-realtime">
+          <div class="panel-header">
+            <div>
+              <h2>Realtime Protocol</h2>
+              <p>JSON WebSocket room lifecycle, client events, client presence, and admin fan-out.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" class="primary" onclick="connectAndJoin()">Connect + join</button>
+              <button type="button" onclick="joinRoom()">Join</button>
+              <button type="button" onclick="leaveRoom()">Leave</button>
+            </div>
+          </div>
+          <div class="grid two">
+            <div class="grid">
+              <label>Client event name
+                <input id="event-name" value="dev.message">
+              </label>
+              <label>Client event payload
+                <textarea id="event-payload"></textarea>
+              </label>
+              <div class="button-row">
+                <button type="button" class="primary" onclick="sendClientEvent()">Send client event</button>
+                <button type="button" onclick="sendAdminPublish()">Admin publish</button>
+              </div>
+            </div>
+            <div class="grid">
+              <label>Presence state
+                <textarea id="presence-payload"></textarea>
+              </label>
+              <label>Admin presence connection ID
+                <input id="admin-presence-conn" value="admin-console">
+              </label>
+              <div class="button-row">
+                <button type="button" class="primary" onclick="setClientPresence()">Set client presence</button>
+                <button type="button" onclick="setAdminPresence()">Set admin presence</button>
+                <button type="button" onclick="loadActiveUsers()">Active users</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Realtime Log</h3>
+            <div class="log" id="realtime-log" style="margin-top: 8px;"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-rooms">
+          <div class="panel-header">
+            <div>
+              <h2>Rooms</h2>
+              <p>Room metadata, access grants, and active-user reads.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" onclick="listRooms()">List</button>
+              <button type="button" onclick="getRoom()">Get</button>
+              <button type="button" class="danger" onclick="deleteRoom()">Delete</button>
+            </div>
+          </div>
+          <div class="grid three">
+            <label>List prefix
+              <input id="room-prefix" value="demo:">
+            </label>
+            <label>Limit
+              <input id="room-limit" value="50" inputmode="numeric">
+            </label>
+            <label>Cursor
+              <input id="room-cursor" placeholder="optional">
+            </label>
+          </div>
+          <div class="section">
+            <div class="split">
+              <div class="grid">
+                <h3>Create body</h3>
+                <textarea id="room-create-body"></textarea>
+                <button type="button" class="primary" onclick="createRoom()">Create room</button>
+              </div>
+              <div class="grid">
+                <h3>Patch body</h3>
+                <textarea id="room-update-body"></textarea>
+                <button type="button" onclick="updateRoom()">Patch room</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Room Result</h3>
+            <div class="output" style="margin-top: 8px;"><pre id="rooms-output"></pre></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-storage">
+          <div class="panel-header">
+            <div>
+              <h2>Storage</h2>
+              <p>Durable room JSON, typed storage roots, and atomic JSON Patch.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" onclick="getStorage()">Get</button>
+              <button type="button" class="danger" onclick="deleteStorage()">Delete</button>
+            </div>
+          </div>
+          <div class="split">
+            <div class="grid">
+              <h3>Storage document</h3>
+              <textarea id="storage-body"></textarea>
+              <button type="button" class="primary" onclick="putStorage()">Put storage</button>
+            </div>
+            <div class="grid">
+              <h3>JSON Patch</h3>
+              <textarea id="storage-patch-body"></textarea>
+              <button type="button" onclick="patchStorage()">Apply patch</button>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Storage Result</h3>
+            <div class="output" style="margin-top: 8px;"><pre id="storage-output"></pre></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-threads">
+          <div class="panel-header">
+            <div>
+              <h2>Threads</h2>
+              <p>Durable room threads and comments.</p>
+            </div>
+            <button type="button" onclick="listThreads()">List threads</button>
+          </div>
+          <div class="grid two">
+            <div class="grid">
+              <h3>Create thread</h3>
+              <textarea id="thread-create-body"></textarea>
+              <button type="button" class="primary" onclick="createThread()">Create thread</button>
+            </div>
+            <div class="grid">
+              <h3>Add comment</h3>
+              <label>Thread ID
+                <input id="thread-id" value="thread-1">
+              </label>
+              <textarea id="comment-create-body"></textarea>
+              <button type="button" onclick="addComment()">Add comment</button>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Thread Result</h3>
+            <div class="output" style="margin-top: 8px;"><pre id="threads-output"></pre></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-notifications">
+          <div class="panel-header">
+            <div>
+              <h2>Notifications</h2>
+              <p>Inbox notification CRUD, project settings, and room subscription settings.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" onclick="listNotifications()">List inbox</button>
+              <button type="button" onclick="clearNotifications()" class="danger">Clear inbox</button>
+            </div>
+          </div>
+          <div class="grid three">
+            <label>User ID
+              <input id="notification-user" value="user-1">
+            </label>
+            <label>Notification ID
+              <input id="notification-id" placeholder="optional">
+            </label>
+            <label>Unread only
+              <select id="notification-unread">
+                <option value="">All</option>
+                <option value="true">Unread</option>
+              </select>
+            </label>
+          </div>
+          <div class="section">
+            <div class="grid two">
+              <div class="grid">
+                <h3>Trigger notification</h3>
+                <textarea id="notification-body"></textarea>
+                <button type="button" class="primary" onclick="triggerNotification()">Trigger</button>
+              </div>
+              <div class="grid">
+                <h3>User notification actions</h3>
+                <div class="button-row">
+                  <button type="button" onclick="getNotification()">Get one</button>
+                  <button type="button" onclick="markNotificationRead()">Mark read</button>
+                  <button type="button" class="danger" onclick="deleteNotification()">Delete one</button>
+                </div>
+                <h3>Notification settings</h3>
+                <textarea id="notification-settings-body"></textarea>
+                <div class="button-row">
+                  <button type="button" onclick="getNotificationSettings()">Get settings</button>
+                  <button type="button" onclick="setNotificationSettings()">Set settings</button>
+                  <button type="button" class="danger" onclick="deleteNotificationSettings()">Reset settings</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Room subscription settings</h3>
+            <div class="grid two">
+              <textarea id="subscription-settings-body"></textarea>
+              <div class="button-row">
+                <button type="button" onclick="getRoomSubscriptionSettings()">Get room setting</button>
+                <button type="button" onclick="setRoomSubscriptionSettings()">Set room setting</button>
+                <button type="button" onclick="listRoomSubscriptionSettings()">List room settings</button>
+                <button type="button" class="danger" onclick="deleteRoomSubscriptionSettings()">Reset room setting</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Notification Result</h3>
+            <div class="output" style="margin-top: 8px;"><pre id="notifications-output"></pre></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-yjs">
+          <div class="panel-header">
+            <div>
+              <h2>Yjs Binary Sync</h2>
+              <p>Connects to the persisted binary sync endpoint and checks replay and rejection behavior.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" class="primary" onclick="connectYjs()">Connect Yjs</button>
+              <button type="button" class="danger" onclick="disconnectYjs()">Close Yjs</button>
+            </div>
+          </div>
+          <div class="grid two">
+            <div class="grid">
+              <label>Update text bytes
+                <textarea id="yjs-update-text"></textarea>
+              </label>
+              <div class="button-row">
+                <button type="button" class="primary" onclick="sendYjsUpdate()">Send 0x01 update</button>
+                <button type="button" onclick="reconnectYjs()">Reconnect and replay</button>
+                <button type="button" class="danger" onclick="sendYjsSnapshot()">Try forbidden 0x02 snapshot</button>
+              </div>
+            </div>
+            <div class="grid">
+              <h3>Yjs Frame Log</h3>
+              <div class="log" id="yjs-log"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-ops">
+          <div class="panel-header">
+            <div>
+              <h2>Ops</h2>
+              <p>Health, readiness, metrics, and aggregate stats.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" onclick="checkHealth()">Health</button>
+              <button type="button" onclick="loadStats()">Stats</button>
+              <button type="button" onclick="loadMetrics()">Metrics</button>
+            </div>
+          </div>
+          <div class="grid two">
+            <div class="grid">
+              <h3>Stats</h3>
+              <div class="output"><pre id="stats-output"></pre></div>
+            </div>
+            <div class="grid">
+              <h3>Health and Metrics</h3>
+              <div class="output"><pre id="ops-output"></pre></div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
   </div>
 
   <script>
-    let ws = null;
-    let token = null;
-    let username = '';
-    let room = '';
-    let connId = '';
-    let wsURL = '';
-    let presenceState = {};
-    let typingTimeout = null;
+    const state = {
+      config: null,
+      clientToken: "",
+      adminToken: "",
+      ws: null,
+      yjs: null,
+      username: "",
+      tenant: "demo",
+      room: "demo:general",
+      connId: "",
+      members: new Set(),
+      presence: new Map(),
+      counters: {
+        events: 0,
+        admin: 0,
+        yjs: 0,
+      },
+    };
 
-    async function connect() {
-      username = document.getElementById('username-input').value.trim();
-      room = document.getElementById('room-input').value.trim();
-      if (!username || !room) return;
+    const samples = {
+      eventPayload: () => ({
+        text: "hello from dev console",
+        sender: currentUsername(),
+        sentAt: new Date().toISOString(),
+      }),
+      presencePayload: () => ({
+        user: currentUsername(),
+        status: "online",
+        color: "#0f766e",
+        cursor: { x: 120, y: 240 },
+      }),
+      roomCreate: () => ({
+        id: currentRoom(),
+        metadata: {
+          title: currentRoom(),
+          source: "dev-console",
+        },
+        defaultAccesses: ["room:write"],
+        groupsAccesses: {
+          editors: ["room:write", "comments:write"],
+        },
+      }),
+      roomUpdate: () => ({
+        metadata: {
+          title: currentRoom(),
+          updatedBy: currentUsername(),
+          updatedAt: new Date().toISOString(),
+        },
+      }),
+      storage: () => ({
+        liveblocksType: "LiveObject",
+        data: {
+          title: "OpenRTC workspace",
+          status: "draft",
+          todos: {
+            liveblocksType: "LiveList",
+            data: ["create room", "set presence", "sync document"],
+          },
+          meta: {
+            liveblocksType: "LiveMap",
+            data: {
+              owner: currentUsername(),
+              room: currentRoom(),
+            },
+          },
+        },
+      }),
+      storagePatch: () => [
+        { op: "replace", path: "/data/status", value: "reviewed" },
+        { op: "add", path: "/data/lastPatchedAt", value: new Date().toISOString() },
+      ],
+      threadCreate: () => ({
+        id: "thread-1",
+        metadata: { section: "intro" },
+        comment: {
+          id: "comment-1",
+          userId: currentUsername(),
+          body: { type: "text", text: "First comment from the dev console." },
+          metadata: { source: "dev-console" },
+        },
+      }),
+      commentCreate: () => ({
+        id: "comment-" + Date.now(),
+        userId: currentUsername(),
+        body: { type: "text", text: "Follow-up comment." },
+        metadata: { source: "dev-console" },
+      }),
+      notification: () => ({
+        userId: notificationUser(),
+        kind: "$custom",
+        subjectId: "subject-1",
+        threadId: "thread-1",
+        roomId: currentRoom(),
+        activityData: {
+          count: 1,
+          source: "dev-console",
+        },
+      }),
+      notificationSettings: () => ({
+        email: true,
+        web: true,
+        digest: "daily",
+      }),
+      subscriptionSettings: () => ({
+        threads: "all",
+        textMentions: "mine",
+      }),
+    };
 
-      // Get server config
-      const configResp = await fetch('/config');
-      const config = await configResp.json();
-      wsURL = config.wsURL;
-
-      // Get JWT token
-      const tokenResp = await fetch('/token?username=' + encodeURIComponent(username));
-      const tokenData = await tokenResp.json();
-      token = tokenData.token;
-
-      // Connect WebSocket
-      ws = new WebSocket(wsURL + '?token=' + token);
-
-      ws.onopen = () => {
-        setStatus(true);
-      };
-
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        handleMessage(msg);
-      };
-
-      ws.onclose = (event) => {
-        setStatus(false);
-        addSystemMessage('Disconnected: ' + (event.reason || 'connection closed'));
-      };
-
-      ws.onerror = () => {
-        setStatus(false);
-      };
-
-      document.getElementById('setup').style.display = 'none';
-      document.getElementById('chat').classList.add('active');
-      document.getElementById('room-label').textContent = '#' + room;
-      document.getElementById('msg-input').focus();
-    }
-
-    function handleMessage(msg) {
-      switch (msg.t) {
-        case 'HELLO':
-          connId = msg.payload.conn_id;
-          addSystemMessage('Connected as ' + username + ' (node: ' + msg.payload.server.node_id + ')');
-          // Join room
-          ws.send(JSON.stringify({ t: 'JOIN', id: 'join-1', room: room }));
-          // Set initial presence
-          ws.send(JSON.stringify({ t: 'PRESENCE_SET', id: 'pres-1', room: room, payload: { username: username, status: 'online' } }));
-          break;
-
-        case 'JOINED':
-          addSystemMessage('Joined #' + msg.room + ' (' + msg.payload.members.length + ' members)');
-          // Load existing presence
-          if (msg.payload.presence) {
-            for (const [cid, state] of Object.entries(msg.payload.presence)) {
-              try {
-                presenceState[cid] = typeof state === 'string' ? JSON.parse(state) : state;
-              } catch(e) {}
-            }
-            updatePresenceDisplay();
-          }
-          break;
-
-        case 'EVENT':
-          addChatMessage(msg.payload.sender || msg.payload.username || 'unknown', msg.payload.text || JSON.stringify(msg.payload));
-          break;
-
-        case 'PRESENCE':
-          if (msg.payload && msg.payload.conn_id) {
-            presenceState[msg.payload.conn_id] = typeof msg.payload.state === 'string' ? JSON.parse(msg.payload.state) : msg.payload.state;
-            updatePresenceDisplay();
-          }
-          break;
-
-        case 'LEFT':
-          addSystemMessage('Left #' + msg.room);
-          break;
-
-        case 'ERROR':
-          addSystemMessage('Error: ' + (msg.payload.message || JSON.stringify(msg.payload)));
-          break;
-      }
-    }
-
-    function sendMessage() {
-      const input = document.getElementById('msg-input');
-      const text = input.value.trim();
-      if (!text || !ws) return;
-
-      ws.send(JSON.stringify({
-        t: 'EMIT',
-        id: 'msg-' + Date.now(),
-        room: room,
-        event: 'chat.message',
-        payload: { text: text, username: username, sender: username }
-      }));
-
-      input.value = '';
-
-      // Reset typing presence
-      ws.send(JSON.stringify({
-        t: 'PRESENCE_SET',
-        id: 'pres-' + Date.now(),
-        room: room,
-        payload: { username: username, status: 'online' }
-      }));
-    }
-
-    // Typing indicator
-    document.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('msg-input').addEventListener('input', () => {
-        if (!ws) return;
-        ws.send(JSON.stringify({
-          t: 'PRESENCE_SET',
-          id: 'pres-typing-' + Date.now(),
-          room: room,
-          payload: { username: username, status: 'typing' }
-        }));
-        clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(() => {
-          ws.send(JSON.stringify({
-            t: 'PRESENCE_SET',
-            id: 'pres-idle-' + Date.now(),
-            room: room,
-            payload: { username: username, status: 'online' }
-          }));
-        }, 2000);
+    document.addEventListener("DOMContentLoaded", () => {
+      document.querySelectorAll(".tab-button").forEach((button) => {
+        button.addEventListener("click", () => activateTab(button.dataset.tab));
       });
+      const randomID = Math.floor(Math.random() * 9000) + 1000;
+      byId("username").value = "user-" + randomID;
+      byId("notification-user").value = "user-" + randomID;
+      resetSamples();
+      loadConfig();
+      renderState();
     });
 
-    function updatePresenceDisplay() {
-      const users = Object.values(presenceState).filter(s => s && s.username);
-      const typing = users.filter(s => s.status === 'typing').map(s => s.username);
-      const online = users.map(s => s.username);
+    function byId(id) {
+      return document.getElementById(id);
+    }
 
-      let text = online.length + ' online';
-      if (typing.length > 0) {
-        text += ' | ' + typing.join(', ') + (typing.length === 1 ? ' is' : ' are') + ' typing...';
+    function activateTab(tab) {
+      document.querySelectorAll(".tab-button").forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === tab);
+      });
+      document.querySelectorAll(".panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === "tab-" + tab);
+      });
+    }
+
+    function resetSamples() {
+      setJSON("event-payload", samples.eventPayload());
+      setJSON("presence-payload", samples.presencePayload());
+      setJSON("room-create-body", samples.roomCreate());
+      setJSON("room-update-body", samples.roomUpdate());
+      setJSON("storage-body", samples.storage());
+      setJSON("storage-patch-body", samples.storagePatch());
+      setJSON("thread-create-body", samples.threadCreate());
+      setJSON("comment-create-body", samples.commentCreate());
+      setJSON("notification-body", samples.notification());
+      setJSON("notification-settings-body", samples.notificationSettings());
+      setJSON("subscription-settings-body", samples.subscriptionSettings());
+      byId("yjs-update-text").value = "openrtc-yjs-update-" + Date.now();
+    }
+
+    function syncRoomFields() {
+      state.room = currentRoom();
+      byId("room-prefix").value = roomPrefixFrom(currentRoom());
+      setJSON("room-create-body", samples.roomCreate());
+      setJSON("room-update-body", samples.roomUpdate());
+      setJSON("storage-body", samples.storage());
+      setJSON("notification-body", samples.notification());
+    }
+
+    async function loadConfig() {
+      try {
+        const response = await fetch("/config");
+        state.config = await response.json();
+        byId("config-line").textContent = state.config.wsURL + " | " + state.config.adminProxyURL;
+        await checkHealth();
+      } catch (error) {
+        byId("config-line").textContent = "Config failed: " + error.message;
+        setDot("runtime-dot", "err");
+        setDot("admin-dot", "err");
       }
-      document.getElementById('presence-display').textContent = text;
     }
 
-    function addChatMessage(sender, text) {
-      const div = document.createElement('div');
-      div.className = 'message';
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      div.innerHTML = '<span class="sender">' + escapeHtml(sender) + '</span><span class="time">' + time + '</span><div class="text">' + escapeHtml(text) + '</div>';
-      document.getElementById('messages').appendChild(div);
-      div.scrollIntoView({ behavior: 'smooth' });
+    async function issueTokens() {
+      state.clientToken = await fetchToken("client");
+      state.adminToken = await fetchToken("admin");
+      renderState();
+      log("probe-log", "Issued client and admin JWTs for " + currentUsername(), "ok");
     }
 
-    function addSystemMessage(text) {
-      const div = document.createElement('div');
-      div.className = 'message system';
-      div.textContent = text;
-      document.getElementById('messages').appendChild(div);
-      div.scrollIntoView({ behavior: 'smooth' });
+    async function fetchToken(kind) {
+      const params = new URLSearchParams({
+        kind,
+        username: currentUsername(),
+        tenant: currentTenant(),
+      });
+      const groups = byId("groups").value.trim();
+      if (groups) {
+        params.set("groups", groups);
+      }
+      if (kind === "client" && byId("client-access").value === "grants") {
+        params.set("access", "grants");
+      }
+      if (kind === "admin") {
+        params.set("scope", byId("admin-scope").value.trim());
+      }
+      const response = await fetch("/token?" + params.toString());
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "token request failed");
+      }
+      return payload.token;
     }
 
-    function setStatus(connected) {
-      document.getElementById('status-dot').className = 'status' + (connected ? ' connected' : '');
-      document.getElementById('status-text').textContent = connected ? 'Connected' : 'Disconnected';
+    async function ensureConfig() {
+      if (!state.config) {
+        await loadConfig();
+      }
     }
 
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+    async function ensureClientToken() {
+      if (!state.clientToken) {
+        state.clientToken = await fetchToken("client");
+        renderState();
+      }
+      return state.clientToken;
+    }
+
+    async function ensureAdminToken() {
+      if (!state.adminToken) {
+        state.adminToken = await fetchToken("admin");
+        renderState();
+      }
+      return state.adminToken;
+    }
+
+    async function connectAndJoin() {
+      await connectWS();
+      setTimeout(() => joinRoom(), 150);
+    }
+
+    async function connectWS() {
+      await ensureConfig();
+      const token = await ensureClientToken();
+      if (state.ws && state.ws.readyState <= 1) {
+        state.ws.close();
+      }
+      state.members.clear();
+      state.presence.clear();
+      state.connId = "";
+      state.room = currentRoom();
+      state.ws = new WebSocket(state.config.wsURL + "?token=" + encodeURIComponent(token));
+      setDot("ws-dot", "warn");
+      byId("ws-status").textContent = "WS connecting";
+
+      state.ws.addEventListener("open", () => {
+        setDot("ws-dot", "ok");
+        byId("ws-status").textContent = "WS open";
+        log("realtime-log", "WebSocket open", "ok");
+        renderState();
+      });
+      state.ws.addEventListener("message", (event) => handleWSMessage(event.data));
+      state.ws.addEventListener("close", (event) => {
+        setDot("ws-dot", "");
+        byId("ws-status").textContent = "WS closed";
+        log("realtime-log", "WebSocket closed " + (event.reason || event.code || ""), "warn");
+        renderState();
+      });
+      state.ws.addEventListener("error", () => {
+        setDot("ws-dot", "err");
+        byId("ws-status").textContent = "WS error";
+        log("realtime-log", "WebSocket error", "err");
+      });
+    }
+
+    function handleWSMessage(raw) {
+      let message;
+      try {
+        message = JSON.parse(raw);
+      } catch (error) {
+        log("realtime-log", raw, "warn", "non-json message");
+        return;
+      }
+      log("realtime-log", message, message.t === "ERROR" ? "err" : "ok", message.t || "message");
+
+      switch (message.t) {
+        case "HELLO":
+          state.connId = message.payload && message.payload.conn_id ? message.payload.conn_id : "";
+          byId("admin-presence-conn").value = state.connId || "admin-console";
+          break;
+        case "JOINED":
+          state.room = message.room || state.room;
+          state.members = new Set((message.payload && message.payload.members) || []);
+          state.presence.clear();
+          hydratePresence(message.payload && message.payload.presence);
+          break;
+        case "PRESENCE":
+          if (message.payload && message.payload.conn_id) {
+            if (message.payload.offline) {
+              state.presence.delete(message.payload.conn_id);
+            } else {
+              state.presence.set(message.payload.conn_id, parseMaybeJSON(message.payload.state));
+            }
+          }
+          break;
+        case "EVENT":
+          state.counters.events += 1;
+          break;
+        case "LEFT":
+          state.members.delete(state.connId);
+          break;
+        default:
+          break;
+      }
+      renderState();
+    }
+
+    function hydratePresence(presence) {
+      if (!presence || typeof presence !== "object") {
+        return;
+      }
+      Object.entries(presence).forEach(([connID, value]) => {
+        state.presence.set(connID, parseMaybeJSON(value));
+      });
+    }
+
+    function joinRoom() {
+      sendWS({
+        t: "JOIN",
+        id: requestID("join"),
+        room: currentRoom(),
+      });
+    }
+
+    function leaveRoom() {
+      sendWS({
+        t: "LEAVE",
+        id: requestID("leave"),
+        room: currentRoom(),
+      });
+    }
+
+    function sendClientEvent() {
+      sendWS({
+        t: "EMIT",
+        id: requestID("emit"),
+        room: currentRoom(),
+        event: byId("event-name").value.trim() || "dev.message",
+        payload: jsonFrom("event-payload"),
+      });
+    }
+
+    function setClientPresence() {
+      sendWS({
+        t: "PRESENCE_SET",
+        id: requestID("presence"),
+        room: currentRoom(),
+        payload: jsonFrom("presence-payload"),
+      });
+    }
+
+    function sendWS(payload) {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        log("realtime-log", "WebSocket is not open", "err");
+        return;
+      }
+      state.ws.send(JSON.stringify(payload));
+      log("realtime-log", payload, "ok", "sent " + payload.t);
+    }
+
+    async function sendAdminPublish() {
+      const body = {
+        room: currentRoom(),
+        event: byId("event-name").value.trim() || "dev.message",
+        payload: jsonFrom("event-payload"),
+      };
+      await adminJSON("/v1/publish", { method: "POST", body }, "realtime-log");
+    }
+
+    async function setAdminPresence() {
+      const body = {
+        room: currentRoom(),
+        conn_id: byId("admin-presence-conn").value.trim() || "admin-console",
+        state: jsonFrom("presence-payload"),
+        ttl_seconds: 120,
+      };
+      await adminJSON("/v1/presence", { method: "POST", body }, "realtime-log");
+    }
+
+    async function loadActiveUsers() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/active_users", {}, "realtime-log");
+      setOutput("rooms-output", result.body);
+      activateTab("rooms");
+    }
+
+    async function createRoom() {
+      const result = await adminJSON("/v1/rooms", { method: "POST", body: jsonFrom("room-create-body") }, "probe-log");
+      setOutput("rooms-output", result.body);
+    }
+
+    async function listRooms() {
+      const params = new URLSearchParams();
+      if (byId("room-prefix").value.trim()) params.set("prefix", byId("room-prefix").value.trim());
+      if (byId("room-limit").value.trim()) params.set("limit", byId("room-limit").value.trim());
+      if (byId("room-cursor").value.trim()) params.set("cursor", byId("room-cursor").value.trim());
+      const result = await adminJSON("/v1/rooms?" + params.toString(), {}, "probe-log");
+      setOutput("rooms-output", result.body);
+    }
+
+    async function getRoom() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()), {}, "probe-log");
+      setOutput("rooms-output", result.body);
+    }
+
+    async function updateRoom() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()), {
+        method: "PATCH",
+        body: jsonFrom("room-update-body"),
+      }, "probe-log");
+      setOutput("rooms-output", result.body);
+    }
+
+    async function deleteRoom() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()), { method: "DELETE" }, "probe-log");
+      setOutput("rooms-output", result.body || { deleted: currentRoom(), status: result.status });
+    }
+
+    async function getStorage() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", {}, "probe-log");
+      setOutput("storage-output", result.body);
+    }
+
+    async function putStorage() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", {
+        method: "PUT",
+        body: jsonFrom("storage-body"),
+      }, "probe-log");
+      setOutput("storage-output", result.body);
+    }
+
+    async function patchStorage() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage/json-patch", {
+        method: "PATCH",
+        body: jsonFrom("storage-patch-body"),
+      }, "probe-log");
+      setOutput("storage-output", result.body);
+    }
+
+    async function deleteStorage() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "DELETE" }, "probe-log");
+      setOutput("storage-output", result.body || { deleted: currentRoom(), status: result.status });
+    }
+
+    async function listThreads() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", {}, "probe-log");
+      setOutput("threads-output", result.body);
+    }
+
+    async function createThread() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", {
+        method: "POST",
+        body: jsonFrom("thread-create-body"),
+      }, "probe-log");
+      setOutput("threads-output", result.body);
+    }
+
+    async function addComment() {
+      const threadID = byId("thread-id").value.trim() || "thread-1";
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads/" + enc(threadID) + "/comments", {
+        method: "POST",
+        body: jsonFrom("comment-create-body"),
+      }, "probe-log");
+      setOutput("threads-output", result.body);
+    }
+
+    async function triggerNotification() {
+      const result = await adminJSON("/v1/inbox-notifications/trigger", {
+        method: "POST",
+        body: jsonFrom("notification-body"),
+      }, "probe-log");
+      if (result.body && result.body.id) {
+        byId("notification-id").value = result.body.id;
+      }
+      setOutput("notifications-output", result.body);
+    }
+
+    async function listNotifications() {
+      const params = new URLSearchParams({ limit: "50" });
+      if (byId("notification-unread").value) params.set("unread", "true");
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications?" + params.toString(), {}, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function getNotification() {
+      const id = requireNotificationID();
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications/" + enc(id), {}, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function markNotificationRead() {
+      const id = requireNotificationID();
+      const result = await adminJSON("/v1/inbox-notifications/" + enc(id) + "/read", { method: "POST" }, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function deleteNotification() {
+      const id = requireNotificationID();
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications/" + enc(id), {
+        method: "DELETE",
+      }, "probe-log");
+      setOutput("notifications-output", result.body || { deleted: id, status: result.status });
+    }
+
+    async function clearNotifications() {
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications", {
+        method: "DELETE",
+      }, "probe-log");
+      setOutput("notifications-output", result.body || { cleared: notificationUser(), status: result.status });
+    }
+
+    async function getNotificationSettings() {
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/notification-settings", {}, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function setNotificationSettings() {
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/notification-settings", {
+        method: "POST",
+        body: jsonFrom("notification-settings-body"),
+      }, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function deleteNotificationSettings() {
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/notification-settings", {
+        method: "DELETE",
+      }, "probe-log");
+      setOutput("notifications-output", result.body || { reset: notificationUser(), status: result.status });
+    }
+
+    async function getRoomSubscriptionSettings() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/users/" + enc(notificationUser()) + "/subscription-settings", {}, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function setRoomSubscriptionSettings() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/users/" + enc(notificationUser()) + "/subscription-settings", {
+        method: "POST",
+        body: jsonFrom("subscription-settings-body"),
+      }, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function deleteRoomSubscriptionSettings() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/users/" + enc(notificationUser()) + "/subscription-settings", {
+        method: "DELETE",
+      }, "probe-log");
+      setOutput("notifications-output", result.body || { reset: currentRoom(), user: notificationUser(), status: result.status });
+    }
+
+    async function listRoomSubscriptionSettings() {
+      const result = await adminJSON("/v1/users/" + enc(notificationUser()) + "/room-subscription-settings", {}, "probe-log");
+      setOutput("notifications-output", result.body);
+    }
+
+    async function connectYjs() {
+      await ensureConfig();
+      const token = await ensureClientToken();
+      disconnectYjs();
+      const url = state.config.yjsURL + "/" + enc(currentRoom()) + "?token=" + encodeURIComponent(token);
+      state.yjs = new WebSocket(url);
+      state.yjs.binaryType = "arraybuffer";
+      setDot("yjs-dot", "warn");
+      byId("yjs-status").textContent = "Yjs connecting";
+      state.yjs.addEventListener("open", () => {
+        setDot("yjs-dot", "ok");
+        byId("yjs-status").textContent = "Yjs open";
+        log("yjs-log", "Yjs WebSocket open", "ok");
+      });
+      state.yjs.addEventListener("message", async (event) => {
+        const bytes = new Uint8Array(await toArrayBuffer(event.data));
+        state.counters.yjs += 1;
+        renderState();
+        log("yjs-log", {
+          kind: bytes[0],
+          bytes: bytes.length,
+          payloadHex: bytesToHex(bytes.slice(1)),
+          payloadText: decodeBytes(bytes.slice(1)),
+        }, "ok", "frame");
+      });
+      state.yjs.addEventListener("close", (event) => {
+        setDot("yjs-dot", "");
+        byId("yjs-status").textContent = "Yjs closed";
+        log("yjs-log", "Yjs closed " + (event.reason || event.code || ""), "warn");
+      });
+      state.yjs.addEventListener("error", () => {
+        setDot("yjs-dot", "err");
+        byId("yjs-status").textContent = "Yjs error";
+        log("yjs-log", "Yjs error", "err");
+      });
+    }
+
+    function sendYjsUpdate() {
+      sendYjsFrame(1, byId("yjs-update-text").value || "openrtc-yjs-update");
+    }
+
+    function sendYjsSnapshot() {
+      sendYjsFrame(2, byId("yjs-update-text").value || "forbidden-snapshot");
+    }
+
+    function sendYjsFrame(kind, text) {
+      if (!state.yjs || state.yjs.readyState !== WebSocket.OPEN) {
+        log("yjs-log", "Yjs WebSocket is not open", "err");
+        return;
+      }
+      const payload = new TextEncoder().encode(text);
+      const frame = new Uint8Array(payload.length + 1);
+      frame[0] = kind;
+      frame.set(payload, 1);
+      state.yjs.send(frame);
+      log("yjs-log", { kind, bytes: frame.length, payloadText: text }, kind === 1 ? "ok" : "warn", "sent");
+    }
+
+    async function reconnectYjs() {
+      disconnectYjs();
+      await delay(150);
+      await connectYjs();
+    }
+
+    function disconnectYjs() {
+      if (state.yjs) {
+        state.yjs.close();
+        state.yjs = null;
+      }
+      setDot("yjs-dot", "");
+      byId("yjs-status").textContent = "Yjs closed";
+    }
+
+    async function checkHealth() {
+      await ensureConfig();
+      const targets = [
+        ["runtime health", "/runtime/healthz"],
+        ["runtime ready", "/runtime/readyz"],
+        ["admin health", "/admin/healthz"],
+        ["admin ready", "/admin/readyz"],
+      ];
+      const rows = [];
+      for (const [name, path] of targets) {
+        try {
+          const response = await fetch(path);
+          const text = await response.text();
+          rows.push({ name, status: response.status, body: text.trim() });
+          if (name.startsWith("runtime")) setDot("runtime-dot", response.ok ? "ok" : "err");
+          if (name.startsWith("admin")) setDot("admin-dot", response.ok ? "ok" : "err");
+        } catch (error) {
+          rows.push({ name, error: error.message });
+          if (name.startsWith("runtime")) setDot("runtime-dot", "err");
+          if (name.startsWith("admin")) setDot("admin-dot", "err");
+        }
+      }
+      byId("runtime-status").textContent = "Runtime checked";
+      byId("admin-status").textContent = "Admin checked";
+      setOutput("ops-output", rows);
+      return rows;
+    }
+
+    async function loadStats() {
+      const result = await adminJSON("/v1/stats", {}, "probe-log");
+      setOutput("stats-output", result.body);
+      return result;
+    }
+
+    async function loadMetrics() {
+      const chunks = [];
+      for (const path of ["/runtime/metrics", "/admin/metrics"]) {
+        try {
+          const response = await fetch(path);
+          chunks.push("## " + path + " (" + response.status + ")\n" + (await response.text()).slice(0, 8000));
+        } catch (error) {
+          chunks.push("## " + path + "\n" + error.message);
+        }
+      }
+      byId("ops-output").textContent = chunks.join("\n\n");
+    }
+
+    async function runSmokeProbe() {
+      activateTab("overview");
+      const probeRoom = currentTenant() + ":console-" + Date.now();
+      byId("room").value = probeRoom;
+      syncRoomFields();
+      log("probe-log", "Starting smoke probe for " + probeRoom, "warn");
+      try {
+        await ensureConfig();
+        await issueTokens();
+        await checkHealth();
+        await adminJSON("/v1/rooms", { method: "POST", body: samples.roomCreate() }, "probe-log");
+        await adminJSON("/v1/rooms?prefix=" + encodeURIComponent(roomPrefixFrom(currentRoom())) + "&limit=10", {}, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "PUT", body: samples.storage() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage/json-patch", { method: "PATCH", body: samples.storagePatch() }, "probe-log");
+        await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", { method: "POST", body: samples.threadCreate() }, "probe-log");
+        const notification = await adminJSON("/v1/inbox-notifications/trigger", { method: "POST", body: samples.notification() }, "probe-log");
+        if (notification.body && notification.body.id) {
+          byId("notification-id").value = notification.body.id;
+        }
+        await adminJSON("/v1/users/" + enc(notificationUser()) + "/inbox-notifications?limit=10", {}, "probe-log");
+        await loadStats();
+        log("probe-log", "Smoke probe finished", "ok");
+      } catch (error) {
+        log("probe-log", error.message, "err", "probe failed");
+      }
+    }
+
+    async function adminJSON(path, options = {}, logID = "probe-log", extra = {}) {
+      await ensureConfig();
+      const token = await ensureAdminToken();
+      const method = options.method || "GET";
+      const headers = { Authorization: "Bearer " + token };
+      const init = { method, headers };
+      if (options.body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(options.body);
+      }
+      const response = await fetch(state.config.adminProxyURL + path, init);
+      const text = await response.text();
+      const body = parseResponseBody(text);
+      state.counters.admin += 1;
+      renderState();
+      const allowed = extra.allowStatuses || [];
+      const ok = response.ok || allowed.includes(response.status);
+      log(logID, { method, path, status: response.status, body }, ok ? "ok" : "err", "admin");
+      if (!ok) {
+        const message = body && body.message ? body.message : response.status + " " + response.statusText;
+        throw new Error(method + " " + path + ": " + message);
+      }
+      return { status: response.status, body };
+    }
+
+    function disconnectAll() {
+      if (state.ws) {
+        state.ws.close();
+        state.ws = null;
+      }
+      disconnectYjs();
+      state.connId = "";
+      state.members.clear();
+      state.presence.clear();
+      renderState();
+    }
+
+    function renderState() {
+      state.username = currentUsername();
+      state.tenant = currentTenant();
+      state.room = currentRoom();
+      byId("client-token-state").textContent = state.clientToken ? "issued" : "missing";
+      byId("client-token-state").className = "badge " + (state.clientToken ? "ok" : "warn");
+      byId("admin-token-state").textContent = state.adminToken ? "issued" : "missing";
+      byId("admin-token-state").className = "badge " + (state.adminToken ? "ok" : "warn");
+      byId("conn-id").textContent = state.connId || "none";
+      byId("member-count").textContent = String(state.members.size);
+      byId("metric-events").textContent = String(state.counters.events);
+      byId("metric-presence").textContent = String(state.presence.size);
+      byId("metric-admin").textContent = String(state.counters.admin);
+      byId("metric-yjs").textContent = String(state.counters.yjs);
+      renderPresence();
+    }
+
+    function renderPresence() {
+      const body = byId("presence-body");
+      body.replaceChildren();
+      if (state.presence.size === 0) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 2;
+        cell.className = "muted";
+        cell.textContent = "No presence yet.";
+        row.appendChild(cell);
+        body.appendChild(row);
+        return;
+      }
+      state.presence.forEach((value, connID) => {
+        const row = document.createElement("tr");
+        const conn = document.createElement("td");
+        const stateCell = document.createElement("td");
+        conn.className = "mono";
+        stateCell.className = "mono";
+        conn.textContent = shortID(connID);
+        stateCell.textContent = JSON.stringify(value);
+        row.append(conn, stateCell);
+        body.appendChild(row);
+      });
+    }
+
+    function log(targetID, payload, tone = "ok", title = "") {
+      const target = byId(targetID);
+      if (!target) return;
+      const entry = document.createElement("div");
+      entry.className = "log-entry " + tone;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const label = document.createElement("span");
+      label.textContent = title || tone;
+      const time = document.createElement("span");
+      time.textContent = new Date().toLocaleTimeString();
+      const pre = document.createElement("pre");
+      pre.textContent = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+      meta.append(label, time);
+      entry.append(meta, pre);
+      target.prepend(entry);
+      while (target.children.length > 120) {
+        target.removeChild(target.lastChild);
+      }
+    }
+
+    function setJSON(id, value) {
+      byId(id).value = JSON.stringify(value, null, 2);
+    }
+
+    function jsonFrom(id) {
+      try {
+        return JSON.parse(byId(id).value);
+      } catch (error) {
+        throw new Error(id + " contains invalid JSON: " + error.message);
+      }
+    }
+
+    function setOutput(id, value) {
+      byId(id).textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+
+    function currentUsername() {
+      return byId("username").value.trim() || "user-1";
+    }
+
+    function currentTenant() {
+      return byId("tenant").value.trim() || "demo";
+    }
+
+    function currentRoom() {
+      const raw = byId("room").value.trim();
+      return raw || currentTenant() + ":general";
+    }
+
+    function notificationUser() {
+      return byId("notification-user").value.trim() || currentUsername();
+    }
+
+    function requireNotificationID() {
+      const id = byId("notification-id").value.trim();
+      if (!id) {
+        throw new Error("Notification ID is required");
+      }
+      return id;
+    }
+
+    function roomPrefixFrom(room) {
+      const index = room.indexOf(":");
+      return index >= 0 ? room.slice(0, index + 1) : currentTenant() + ":";
+    }
+
+    function requestID(prefix) {
+      return prefix + "-" + Date.now();
+    }
+
+    function enc(value) {
+      return encodeURIComponent(value);
+    }
+
+    function parseMaybeJSON(value) {
+      if (typeof value !== "string") {
+        return value;
+      }
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    }
+
+    function parseResponseBody(text) {
+      if (!text) {
+        return "";
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    }
+
+    function setDot(id, stateName) {
+      const dot = byId(id);
+      dot.className = "dot" + (stateName ? " " + stateName : "");
+    }
+
+    function shortID(value) {
+      if (!value || value.length <= 14) return value;
+      return value.slice(0, 6) + "..." + value.slice(-5);
+    }
+
+    function delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function toArrayBuffer(data) {
+      if (data instanceof ArrayBuffer) {
+        return data;
+      }
+      if (data instanceof Blob) {
+        return data.arrayBuffer();
+      }
+      return new TextEncoder().encode(String(data)).buffer;
+    }
+
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join(" ");
+    }
+
+    function decodeBytes(bytes) {
+      try {
+        return new TextDecoder().decode(bytes);
+      } catch {
+        return "";
+      }
     }
   </script>
 </body>
