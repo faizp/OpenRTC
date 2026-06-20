@@ -4,10 +4,12 @@ import (
 	"io"
 	"log"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/gorilla/websocket"
 
 	"github.com/openrtc/openrtc/server/internal/config"
 	runtimeapp "github.com/openrtc/openrtc/server/internal/runtime"
@@ -150,6 +152,231 @@ func TestTwoClientsMessaging(t *testing.T) {
 	}
 
 	t.Log("All two-client messaging tests passed!")
+}
+
+func TestPresenceCursorFanoutAndOffline(t *testing.T) {
+	jwks, signToken := newJWKS(t)
+	defer jwks.Close()
+
+	cfg, err := config.LoadFromMap(map[string]string{
+		"OPENRTC_NODE_ID":             "node-a",
+		"OPENRTC_AUTH_ISSUER":         "https://issuer.example.com",
+		"OPENRTC_AUTH_AUDIENCE":       "openrtc-clients",
+		"OPENRTC_AUTH_JWKS_URL":       jwks.URL,
+		"OPENRTC_ADMIN_AUTH_ISSUER":   "https://issuer.example.com",
+		"OPENRTC_ADMIN_AUTH_AUDIENCE": "openrtc-admin",
+	})
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	svc, err := runtimeapp.NewService(cfg, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer svc.Close()
+	server := httptest.NewServer(svc.Handler())
+	defer server.Close()
+
+	token := signToken(t, "openrtc-clients", map[string]any{
+		"tenant":   "tenant-a",
+		"join":     []string{"tenant-a:*"},
+		"publish":  []string{"tenant-a:*"},
+		"presence": []string{"tenant-a:*"},
+	})
+	clients := []*websocket.Conn{
+		wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+token),
+		wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+token),
+		wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+token),
+	}
+	for _, client := range clients {
+		defer client.Close()
+	}
+
+	connIDs := make([]string, 0, len(clients))
+	for index, client := range clients {
+		hello := readJSON(t, client)
+		payload := hello["payload"].(map[string]any)
+		connIDs = append(connIDs, payload["conn_id"].(string))
+		mustWriteJSON(t, client, map[string]any{"t": "JOIN", "id": "join-cursor", "room": "tenant-a:cursor-room"})
+		joined := readJSON(t, client)
+		if joined["t"] != "JOINED" {
+			t.Fatalf("client %d expected JOINED, got %#v", index, joined)
+		}
+	}
+
+	cursorState := map[string]any{
+		"user":   map[string]any{"id": "user-a", "name": "Ada", "color": "#4fd1b6"},
+		"status": "editing",
+		"color":  "#4fd1b6",
+		"mode":   "comment",
+		"cursor": map[string]any{"x": 144, "y": 288, "mode": "comment", "label": "Ada"},
+	}
+	mustWriteJSON(t, clients[0], map[string]any{
+		"t":       "PRESENCE_SET",
+		"id":      "cursor-presence",
+		"room":    "tenant-a:cursor-room",
+		"payload": cursorState,
+	})
+
+	for index, client := range clients {
+		message := readJSON(t, client)
+		if message["t"] != "PRESENCE" {
+			t.Fatalf("client %d expected cursor PRESENCE, got %#v", index, message)
+		}
+		payload := message["payload"].(map[string]any)
+		if payload["conn_id"] != connIDs[0] {
+			t.Fatalf("client %d expected conn %s presence, got %#v", index, connIDs[0], payload)
+		}
+		state := payload["state"].(map[string]any)
+		cursor := state["cursor"].(map[string]any)
+		if state["mode"] != "comment" || cursor["mode"] != "comment" || cursor["x"] != float64(144) || cursor["y"] != float64(288) {
+			t.Fatalf("client %d got malformed cursor state: %#v", index, state)
+		}
+		user := state["user"].(map[string]any)
+		if user["name"] != "Ada" || state["color"] != "#4fd1b6" {
+			t.Fatalf("client %d got malformed user state: %#v", index, state)
+		}
+	}
+
+	mustWriteJSON(t, clients[1], map[string]any{"t": "LEAVE", "id": "leave-b", "room": "tenant-a:cursor-room"})
+	left := readJSON(t, clients[1])
+	if left["t"] != "LEFT" {
+		t.Fatalf("leaving client expected LEFT, got %#v", left)
+	}
+	for _, client := range []*websocket.Conn{clients[0], clients[2]} {
+		message := readJSON(t, client)
+		payload := message["payload"].(map[string]any)
+		if message["t"] != "PRESENCE" || payload["conn_id"] != connIDs[1] || payload["offline"] != true {
+			t.Fatalf("expected offline presence for %s, got %#v", connIDs[1], message)
+		}
+	}
+}
+
+func TestPresenceBenchmarkFanoutCompleteness(t *testing.T) {
+	jwks, signToken := newJWKS(t)
+	defer jwks.Close()
+
+	cfg, err := config.LoadFromMap(map[string]string{
+		"OPENRTC_NODE_ID":             "node-a",
+		"OPENRTC_AUTH_ISSUER":         "https://issuer.example.com",
+		"OPENRTC_AUTH_AUDIENCE":       "openrtc-clients",
+		"OPENRTC_AUTH_JWKS_URL":       jwks.URL,
+		"OPENRTC_ADMIN_AUTH_ISSUER":   "https://issuer.example.com",
+		"OPENRTC_ADMIN_AUTH_AUDIENCE": "openrtc-admin",
+	})
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	svc, err := runtimeapp.NewService(cfg, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer svc.Close()
+	server := httptest.NewServer(svc.Handler())
+	defer server.Close()
+
+	token := signToken(t, "openrtc-clients", map[string]any{
+		"tenant":   "tenant-a",
+		"join":     []string{"tenant-a:*"},
+		"publish":  []string{"tenant-a:*"},
+		"presence": []string{"tenant-a:*"},
+	})
+	const clientCount = 4
+	const rounds = 3
+	clients := make([]*websocket.Conn, 0, clientCount)
+	for index := 0; index < clientCount; index++ {
+		client := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+token)
+		defer client.Close()
+		clients = append(clients, client)
+	}
+
+	connIDs := make([]string, 0, clientCount)
+	for index, client := range clients {
+		hello := readJSON(t, client)
+		payload := hello["payload"].(map[string]any)
+		connIDs = append(connIDs, payload["conn_id"].(string))
+		mustWriteJSON(t, client, map[string]any{"t": "JOIN", "id": "bench-join", "room": "tenant-a:bench-room"})
+		joined := readJSON(t, client)
+		if joined["t"] != "JOINED" {
+			t.Fatalf("client %d expected JOINED, got %#v", index, joined)
+		}
+	}
+
+	runID := "bench-integration"
+	expected := make(map[string]bool, clientCount*clientCount*rounds)
+	for round := 1; round <= rounds; round++ {
+		for senderIndex, client := range clients {
+			sender := connIDs[senderIndex]
+			expected[benchmarkDeliveryKey(round, sender)] = false
+			mustWriteJSON(t, client, map[string]any{
+				"t":    "PRESENCE_SET",
+				"id":   "bench-presence",
+				"room": "tenant-a:bench-room",
+				"payload": map[string]any{
+					"user": map[string]any{
+						"id":    sender,
+						"name":  "bench-" + sender,
+						"color": "#4fd1b6",
+					},
+					"status": "benchmark",
+					"cursor": map[string]any{
+						"x":     20 + round + senderIndex,
+						"y":     40 + round + senderIndex,
+						"mode":  "pointer",
+						"label": sender,
+					},
+					"benchmark": map[string]any{
+						"run_id": runID,
+						"round":  round,
+						"sender": sender,
+					},
+				},
+			})
+		}
+	}
+
+	deliveries := make([]map[string]bool, clientCount)
+	for index := range deliveries {
+		deliveries[index] = make(map[string]bool, len(expected))
+	}
+	for receiverIndex, client := range clients {
+		for len(deliveries[receiverIndex]) < len(expected) {
+			message := readJSON(t, client)
+			if message["t"] != "PRESENCE" {
+				t.Fatalf("client %d expected PRESENCE during benchmark, got %#v", receiverIndex, message)
+			}
+			payload := message["payload"].(map[string]any)
+			state := payload["state"].(map[string]any)
+			benchmark := state["benchmark"].(map[string]any)
+			if benchmark["run_id"] != runID {
+				t.Fatalf("client %d got unrelated benchmark payload: %#v", receiverIndex, benchmark)
+			}
+			round := int(benchmark["round"].(float64))
+			sender := benchmark["sender"].(string)
+			key := benchmarkDeliveryKey(round, sender)
+			if _, ok := expected[key]; !ok {
+				t.Fatalf("client %d got unexpected benchmark delivery %s", receiverIndex, key)
+			}
+			if deliveries[receiverIndex][key] {
+				t.Fatalf("client %d got duplicate benchmark delivery %s", receiverIndex, key)
+			}
+			deliveries[receiverIndex][key] = true
+		}
+	}
+
+	for receiverIndex, seen := range deliveries {
+		for key := range expected {
+			if !seen[key] {
+				t.Fatalf("client %d missed benchmark delivery %s", receiverIndex, key)
+			}
+		}
+	}
+}
+
+func benchmarkDeliveryKey(round int, sender string) string {
+	return strconv.Itoa(round) + "|" + sender
 }
 
 func TestClusterTwoNodeMessaging(t *testing.T) {

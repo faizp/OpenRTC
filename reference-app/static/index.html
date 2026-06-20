@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="data:,">
+  <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
   <title>OpenRTC Dev Console</title>
   <style>
     :root {
@@ -665,6 +667,639 @@
         grid-column: auto;
       }
     }
+
+    /* gpt-taste console skin: editorial ops surface with dense realtime instrumentation. */
+    :root {
+      color-scheme: dark;
+      --bg: #05070a;
+      --surface: rgba(13, 18, 25, 0.92);
+      --surface-2: rgba(20, 29, 39, 0.94);
+      --line: rgba(167, 188, 211, 0.18);
+      --line-strong: rgba(190, 210, 232, 0.32);
+      --text: #f3f7fb;
+      --muted: #9dafc2;
+      --muted-2: #6d7d8e;
+      --accent: #4fd1b6;
+      --accent-strong: #99f6e4;
+      --blue: #7aa7ff;
+      --blue-soft: rgba(84, 126, 255, 0.16);
+      --green: #64e69f;
+      --green-soft: rgba(55, 214, 128, 0.15);
+      --amber: #ffd166;
+      --amber-soft: rgba(255, 209, 102, 0.16);
+      --red: #ff7a90;
+      --red-soft: rgba(255, 122, 144, 0.14);
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+      --sans: "Geist", "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    html {
+      background: var(--bg);
+    }
+
+    body {
+      min-width: 320px;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 14% -8%, rgba(79, 209, 182, 0.25), transparent 34rem),
+        radial-gradient(circle at 92% 8%, rgba(122, 167, 255, 0.19), transparent 32rem),
+        linear-gradient(180deg, #070a0f 0%, #05070a 42%, #090d12 100%);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.12;
+      z-index: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: radial-gradient(circle at 50% 20%, black, transparent 78%);
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      overflow-x: hidden;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .topbar {
+      top: 14px;
+      width: min(1480px, calc(100% - 28px));
+      margin: 0 auto;
+      border: 1px solid rgba(220, 236, 255, 0.16);
+      border-radius: 999px;
+      background: rgba(7, 10, 15, 0.72);
+      box-shadow: 0 18px 70px rgba(0, 0, 0, 0.32);
+    }
+
+    .brand-mark {
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 35% 30%, #ffffff 0 8%, transparent 9%),
+        conic-gradient(from 220deg, #4fd1b6, #7aa7ff, #f6d365, #4fd1b6);
+    }
+
+    .brand h1 {
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .brand small {
+      color: var(--muted);
+    }
+
+    .status-pill,
+    .tabs,
+    .metric,
+    .compact-list li {
+      background: rgba(255, 255, 255, 0.045);
+      border-color: rgba(220, 236, 255, 0.14);
+    }
+
+    button {
+      border-color: rgba(220, 236, 255, 0.18);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+
+    button:hover {
+      background: rgba(79, 209, 182, 0.12);
+      border-color: rgba(153, 246, 228, 0.55);
+      color: var(--accent-strong);
+    }
+
+    button.primary {
+      border-color: rgba(153, 246, 228, 0.75);
+      background: #d7fff4;
+      color: #06110f;
+    }
+
+    button.primary:hover {
+      background: #99f6e4;
+      color: #06110f;
+    }
+
+    button.danger {
+      border-color: rgba(255, 122, 144, 0.45);
+      color: #ffd8df;
+    }
+
+    button.danger:hover {
+      background: rgba(255, 122, 144, 0.14);
+      color: #ffffff;
+    }
+
+    input,
+    select,
+    textarea {
+      border-color: rgba(220, 236, 255, 0.16);
+      background: rgba(3, 7, 12, 0.72);
+      color: var(--text);
+    }
+
+    textarea,
+    .output,
+    .log {
+      background: rgba(2, 6, 12, 0.9);
+      color: #dbeafe;
+    }
+
+    .workspace {
+      width: min(1480px, 100%);
+      margin: 0 auto;
+      padding: 18px 14px 80px;
+    }
+
+    .sidebar,
+    .panel {
+      border-color: rgba(220, 236, 255, 0.14);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.028)),
+        rgba(8, 12, 18, 0.88);
+      backdrop-filter: blur(18px);
+    }
+
+    .panel,
+    .sidebar,
+    .tabs {
+      border-radius: 8px;
+    }
+
+    .tab-button.active {
+      background: #d7fff4;
+      color: #06110f;
+    }
+
+    .attention-hero {
+      width: min(1480px, calc(100% - 28px));
+      margin: 28px auto 6px;
+      min-height: 430px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+      gap: clamp(20px, 2.6vw, 38px);
+      align-items: stretch;
+      padding: clamp(24px, 4vw, 58px);
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, rgba(5, 7, 10, 0.96) 0%, rgba(5, 7, 10, 0.68) 58%, rgba(5, 7, 10, 0.9) 100%),
+        url("https://picsum.photos/seed/realtime-ops-room/1920/1080") center/cover;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-copy {
+      display: grid;
+      align-content: center;
+      gap: 24px;
+      max-width: min(1120px, 100%);
+    }
+
+    .hero-copy h1 {
+      max-width: min(1120px, 100%);
+      margin: 0;
+      font-size: clamp(3rem, 5vw, 4.7rem);
+      line-height: 0.94;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .inline-hero-image {
+      display: inline-block;
+      width: clamp(72px, 10vw, 156px);
+      height: clamp(32px, 4.4vw, 56px);
+      margin: 0 10px;
+      border-radius: 999px;
+      vertical-align: middle;
+      background: url("https://picsum.photos/seed/cursor-collaboration/420/180") center/cover;
+      filter: grayscale(0.2) contrast(1.2) saturate(1.12);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+    }
+
+    .hero-copy p {
+      max-width: 760px;
+      margin: 0;
+      color: #c8d4e2;
+      font-size: clamp(1rem, 1.5vw, 1.24rem);
+      line-height: 1.55;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .hero-command {
+      display: grid;
+      gap: 14px;
+      align-content: center;
+      min-width: 0;
+    }
+
+    .hero-terminal {
+      min-height: 270px;
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(7, 10, 15, 0.72), rgba(7, 10, 15, 0.92)),
+        url("https://picsum.photos/seed/live-presence-debug/900/900") center/cover;
+      background-blend-mode: normal, luminosity;
+      padding: 16px;
+      overflow: hidden;
+    }
+
+    .hero-terminal-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(220, 236, 255, 0.12);
+    }
+
+    .hero-terminal-row:last-child {
+      border-bottom: 0;
+    }
+
+    .hero-terminal b {
+      display: block;
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    .hero-terminal span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .marquee {
+      display: flex;
+      width: 100%;
+      overflow: hidden;
+      border-block: 1px solid rgba(220, 236, 255, 0.1);
+      color: rgba(243, 247, 251, 0.58);
+      font-weight: 850;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .marquee-track {
+      display: flex;
+      min-width: max-content;
+      animation: marquee 26s linear infinite;
+    }
+
+    .marquee-track span {
+      padding: 12px 26px;
+      white-space: nowrap;
+    }
+
+    @keyframes marquee {
+      to {
+        transform: translateX(-50%);
+      }
+    }
+
+    .surface-bento {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-auto-rows: minmax(126px, auto);
+      grid-auto-flow: dense;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .bento-card {
+      position: relative;
+      overflow: hidden;
+      min-height: 126px;
+      padding: 16px;
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+      transition: transform 700ms ease, border-color 700ms ease, background 700ms ease;
+    }
+
+    .bento-card:hover {
+      transform: translateY(-3px) scale(1.01);
+      border-color: rgba(153, 246, 228, 0.46);
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    .bento-card.large {
+      grid-column: span 5;
+      grid-row: span 2;
+    }
+
+    .bento-card.wide {
+      grid-column: span 4;
+    }
+
+    .bento-card.compact {
+      grid-column: span 3;
+    }
+
+    .bento-card h3,
+    .bento-card p {
+      position: relative;
+      z-index: 1;
+    }
+
+    .bento-card h3 {
+      margin: 0 0 10px;
+      font-size: 17px;
+    }
+
+    .bento-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .accordion-row {
+      display: flex;
+      min-height: 210px;
+      gap: 8px;
+    }
+
+    .accordion-slice {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid rgba(220, 236, 255, 0.12);
+      border-radius: 8px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.045);
+      transition: flex 700ms ease, background 700ms ease;
+    }
+
+    .accordion-slice:hover {
+      flex: 2.25;
+      background: rgba(79, 209, 182, 0.1);
+    }
+
+    .cursor-lab {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.8fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .cursor-stage {
+      position: relative;
+      min-height: 540px;
+      overflow: hidden;
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      cursor: crosshair;
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+        radial-gradient(circle at 22% 18%, rgba(79, 209, 182, 0.28), transparent 20rem),
+        radial-gradient(circle at 82% 74%, rgba(122, 167, 255, 0.22), transparent 26rem),
+        rgba(2, 6, 12, 0.94);
+      background-size: 36px 36px, 36px 36px, auto, auto, auto;
+    }
+
+    .cursor-stage::before {
+      content: "Move inside this surface to broadcast your cursor. Spawn clients to verify fan-out.";
+      position: absolute;
+      left: 18px;
+      bottom: 16px;
+      max-width: 430px;
+      color: rgba(219, 234, 254, 0.54);
+      font-size: 12px;
+      line-height: 1.4;
+      pointer-events: none;
+    }
+
+    .cursor-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .cursor-marker {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: grid;
+      grid-template-columns: auto auto;
+      align-items: start;
+      gap: 7px;
+      transform: translate3d(var(--x), var(--y), 0);
+      transition: transform 90ms linear;
+      will-change: transform;
+    }
+
+    .cursor-pointer {
+      width: 0;
+      height: 0;
+      border-left: 11px solid var(--cursor-color, #4fd1b6);
+      border-top: 8px solid transparent;
+      border-bottom: 8px solid transparent;
+      filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.35));
+      transform: rotate(32deg);
+    }
+
+    .cursor-label {
+      max-width: 220px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: var(--cursor-color, #4fd1b6);
+      color: #06110f;
+      font-size: 11px;
+      font-weight: 850;
+      white-space: nowrap;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+    }
+
+    .cursor-marker[data-mode="text"] .cursor-pointer {
+      width: 4px;
+      height: 26px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--cursor-color, #4fd1b6);
+      transform: rotate(0deg);
+    }
+
+    .cursor-marker[data-mode="draw"] .cursor-pointer,
+    .cursor-marker[data-mode="comment"] .cursor-pointer {
+      width: 17px;
+      height: 17px;
+      border: 2px solid var(--cursor-color, #4fd1b6);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+      transform: rotate(0deg);
+    }
+
+    .client-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .client-card {
+      border: 1px solid rgba(220, 236, 255, 0.13);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .client-card b {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .client-card small {
+      color: var(--muted);
+    }
+
+    .latency-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+    }
+
+    .benchmark-console {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(79, 209, 182, 0.16), transparent 18rem),
+        radial-gradient(circle at 94% 30%, rgba(122, 167, 255, 0.12), transparent 20rem),
+        rgba(255, 255, 255, 0.045);
+    }
+
+    .benchmark-console h3,
+    .benchmark-console p {
+      margin: 0;
+    }
+
+    .benchmark-console p {
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .benchmark-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .benchmark-meter {
+      min-height: 72px;
+      padding: 10px;
+      border: 1px solid rgba(220, 236, 255, 0.13);
+      border-radius: 8px;
+      background: rgba(2, 6, 12, 0.18);
+    }
+
+    .benchmark-meter b {
+      display: block;
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .benchmark-meter span {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .debug-meter {
+      min-height: 78px;
+      padding: 12px;
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .debug-meter b {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .debug-meter span {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    @media (max-width: 1120px) {
+      .attention-hero,
+      .cursor-lab {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-command {
+        align-content: stretch;
+      }
+
+      .surface-bento {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
+
+      .bento-card.large,
+      .bento-card.wide,
+      .bento-card.compact {
+        grid-column: span 3;
+        grid-row: span 1;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .topbar,
+      .attention-hero {
+        width: calc(100% - 20px);
+        border-radius: 8px;
+      }
+
+      .attention-hero {
+        margin-top: 18px;
+        padding: 20px;
+        min-height: auto;
+      }
+
+      .hero-copy h1 {
+        font-size: clamp(2.6rem, 13vw, 4.2rem);
+      }
+
+      .surface-bento,
+      .latency-grid,
+      .benchmark-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .bento-card.large,
+      .bento-card.wide,
+      .bento-card.compact {
+        grid-column: auto;
+      }
+
+      .accordion-row {
+        flex-direction: column;
+      }
+
+      .cursor-stage {
+        min-height: 420px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -688,6 +1323,43 @@
         <button type="button" class="primary" onclick="runAction('probe-log', runSmokeProbe)">Probe all</button>
       </div>
     </header>
+
+    <section class="attention-hero motion-card">
+      <div class="hero-copy">
+        <h1>Realtime presence <span class="inline-hero-image" aria-hidden="true"></span> you can inspect at wire speed.</h1>
+        <p>Connect real sockets, spawn simulated collaborators, choose cursor modes, and watch fan-out, active users, Yjs frames, admin APIs, and latency traces from one integration console.</p>
+        <div class="hero-actions">
+          <button type="button" class="primary" onclick="runAction('presence-log', spawnPresenceClients)">Spawn clients</button>
+          <button type="button" onclick="activateTab('presence')">Open presence lab</button>
+        </div>
+        <div class="marquee" aria-hidden="true">
+          <div class="marquee-track">
+            <span>presence</span><span>cursors</span><span>broadcast</span><span>active users</span><span>Yjs awareness</span><span>debug traces</span>
+            <span>presence</span><span>cursors</span><span>broadcast</span><span>active users</span><span>Yjs awareness</span><span>debug traces</span>
+          </div>
+        </div>
+      </div>
+      <div class="hero-command motion-card">
+        <div class="hero-terminal">
+          <div class="hero-terminal-row">
+            <div><span>Connected clients</span><b id="hero-clients">0</b></div>
+            <span class="badge info" id="hero-room">demo:general</span>
+          </div>
+          <div class="hero-terminal-row">
+            <div><span>Last presence echo</span><b id="hero-latency">0 ms</b></div>
+            <span class="badge ok">ephemeral</span>
+          </div>
+          <div class="hero-terminal-row">
+            <div><span>Event trace p95</span><b id="hero-p95">0 ms</b></div>
+            <span class="badge info">trace_id</span>
+          </div>
+          <div class="hero-terminal-row">
+            <div><span>Runtime diagnostics</span><b id="hero-diagnostics">0</b></div>
+            <span class="badge warn">debug</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div class="workspace">
       <aside class="sidebar">
@@ -762,6 +1434,7 @@
         <nav class="tabs" aria-label="Console tabs">
           <button type="button" class="tab-button active" data-tab="overview">Overview</button>
           <button type="button" class="tab-button" data-tab="realtime">Realtime</button>
+          <button type="button" class="tab-button" data-tab="presence">Presence Lab</button>
           <button type="button" class="tab-button" data-tab="rooms">Rooms</button>
           <button type="button" class="tab-button" data-tab="storage">Storage</button>
           <button type="button" class="tab-button" data-tab="threads">Threads</button>
@@ -783,6 +1456,28 @@
             <div class="metric"><b id="metric-presence">0</b><span>Presence peers</span></div>
             <div class="metric"><b id="metric-admin">0</b><span>Admin calls</span></div>
             <div class="metric"><b id="metric-yjs">0</b><span>Yjs frames</span></div>
+          </div>
+          <div class="surface-bento motion-stack">
+            <article class="bento-card large">
+              <h3>Live collaboration core</h3>
+              <p>Rooms, low-latency broadcast, presence snapshots, offline fan-out, active-user reads, and Yjs awareness stay visible in one room-scoped console.</p>
+            </article>
+            <article class="bento-card wide">
+              <h3>Cursor-ready presence</h3>
+              <p>Pointer, text, draw, comment, and grab modes use the same ephemeral presence channel that production apps integrate.</p>
+            </article>
+            <article class="bento-card compact">
+              <h3>Debug trace loop</h3>
+              <p>Outgoing messages, echoed presence, and traced events are timestamped for local latency inspection.</p>
+            </article>
+            <article class="bento-card wide">
+              <h3>Admin visibility</h3>
+              <p>Presence writes, room grants, active users, storage probes, threads, notifications, stats, and metrics are available without leaving the page.</p>
+            </article>
+            <article class="bento-card compact">
+              <h3>Integration-safe</h3>
+              <p>No durable storage redesign is required for cursor and awareness validation.</p>
+            </article>
           </div>
           <div class="section">
             <div class="table-wrap">
@@ -908,6 +1603,114 @@
           <div class="section">
             <h3>Realtime Log</h3>
             <div class="log" id="realtime-log" style="margin-top: 8px;"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="tab-presence">
+          <div class="panel-header">
+            <div>
+              <h2>Presence Cursor Lab</h2>
+              <p>Multiple room clients, cursor modes, fan-out visibility, active-user reads, and latency samples.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" class="primary" onclick="runAction('presence-log', spawnPresenceClients)">Spawn clients</button>
+              <button type="button" onclick="runAction('presence-log', pulsePresenceClients)">Pulse cursors</button>
+              <button type="button" onclick="runAction('presence-log', dropPresenceClient)">Drop one</button>
+              <button type="button" onclick="runAction('presence-log', recoverPresenceClient)">Recover one</button>
+              <button type="button" class="danger" onclick="runAction('presence-log', disconnectPresenceClients)">Close lab clients</button>
+            </div>
+          </div>
+          <div class="grid four">
+            <label>Lab clients
+              <input id="presence-client-count" value="4" inputmode="numeric">
+            </label>
+            <label>Cursor mode
+              <select id="cursor-mode">
+                <option value="pointer">Pointer</option>
+                <option value="text">Text</option>
+                <option value="draw">Draw</option>
+                <option value="comment">Comment</option>
+                <option value="grab">Grab</option>
+              </select>
+            </label>
+            <label>Cursor color
+              <input id="cursor-color" value="#4fd1b6">
+            </label>
+            <label>Status
+              <select id="presence-status">
+                <option value="online">Online</option>
+                <option value="editing">Editing</option>
+                <option value="reviewing">Reviewing</option>
+                <option value="presenting">Presenting</option>
+              </select>
+            </label>
+          </div>
+          <div class="section cursor-lab">
+            <div class="cursor-stage motion-card" id="presence-stage" onpointermove="handleStagePointer(event)" onpointerleave="clearPrimaryCursor()">
+              <div class="cursor-layer" id="cursor-layer"></div>
+            </div>
+            <div class="grid">
+              <div class="latency-grid">
+                <div class="debug-meter"><b id="presence-client-total">0</b><span>lab sockets</span></div>
+                <div class="debug-meter"><b id="presence-closed-total">0</b><span>closed/error</span></div>
+                <div class="debug-meter"><b id="presence-last-latency">0 ms</b><span>last echo</span></div>
+                <div class="debug-meter"><b id="presence-p95-latency">0 ms</b><span>p95 echo</span></div>
+              </div>
+              <div class="benchmark-console">
+                <div class="panel-header">
+                  <div>
+                    <h3>Fan-out Benchmark</h3>
+                    <p>Stamped presence updates across open lab sockets with expected versus observed delivery.</p>
+                  </div>
+                  <div class="button-row">
+                    <button type="button" class="primary" onclick="startPresenceBenchmark()">Start</button>
+                    <button type="button" onclick="stopPresenceBenchmark()">Stop</button>
+                  </div>
+                </div>
+                <div class="grid three">
+                  <label>Rounds
+                    <input id="presence-benchmark-rounds" value="8" inputmode="numeric">
+                  </label>
+                  <label>Interval ms
+                    <input id="presence-benchmark-interval" value="80" inputmode="numeric">
+                  </label>
+                  <label>Timeout ms
+                    <input id="presence-benchmark-timeout" value="1500" inputmode="numeric">
+                  </label>
+                </div>
+                <div class="benchmark-strip">
+                  <div class="benchmark-meter"><b id="presence-benchmark-delivery">0 / 0</b><span>observed fan-out</span></div>
+                  <div class="benchmark-meter"><b id="presence-benchmark-loss">0%</b><span>loss</span></div>
+                  <div class="benchmark-meter"><b id="presence-benchmark-p99">0 ms</b><span>p99 latency</span></div>
+                  <div class="benchmark-meter"><b id="presence-benchmark-duration">0 ms</b><span>duration</span></div>
+                </div>
+              </div>
+              <div class="accordion-row">
+                <div class="accordion-slice">
+                  <h3>Presence</h3>
+                  <p>Every cursor is just ephemeral room presence, matching the SDK integration path.</p>
+                </div>
+                <div class="accordion-slice">
+                  <h3>Debug</h3>
+                  <p>Each lab client keeps connection IDs, echoed presence timing, and recent state visible.</p>
+                </div>
+                <div class="accordion-slice">
+                  <h3>Scale</h3>
+                  <p>Use the count control to test several browser clients without opening new tabs.</p>
+                </div>
+              </div>
+              <div class="client-grid" id="synthetic-clients"></div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="panel-header">
+              <div>
+                <h3>Presence Debug Log</h3>
+                <p>Latest socket lifecycle, presence echo, and trace timing events.</p>
+              </div>
+              <button type="button" onclick="runAction('presence-log', loadActiveUsers)">Active users</button>
+            </div>
+            <div class="log" id="presence-log" style="margin-top: 8px;"></div>
           </div>
         </section>
 
@@ -1148,10 +1951,34 @@
       connId: "",
       members: new Set(),
       presence: new Map(),
+      syntheticClients: new Map(),
+      pendingPresenceByRoom: new Map(),
+      pendingTraces: new Map(),
+      latencySamples: [],
+      diagnostics: [],
+      cursorFrame: 0,
+      benchmark: {
+        running: false,
+        runId: "",
+        startedAt: 0,
+        finishedAt: 0,
+        rounds: 0,
+        intervalMs: 0,
+        timeoutMs: 0,
+        sent: 0,
+        expected: 0,
+        observed: 0,
+        samples: [],
+        deliveryKeys: new Set(),
+        openConnIds: new Set(),
+        timer: 0,
+      },
+      requestSeq: 0,
       counters: {
         events: 0,
         admin: 0,
         yjs: 0,
+        presence: 0,
       },
       yjsFrames: [],
       actionDepth: 0,
@@ -1164,9 +1991,14 @@
         sentAt: new Date().toISOString(),
       }),
       presencePayload: () => ({
-        user: currentUsername(),
-        status: "online",
-        color: "#0f766e",
+        user: {
+          id: currentUsername(),
+          name: currentUsername(),
+          color: byId("cursor-color") ? byId("cursor-color").value.trim() || "#4fd1b6" : "#4fd1b6",
+        },
+        status: byId("presence-status") ? byId("presence-status").value : "online",
+        color: byId("cursor-color") ? byId("cursor-color").value.trim() || "#4fd1b6" : "#4fd1b6",
+        mode: byId("cursor-mode") ? byId("cursor-mode").value : "pointer",
         cursor: { x: 120, y: 240 },
       }),
       roomCreate: () => ({
@@ -1258,6 +2090,7 @@
       resetSamples();
       loadConfig();
       renderState();
+      initMotion();
     });
 
     function byId(id) {
@@ -1284,6 +2117,12 @@
       });
       byId("notification-user").addEventListener("input", () => {
         setJSON("notification-body", samples.notification());
+      });
+      ["cursor-mode", "cursor-color", "presence-status"].forEach((id) => {
+        byId(id).addEventListener("input", () => {
+          setJSON("presence-payload", samples.presencePayload());
+          renderState();
+        });
       });
     }
 
@@ -1370,21 +2209,22 @@
       log("probe-log", "Issued client and admin JWTs for " + currentUsername(), "ok");
     }
 
-    async function fetchToken(kind) {
+    async function fetchToken(kind, overrides = {}) {
       const params = new URLSearchParams({
         kind,
-        username: currentUsername(),
-        tenant: currentTenant(),
+        username: overrides.username || currentUsername(),
+        tenant: overrides.tenant || currentTenant(),
       });
-      const groups = byId("groups").value.trim();
+      const groups = overrides.groups !== undefined ? overrides.groups : byId("groups").value.trim();
       if (groups) {
         params.set("groups", groups);
       }
-      if (kind === "client" && byId("client-access").value === "grants") {
+      const clientAccess = overrides.clientAccess || byId("client-access").value;
+      if (kind === "client" && clientAccess === "grants") {
         params.set("access", "grants");
       }
       if (kind === "admin") {
-        params.set("scope", byId("admin-scope").value.trim());
+        params.set("scope", overrides.scope || byId("admin-scope").value.trim());
       }
       const response = await fetch("/token?" + params.toString());
       const payload = await response.json();
@@ -1490,6 +2330,7 @@
         return;
       }
       log("realtime-log", message, message.t === "ERROR" ? "err" : "ok", message.t || "message");
+      recordIncoming(message, "primary");
 
       switch (message.t) {
         case "HELLO":
@@ -1508,6 +2349,7 @@
               state.presence.delete(message.payload.conn_id);
             } else {
               state.presence.set(message.payload.conn_id, parseMaybeJSON(message.payload.state));
+              state.counters.presence += 1;
             }
           }
           break;
@@ -1521,6 +2363,7 @@
           break;
       }
       renderState();
+      renderCursorStage();
     }
 
     function hydratePresence(presence) {
@@ -1549,31 +2392,37 @@
     }
 
     function sendClientEvent() {
+      const traceID = requestID("trace");
+      state.pendingTraces.set(traceID, performance.now());
       sendWS({
         t: "EMIT",
         id: requestID("emit"),
         room: currentRoom(),
         event: byId("event-name").value.trim() || "dev.message",
         payload: jsonFrom("event-payload"),
+        meta: { trace_id: traceID },
       });
     }
 
-    function setClientPresence() {
+    function setClientPresence(options = {}) {
       sendWS({
         t: "PRESENCE_SET",
         id: requestID("presence"),
         room: currentRoom(),
         payload: jsonFrom("presence-payload"),
-      });
+      }, options);
     }
 
-    function sendWS(payload) {
+    function sendWS(payload, options = {}) {
       if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
         log("realtime-log", "WebSocket is not open", "err");
         return;
       }
       state.ws.send(JSON.stringify(payload));
-      log("realtime-log", payload, "ok", "sent " + payload.t);
+      recordOutgoing(payload, "primary");
+      if (!options.quiet) {
+        log("realtime-log", payload, "ok", "sent " + payload.t);
+      }
     }
 
     async function sendAdminPublish() {
@@ -1598,7 +2447,439 @@
     async function loadActiveUsers() {
       const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/active_users", {}, "realtime-log");
       setOutput("rooms-output", result.body);
-      activateTab("rooms");
+      log("presence-log", result.body, "ok", "active users");
+    }
+
+    function handleStagePointer(event) {
+      const stage = byId("presence-stage");
+      const rect = stage.getBoundingClientRect();
+      const x = Math.max(0, Math.min(Math.round(event.clientX - rect.left), Math.round(rect.width)));
+      const y = Math.max(0, Math.min(Math.round(event.clientY - rect.top), Math.round(rect.height)));
+      setJSON("presence-payload", cursorPresenceFor(currentUsername(), byId("cursor-color").value.trim() || "#4fd1b6", x, y, byId("cursor-mode").value));
+      if (!state.cursorFrame) {
+        state.cursorFrame = requestAnimationFrame(() => {
+          state.cursorFrame = 0;
+          if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+            setClientPresence({ quiet: true });
+          }
+        });
+      }
+    }
+
+    function clearPrimaryCursor() {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const payload = samples.presencePayload();
+      payload.cursor = null;
+      setJSON("presence-payload", payload);
+      setClientPresence({ quiet: true });
+    }
+
+    async function spawnPresenceClients() {
+      activateTab("presence");
+      await ensureConfig();
+      disconnectPresenceClients();
+      const requested = Number.parseInt(byId("presence-client-count").value, 10);
+      const count = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 4, 12));
+      byId("presence-client-count").value = String(count);
+      const clients = [];
+      for (let index = 0; index < count; index += 1) {
+        clients.push(await createPresenceClient(index));
+      }
+      log("presence-log", { room: currentRoom(), clients: clients.map((client) => client.name) }, "ok", "lab clients ready");
+      renderState();
+    }
+
+	    async function createPresenceClient(index) {
+	      const palette = ["#4fd1b6", "#7aa7ff", "#ffd166", "#ff7a90", "#b8f36f", "#c084fc", "#fb923c", "#67e8f9"];
+	      const color = palette[index % palette.length];
+	      const id = "lab-" + (index + 1) + "-" + Date.now();
+	      const name = currentUsername() + "-client-" + (index + 1);
+	      const client = {
+	        id,
+	        name,
+	        color,
+	        mode: byId("cursor-mode").value,
+	        ws: null,
+	        connId: "",
+	        status: "connecting",
+	        members: new Set(),
+	        presence: new Map(),
+	        pendingPresenceByRoom: new Map(),
+	        pendingTraces: new Map(),
+	        lastLatency: 0,
+	      };
+	      state.syntheticClients.set(id, client);
+	      await connectPresenceClient(client, index);
+	      return client;
+	    }
+
+	    async function connectPresenceClient(client, index) {
+	      const token = await fetchToken("client", { username: client.name });
+	      const socket = new WebSocket(state.config.wsURL + "?token=" + encodeURIComponent(token));
+	      client.ws = socket;
+	      client.connId = "";
+	      client.status = "connecting";
+	      client.members = new Set();
+	      client.presence = new Map();
+	      client.pendingPresenceByRoom = new Map();
+	      client.pendingTraces = new Map();
+	      client.lastLatency = 0;
+	      renderState();
+	      return new Promise((resolve, reject) => {
+	        let settled = false;
+	        const timeout = setTimeout(() => {
+	          if (!settled) {
+	            settled = true;
+	            reject(new Error("Timed out joining " + client.name));
+	          }
+	        }, 5000);
+        const settle = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            resolve(client);
+          }
+        };
+
+        socket.addEventListener("open", () => {
+          client.status = "open";
+          sendSyntheticJSON(client, {
+            t: "JOIN",
+            id: requestID(client.id + "-join"),
+            room: currentRoom(),
+          }, { quiet: true });
+        });
+        socket.addEventListener("message", (event) => {
+          let message;
+          try {
+            message = JSON.parse(event.data);
+          } catch {
+            log("presence-log", event.data, "warn", "non-json lab message");
+            return;
+          }
+          recordIncoming(message, client.id, client);
+          handleSyntheticMessage(client, message);
+          if (message.t === "JOINED") {
+            sendSyntheticPresence(client, index);
+            settle();
+          }
+        });
+	        socket.addEventListener("close", (event) => {
+	          client.status = "closed";
+	          log("presence-log", { client: client.name, code: event.code, reason: event.reason }, "warn", "lab closed");
+	          renderState();
+	          if (!settled) {
+	            settled = true;
+	            clearTimeout(timeout);
+	            reject(new Error(client.name + " closed before joining"));
+	          }
+	        });
+	        socket.addEventListener("error", () => {
+          client.status = "error";
+          log("presence-log", { client: client.name }, "err", "lab socket error");
+	          renderState();
+	        });
+	      });
+	    }
+
+	    function firstPresenceClient(predicate) {
+	      for (const [index, client] of Array.from(state.syntheticClients.values()).entries()) {
+	        if (predicate(client)) {
+	          return { client, index };
+	        }
+	      }
+	      return null;
+	    }
+
+	    async function dropPresenceClient() {
+	      const match = firstPresenceClient((client) => client.ws && client.ws.readyState === WebSocket.OPEN);
+	      if (!match) {
+	        throw new Error("No open lab client to drop");
+	      }
+	      match.client.status = "closing";
+	      match.client.ws.close(4001, "debug drop");
+	      log("presence-log", { client: match.client.name, connId: match.client.connId }, "warn", "lab drop requested");
+	      renderState();
+	    }
+
+	    async function recoverPresenceClient() {
+	      await ensureConfig();
+	      const match = firstPresenceClient((client) => !client.ws || client.ws.readyState === WebSocket.CLOSED || client.status === "closed" || client.status === "error");
+	      if (!match) {
+	        throw new Error("No closed lab client to recover");
+	      }
+	      await connectPresenceClient(match.client, match.index);
+	      sendSyntheticPresence(match.client, match.index);
+	      log("presence-log", { client: match.client.name, connId: match.client.connId }, "ok", "lab recovered");
+	      renderState();
+	    }
+
+    function handleSyntheticMessage(client, message) {
+      switch (message.t) {
+        case "HELLO":
+          client.connId = message.payload && message.payload.conn_id ? message.payload.conn_id : "";
+          break;
+        case "JOINED":
+          client.members = new Set((message.payload && message.payload.members) || []);
+          client.presence.clear();
+          if (message.payload && message.payload.presence) {
+            Object.entries(message.payload.presence).forEach(([connID, value]) => {
+              client.presence.set(connID, parseMaybeJSON(value));
+            });
+          }
+          break;
+        case "PRESENCE":
+          if (message.payload && message.payload.conn_id) {
+            if (message.payload.offline) {
+              client.presence.delete(message.payload.conn_id);
+            } else {
+              client.presence.set(message.payload.conn_id, parseMaybeJSON(message.payload.state));
+              observeBenchmarkPresence(client, message);
+              state.counters.presence += 1;
+            }
+          }
+          break;
+        case "EVENT":
+          state.counters.events += 1;
+          break;
+        default:
+          break;
+      }
+      renderState();
+    }
+
+    function sendSyntheticPresence(client, index = 0) {
+      const stage = byId("presence-stage");
+      const width = stage ? Math.max(stage.clientWidth, 360) : 720;
+      const height = stage ? Math.max(stage.clientHeight, 320) : 460;
+      const x = Math.max(24, Math.min(Math.round((width * (index + 1)) / (state.syntheticClients.size + 1)), width - 210));
+      const y = Math.max(24, Math.min(Math.round(height * (0.28 + (index % 4) * 0.14)), height - 56));
+      const payload = cursorPresenceFor(client.name, client.color, x, y, client.mode || byId("cursor-mode").value);
+      sendSyntheticJSON(client, {
+        t: "PRESENCE_SET",
+        id: requestID(client.id + "-presence"),
+        room: currentRoom(),
+        payload,
+      }, { quiet: true });
+    }
+
+    async function pulsePresenceClients() {
+      if (state.syntheticClients.size === 0) {
+        await spawnPresenceClients();
+        return;
+      }
+      let index = 0;
+      for (const client of state.syntheticClients.values()) {
+        if (client.ws && client.ws.readyState === WebSocket.OPEN) {
+          client.mode = byId("cursor-mode").value;
+          sendSyntheticPresence(client, index);
+        }
+        index += 1;
+      }
+      log("presence-log", { clients: state.syntheticClients.size, mode: byId("cursor-mode").value }, "ok", "cursor pulse");
+      renderState();
+    }
+
+    async function startPresenceBenchmark() {
+      activateTab("presence");
+      await ensureConfig();
+      if (state.benchmark.running) {
+        stopPresenceBenchmark();
+      }
+      if (connectedLabClients() === 0) {
+        await spawnPresenceClients();
+      }
+      const clients = openPresenceClients();
+      if (clients.length === 0) {
+        throw new Error("No open lab clients available for benchmark");
+      }
+      const rounds = numberInput("presence-benchmark-rounds", 8, 1, 100);
+      const intervalMs = numberInput("presence-benchmark-interval", 80, 16, 5000);
+      const timeoutMs = numberInput("presence-benchmark-timeout", 1500, 100, 30000);
+      resetPresenceBenchmark({
+        running: true,
+        runId: "bench-" + Date.now().toString(36),
+        rounds,
+        intervalMs,
+        timeoutMs,
+        startedAt: performance.now(),
+        expected: clients.length * clients.length * rounds,
+        openConnIds: new Set(clients.map((client) => client.connId).filter(Boolean)),
+      });
+      log("presence-log", {
+        clients: clients.length,
+        rounds,
+        intervalMs,
+        expected: state.benchmark.expected,
+      }, "warn", "benchmark started");
+      renderState();
+
+      for (let round = 1; round <= rounds && state.benchmark.running; round += 1) {
+        const activeClients = openPresenceClients().filter((client) => state.benchmark.openConnIds.has(client.connId));
+        for (const [index, client] of activeClients.entries()) {
+          sendBenchmarkPresence(client, index, round);
+        }
+        await delay(intervalMs);
+      }
+
+      if (state.benchmark.running) {
+        state.benchmark.timer = window.setTimeout(() => {
+          finishPresenceBenchmark("benchmark complete");
+        }, timeoutMs);
+      }
+    }
+
+    function stopPresenceBenchmark() {
+      finishPresenceBenchmark("benchmark stopped");
+    }
+
+    function resetPresenceBenchmark(next) {
+      if (state.benchmark.timer) {
+        clearTimeout(state.benchmark.timer);
+      }
+      state.benchmark = {
+        running: next.running || false,
+        runId: next.runId || "",
+        startedAt: next.startedAt || 0,
+        finishedAt: 0,
+        rounds: next.rounds || 0,
+        intervalMs: next.intervalMs || 0,
+        timeoutMs: next.timeoutMs || 0,
+        sent: 0,
+        expected: next.expected || 0,
+        observed: 0,
+        samples: [],
+        deliveryKeys: new Set(),
+        openConnIds: next.openConnIds || new Set(),
+        timer: 0,
+      };
+    }
+
+    function finishPresenceBenchmark(label) {
+      if (state.benchmark.timer) {
+        clearTimeout(state.benchmark.timer);
+        state.benchmark.timer = 0;
+      }
+      if (!state.benchmark.running && !state.benchmark.runId) {
+        return;
+      }
+      state.benchmark.running = false;
+      state.benchmark.finishedAt = performance.now();
+      const summary = benchmarkSummary();
+      log("presence-log", summary, summary.lossPercent === 0 ? "ok" : "warn", label);
+      renderState();
+    }
+
+    function sendBenchmarkPresence(client, index, round) {
+      if (!client.ws || client.ws.readyState !== WebSocket.OPEN || !client.connId) {
+        return;
+      }
+      const stage = byId("presence-stage");
+      const width = stage ? Math.max(stage.clientWidth, 360) : 720;
+      const height = stage ? Math.max(stage.clientHeight, 320) : 460;
+      const x = Math.max(24, Math.min(Math.round((width * (round + index + 1)) / (state.benchmark.rounds + openPresenceClients().length + 1)), width - 210));
+      const y = Math.max(24, Math.min(Math.round(height * (0.22 + ((round + index) % 5) * 0.13)), height - 56));
+      const payload = cursorPresenceFor(client.name, client.color, x, y, client.mode || byId("cursor-mode").value);
+      payload.benchmark = {
+        runId: state.benchmark.runId,
+        round,
+        sender: client.connId,
+        senderName: client.name,
+        sentAt: performance.now(),
+      };
+      state.benchmark.sent += 1;
+      sendSyntheticJSON(client, {
+        t: "PRESENCE_SET",
+        id: requestID(client.id + "-bench"),
+        room: currentRoom(),
+        payload,
+      }, { quiet: true });
+    }
+
+    function observeBenchmarkPresence(receiver, message) {
+      if (!state.benchmark.runId || !message.payload || !message.payload.state) {
+        return;
+      }
+      const value = parseMaybeJSON(message.payload.state);
+      const benchmark = value && typeof value === "object" ? value.benchmark : null;
+      if (!benchmark || benchmark.runId !== state.benchmark.runId || !receiver.connId) {
+        return;
+      }
+      if (!state.benchmark.openConnIds.has(receiver.connId) || !state.benchmark.openConnIds.has(benchmark.sender)) {
+        return;
+      }
+      const key = [benchmark.round, benchmark.sender, receiver.connId].join("|");
+      if (state.benchmark.deliveryKeys.has(key)) {
+        return;
+      }
+      state.benchmark.deliveryKeys.add(key);
+      state.benchmark.observed += 1;
+      const latency = performance.now() - Number(benchmark.sentAt || 0);
+      if (Number.isFinite(latency) && latency >= 0) {
+        state.benchmark.samples.push(latency);
+      }
+      renderBenchmark();
+      if (state.benchmark.running && state.benchmark.expected > 0 && state.benchmark.observed >= state.benchmark.expected) {
+        finishPresenceBenchmark("benchmark complete");
+      }
+    }
+
+    function benchmarkSummary() {
+      const expected = state.benchmark.expected;
+      const observed = state.benchmark.observed;
+      const missing = Math.max(0, expected - observed);
+      const lossPercent = expected > 0 ? Math.round((missing / expected) * 10000) / 100 : 0;
+      return {
+        runId: state.benchmark.runId,
+        clients: state.benchmark.openConnIds.size,
+        rounds: state.benchmark.rounds,
+        sent: state.benchmark.sent,
+        expected,
+        observed,
+        missing,
+        lossPercent,
+        p50Ms: Math.round(percentileFrom(state.benchmark.samples, 50)),
+        p95Ms: Math.round(percentileFrom(state.benchmark.samples, 95)),
+        p99Ms: Math.round(percentileFrom(state.benchmark.samples, 99)),
+        durationMs: Math.round(benchmarkDuration()),
+      };
+    }
+
+    function disconnectPresenceClients() {
+      if (state.benchmark.running) {
+        stopPresenceBenchmark();
+      }
+      for (const client of state.syntheticClients.values()) {
+        if (client.ws && client.ws.readyState <= WebSocket.OPEN) {
+          client.ws.close();
+        }
+      }
+      state.syntheticClients.clear();
+      renderState();
+    }
+
+    function sendSyntheticJSON(client, payload, options = {}) {
+      if (!client.ws || client.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      client.ws.send(JSON.stringify(payload));
+      recordOutgoing(payload, client.id, client);
+      if (!options.quiet) {
+        log("presence-log", { client: client.name, payload }, "ok", "lab sent " + payload.t);
+      }
+    }
+
+    function cursorPresenceFor(name, color, x, y, mode) {
+      return {
+        user: { id: name, name, color },
+        status: byId("presence-status").value,
+        color,
+        mode,
+        cursor: { x, y, mode, label: name },
+        updatedAt: new Date().toISOString(),
+      };
     }
 
     async function createRoom() {
@@ -2034,6 +3315,7 @@
         state.ws.close();
         state.ws = null;
       }
+      disconnectPresenceClients();
       disconnectYjs();
       state.connId = "";
       state.members.clear();
@@ -2055,7 +3337,19 @@
       byId("metric-presence").textContent = String(state.presence.size);
       byId("metric-admin").textContent = String(state.counters.admin);
       byId("metric-yjs").textContent = String(state.counters.yjs);
+      setOptionalText("hero-clients", String(connectedLabClients()));
+      setOptionalText("hero-room", currentRoom());
+      setOptionalText("hero-latency", formatMs(lastLatency()));
+      setOptionalText("hero-p95", formatMs(percentileLatency(95)));
+	      setOptionalText("hero-diagnostics", String(state.diagnostics.length));
+	      setOptionalText("presence-client-total", String(connectedLabClients()));
+	      setOptionalText("presence-closed-total", String(unhealthyLabClients()));
+	      setOptionalText("presence-last-latency", formatMs(lastLatency()));
+	      setOptionalText("presence-p95-latency", formatMs(percentileLatency(95)));
+      renderBenchmark();
       renderPresence();
+      renderSyntheticClients();
+      renderCursorStage();
     }
 
     function renderPresence() {
@@ -2082,6 +3376,291 @@
         row.append(conn, stateCell);
         body.appendChild(row);
       });
+    }
+
+    function renderSyntheticClients() {
+      const target = byId("synthetic-clients");
+      if (!target) return;
+      target.replaceChildren();
+      if (state.syntheticClients.size === 0) {
+        const empty = document.createElement("div");
+        empty.className = "client-card muted";
+        empty.textContent = "No lab clients connected.";
+        target.appendChild(empty);
+        return;
+      }
+      for (const client of state.syntheticClients.values()) {
+        const card = document.createElement("div");
+        card.className = "client-card";
+        const name = document.createElement("b");
+        name.textContent = client.name;
+	        const meta = document.createElement("small");
+	        meta.textContent = [
+	          client.status,
+	          client.connId ? shortID(client.connId) : "no conn",
+	          client.members.size ? client.members.size + " members" : "no members",
+	          client.lastLatency ? formatMs(client.lastLatency) : "no echo",
+	        ].join(" | ");
+        card.style.borderColor = client.color;
+        card.append(name, meta);
+        target.appendChild(card);
+      }
+    }
+
+    function renderCursorStage() {
+      const layer = byId("cursor-layer");
+      if (!layer) return;
+      const cursors = collectPresenceCursors();
+      layer.replaceChildren();
+      for (const [connID, value] of cursors.entries()) {
+        if (!value || typeof value !== "object" || !value.cursor || typeof value.cursor !== "object") {
+          continue;
+        }
+        const cursor = value.cursor;
+        if (typeof cursor.x !== "number" || typeof cursor.y !== "number") {
+          continue;
+        }
+        const color = typeof value.color === "string" ? value.color : userColor(value.user) || "#4fd1b6";
+        const marker = document.createElement("div");
+        marker.className = "cursor-marker";
+        marker.dataset.mode = typeof value.mode === "string" ? value.mode : typeof cursor.mode === "string" ? cursor.mode : "pointer";
+        marker.style.setProperty("--x", Math.round(cursor.x) + "px");
+        marker.style.setProperty("--y", Math.round(cursor.y) + "px");
+        marker.style.setProperty("--cursor-color", color);
+        const pointer = document.createElement("div");
+        pointer.className = "cursor-pointer";
+        const label = document.createElement("div");
+        label.className = "cursor-label";
+        label.textContent = userName(value.user) || shortID(connID);
+        marker.append(pointer, label);
+        layer.appendChild(marker);
+      }
+    }
+
+    function collectPresenceCursors() {
+      const cursors = new Map();
+      state.presence.forEach((value, connID) => {
+        cursors.set(connID, value);
+      });
+      state.syntheticClients.forEach((client) => {
+        client.presence.forEach((value, connID) => {
+          cursors.set(connID, value);
+        });
+      });
+      return cursors;
+    }
+
+    function recordOutgoing(payload, source, client) {
+      const timestamp = performance.now();
+      const entry = {
+        direction: "out",
+        source,
+        t: payload.t || "UNKNOWN",
+        id: payload.id,
+        room: payload.room,
+        event: payload.event,
+        traceId: payload.meta && payload.meta.trace_id,
+        timestamp,
+      };
+      pushDiagnostic(entry);
+      if (payload.t === "PRESENCE_SET" && payload.room && payload.id) {
+        const store = client ? client.pendingPresenceByRoom : state.pendingPresenceByRoom;
+        const queue = store.get(payload.room) || [];
+        queue.push({ id: payload.id, sentAt: timestamp, source });
+        store.set(payload.room, queue);
+      }
+      if (payload.t === "EMIT" && payload.meta && payload.meta.trace_id) {
+        const store = client ? client.pendingTraces : state.pendingTraces;
+        store.set(payload.meta.trace_id, { id: payload.id, sentAt: timestamp, source });
+      }
+    }
+
+    function recordIncoming(message, source, client) {
+      const timestamp = performance.now();
+      let latency = null;
+      let requestIDValue = message.id;
+      if (message.t === "PRESENCE" && message.room && message.payload && message.payload.conn_id) {
+        const selfConn = client ? client.connId : state.connId;
+        const store = client ? client.pendingPresenceByRoom : state.pendingPresenceByRoom;
+        const queue = store.get(message.room) || [];
+        const pending = selfConn && message.payload.conn_id === selfConn ? queue.shift() : null;
+        if (queue.length === 0) {
+          store.delete(message.room);
+        }
+        if (pending) {
+          latency = timestamp - pending.sentAt;
+          requestIDValue = pending.id;
+          if (client) {
+            client.lastLatency = latency;
+          }
+          recordLatency(latency);
+        }
+      }
+      if (message.t === "EVENT" && message.meta && message.meta.trace_id) {
+        const store = client ? client.pendingTraces : state.pendingTraces;
+        const pending = store.get(message.meta.trace_id);
+        if (pending) {
+          latency = timestamp - pending.sentAt;
+          requestIDValue = pending.id;
+          store.delete(message.meta.trace_id);
+          recordLatency(latency);
+        }
+      }
+      pushDiagnostic({
+        direction: "in",
+        source,
+        t: message.t || "UNKNOWN",
+        id: requestIDValue,
+        room: message.room,
+        event: message.event,
+        traceId: message.meta && message.meta.trace_id,
+        timestamp,
+        latency,
+      });
+      if (latency !== null && (message.t !== "PRESENCE" || state.diagnostics.length % 15 === 0)) {
+        log(source === "primary" ? "realtime-log" : "presence-log", {
+          source,
+          type: message.t,
+          latencyMs: Math.round(latency),
+          room: message.room,
+        }, "ok", "latency");
+      }
+    }
+
+    function pushDiagnostic(entry) {
+      state.diagnostics.push(entry);
+      while (state.diagnostics.length > 240) {
+        state.diagnostics.shift();
+      }
+    }
+
+    function recordLatency(value) {
+      if (!Number.isFinite(value)) return;
+      state.latencySamples.push(value);
+      while (state.latencySamples.length > 240) {
+        state.latencySamples.shift();
+      }
+    }
+
+	    function connectedLabClients() {
+	      let count = 0;
+	      state.syntheticClients.forEach((client) => {
+	        if (client.ws && client.ws.readyState === WebSocket.OPEN) {
+	          count += 1;
+        }
+      });
+	      return count;
+	    }
+
+	    function unhealthyLabClients() {
+	      let count = 0;
+	      state.syntheticClients.forEach((client) => {
+	        if (!client.ws || client.ws.readyState === WebSocket.CLOSED || client.status === "closed" || client.status === "error") {
+	          count += 1;
+	        }
+	      });
+	      return count;
+	    }
+
+    function openPresenceClients() {
+      return Array.from(state.syntheticClients.values()).filter((client) => client.ws && client.ws.readyState === WebSocket.OPEN && client.connId);
+    }
+
+    function lastLatency() {
+      return state.latencySamples.length ? state.latencySamples[state.latencySamples.length - 1] : 0;
+    }
+
+    function percentileLatency(percentile) {
+      return percentileFrom(state.latencySamples, percentile);
+    }
+
+    function percentileFrom(values, percentile) {
+      if (!values || values.length === 0) return 0;
+      const sorted = [...values].sort((a, b) => a - b);
+      const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((percentile / 100) * sorted.length) - 1));
+      return sorted[index];
+    }
+
+    function benchmarkDuration() {
+      if (!state.benchmark.startedAt) {
+        return 0;
+      }
+      const endedAt = state.benchmark.finishedAt || performance.now();
+      return Math.max(0, endedAt - state.benchmark.startedAt);
+    }
+
+    function renderBenchmark() {
+      const expected = state.benchmark.expected;
+      const observed = state.benchmark.observed;
+      const missing = Math.max(0, expected - observed);
+      const lossPercent = expected > 0 ? Math.round((missing / expected) * 10000) / 100 : 0;
+      setOptionalText("presence-benchmark-delivery", observed + " / " + expected);
+      setOptionalText("presence-benchmark-loss", lossPercent + "%");
+      setOptionalText("presence-benchmark-p99", formatMs(percentileFrom(state.benchmark.samples, 99)));
+      setOptionalText("presence-benchmark-duration", formatMs(benchmarkDuration()));
+    }
+
+    function formatMs(value) {
+      return Math.round(value || 0) + " ms";
+    }
+
+    function numberInput(id, fallback, min, max) {
+      const node = byId(id);
+      const parsed = Number.parseInt(node ? node.value : "", 10);
+      const value = Number.isFinite(parsed) ? parsed : fallback;
+      const clamped = Math.max(min, Math.min(max, value));
+      if (node) {
+        node.value = String(clamped);
+      }
+      return clamped;
+    }
+
+    function setOptionalText(id, value) {
+      const node = byId(id);
+      if (node) {
+        node.textContent = value;
+      }
+    }
+
+    function userName(user) {
+      if (typeof user === "string") return user;
+      if (user && typeof user === "object" && typeof user.name === "string") return user.name;
+      if (user && typeof user === "object" && typeof user.id === "string") return user.id;
+      return "";
+    }
+
+    function userColor(user) {
+      return user && typeof user === "object" && typeof user.color === "string" ? user.color : "";
+    }
+
+    function initMotion() {
+      window.setTimeout(() => {
+        if (!window.gsap) return;
+        const gsap = window.gsap;
+        if (window.ScrollTrigger) {
+          gsap.registerPlugin(window.ScrollTrigger);
+        }
+        gsap.from(".attention-hero .hero-copy > *", {
+          opacity: 0,
+          y: 22,
+          duration: 0.9,
+          stagger: 0.08,
+          ease: "power3.out",
+        });
+        gsap.utils.toArray(".motion-card").forEach((element) => {
+          gsap.fromTo(element, { scale: 0.98, opacity: 0.72 }, {
+            scale: 1,
+            opacity: 1,
+            ease: "none",
+            scrollTrigger: {
+              trigger: element,
+              start: "top 90%",
+              end: "bottom 25%",
+              scrub: true,
+            },
+          });
+        });
+      }, 300);
     }
 
     function log(targetID, payload, tone = "ok", title = "") {
@@ -2152,7 +3731,8 @@
     }
 
     function requestID(prefix) {
-      return prefix + "-" + Date.now();
+      state.requestSeq += 1;
+      return prefix + "-" + Date.now() + "-" + state.requestSeq;
     }
 
     function enc(value) {
