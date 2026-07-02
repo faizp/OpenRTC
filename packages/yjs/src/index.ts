@@ -19,6 +19,8 @@ export interface OpenRTCYjsProviderOptions {
   doc: Y.Doc;
   WebSocket?: YJSWebSocketConstructor;
   snapshotIntervalMs?: number;
+  stateVectorSync?: boolean;
+  stateVectorSyncDelayMs?: number;
   connect?: boolean;
   awareness?: OpenRTCAwareness;
   presenceClient?: OpenRTCAwarenessPresenceClient;
@@ -26,10 +28,25 @@ export interface OpenRTCYjsProviderOptions {
 }
 
 export type YjsConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
+export type YjsSyncStatus = "idle" | "connecting" | "syncing" | "synced" | "closed" | "error";
+export type YjsSyncedFrameKind = "update" | "snapshot" | "state-vector-diff";
+
+export interface OpenRTCYjsSyncState {
+  status: YjsSyncStatus;
+  stateVectorHash: string;
+  snapshotHash?: string;
+  lastSyncedAt?: number;
+  receivedBytes: number;
+  sentBytes: number;
+  updatesReceived: number;
+  snapshotsReceived: number;
+  diffsReceived: number;
+}
 
 export interface OpenRTCYjsProviderEventMap {
   status: YjsConnectionStatus;
-  synced: { kind: "update" | "snapshot"; bytes: number };
+  "sync-status": OpenRTCYjsSyncState;
+  synced: { kind: YjsSyncedFrameKind; bytes: number; stateVectorHash: string; snapshotHash?: string };
   error: Error;
 }
 
@@ -38,6 +55,9 @@ type Handler<T> = (event: T) => void;
 const WS_OPEN = 1;
 const FRAME_UPDATE = 1;
 const FRAME_SNAPSHOT = 2;
+const FRAME_STATE_VECTOR = 3;
+const FRAME_STATE_VECTOR_DIFF = 4;
+const DEFAULT_STATE_VECTOR_SYNC_DELAY_MS = 25;
 export const OPENRTC_AWARENESS_PRESENCE_KEY = "__openrtc_yjs_awareness";
 
 export class OpenRTCYjsProvider {
@@ -49,11 +69,22 @@ export class OpenRTCYjsProvider {
   private readonly token: OpenRTCYjsProviderOptions["token"];
   private readonly WebSocketCtor: YJSWebSocketConstructor;
   private readonly snapshotIntervalMs: number | undefined;
+  private readonly stateVectorSync: boolean;
+  private readonly stateVectorSyncDelayMs: number;
   private readonly ownsAwareness: boolean;
   private socket: YJSWebSocket | undefined;
   private statusValue: YjsConnectionStatus = "idle";
+  private syncStatusValue: YjsSyncStatus = "idle";
   private snapshotTimer: ReturnType<typeof setInterval> | undefined;
+  private stateVectorTimer: ReturnType<typeof setTimeout> | undefined;
   private awarenessBridge: OpenRTCAwarenessBridge | undefined;
+  private snapshotHash: string | undefined;
+  private lastSyncedAt: number | undefined;
+  private receivedBytes = 0;
+  private sentBytes = 0;
+  private updatesReceived = 0;
+  private snapshotsReceived = 0;
+  private diffsReceived = 0;
   private handlers = new Map<keyof OpenRTCYjsProviderEventMap, Set<Handler<OpenRTCYjsProviderEventMap[keyof OpenRTCYjsProviderEventMap]>>>();
 
   constructor(options: OpenRTCYjsProviderOptions) {
@@ -62,6 +93,8 @@ export class OpenRTCYjsProvider {
     this.token = options.token;
     this.doc = options.doc;
     this.snapshotIntervalMs = options.snapshotIntervalMs;
+    this.stateVectorSync = options.stateVectorSync ?? true;
+    this.stateVectorSyncDelayMs = options.stateVectorSyncDelayMs ?? DEFAULT_STATE_VECTOR_SYNC_DELAY_MS;
     this.awareness = options.awareness ?? new OpenRTCAwareness(options.doc);
     this.ownsAwareness = !options.awareness;
     const defaultCtor = globalThis.WebSocket as unknown as YJSWebSocketConstructor | undefined;
@@ -88,11 +121,16 @@ export class OpenRTCYjsProvider {
     return this.statusValue;
   }
 
+  getSyncState(): OpenRTCYjsSyncState {
+    return this.currentSyncState();
+  }
+
   async connect(): Promise<void> {
     if (this.statusValue === "open" || this.statusValue === "connecting") {
       return;
     }
     this.setStatus("connecting");
+    this.setSyncStatus("connecting");
 
     const token = await this.resolveToken();
     const socket = new this.WebSocketCtor(yjsWebSocketURL(this.url, this.room, token));
@@ -106,9 +144,11 @@ export class OpenRTCYjsProvider {
       this.stopSnapshotTimer();
       this.socket = undefined;
       this.setStatus("closed");
+      this.setSyncStatus("closed");
     });
     socket.addEventListener("error", () => {
       this.setStatus("error");
+      this.setSyncStatus("error");
       this.emit("error", new Error("Yjs WebSocket error"));
     });
 
@@ -116,12 +156,15 @@ export class OpenRTCYjsProvider {
       const onOpen = (): void => {
         cleanup();
         this.setStatus("open");
+        this.setSyncStatus("syncing");
         this.startSnapshotTimer();
+        this.scheduleStateVectorSync();
         resolve();
       };
       const onError = (): void => {
         cleanup();
         this.setStatus("error");
+        this.setSyncStatus("error");
         reject(new Error("Yjs WebSocket connection failed"));
       };
       const cleanup = (): void => {
@@ -135,9 +178,11 @@ export class OpenRTCYjsProvider {
 
   disconnect(): void {
     this.stopSnapshotTimer();
+    this.stopStateVectorTimer();
     this.socket?.close();
     this.socket = undefined;
     this.setStatus("closed");
+    this.setSyncStatus("closed");
   }
 
   destroy(): void {
@@ -156,6 +201,14 @@ export class OpenRTCYjsProvider {
 
   sendSnapshot(): void {
     this.sendFrame(FRAME_UPDATE, Y.encodeStateAsUpdate(this.doc));
+  }
+
+  requestSync(): boolean {
+    const sent = this.sendFrame(FRAME_STATE_VECTOR, Y.encodeStateVector(this.doc));
+    if (sent) {
+      this.setSyncStatus("syncing");
+    }
+    return sent;
   }
 
   on<K extends keyof OpenRTCYjsProviderEventMap>(
@@ -182,29 +235,61 @@ export class OpenRTCYjsProvider {
 
   private async handleRemoteFrame(data: unknown): Promise<void> {
     const frame = await toUint8Array(data);
-    if (frame.length < 2) {
+    if (frame.length < 1) {
       return;
     }
-    const kind = frame[0];
-    if (kind !== FRAME_UPDATE && kind !== FRAME_SNAPSHOT) {
+    const kind = frame[0]!;
+    const payload = frame.subarray(1);
+    if (kind === FRAME_STATE_VECTOR) {
+      this.handleStateVectorRequest(payload);
       return;
     }
-    const update = frame.subarray(1);
-    Y.applyUpdate(this.doc, update, this);
+    if (kind !== FRAME_UPDATE && kind !== FRAME_SNAPSHOT && kind !== FRAME_STATE_VECTOR_DIFF) {
+      return;
+    }
+    Y.applyUpdate(this.doc, payload, this);
+    this.recordRemoteSyncFrame(kind, payload);
+  }
+
+  private handleStateVectorRequest(stateVector: Uint8Array): void {
+    try {
+      this.sendFrame(FRAME_STATE_VECTOR_DIFF, Y.encodeStateAsUpdate(this.doc, stateVector));
+    } catch (error) {
+      this.emit("error", error instanceof Error ? error : new Error("Yjs state vector sync failed"));
+    }
+  }
+
+  private recordRemoteSyncFrame(kind: number, update: Uint8Array): void {
+    this.receivedBytes += update.byteLength;
+    if (kind === FRAME_SNAPSHOT) {
+      this.snapshotsReceived++;
+      this.snapshotHash = hashBytes(update);
+    } else if (kind === FRAME_STATE_VECTOR_DIFF) {
+      this.diffsReceived++;
+    } else {
+      this.updatesReceived++;
+    }
+    this.lastSyncedAt = Date.now();
+    this.setSyncStatus("synced");
     this.emit("synced", {
-      kind: kind === FRAME_SNAPSHOT ? "snapshot" : "update",
+      kind: syncedKind(kind),
       bytes: update.byteLength,
+      stateVectorHash: this.stateVectorHash(),
+      ...(this.snapshotHash ? { snapshotHash: this.snapshotHash } : {}),
     });
   }
 
-  private sendFrame(kind: number, update: Uint8Array): void {
+  private sendFrame(kind: number, update: Uint8Array): boolean {
     if (!this.socket || this.socket.readyState !== WS_OPEN) {
-      return;
+      return false;
     }
     const frame = new Uint8Array(1 + update.byteLength);
     frame[0] = kind;
     frame.set(update, 1);
     this.socket.send(frame);
+    this.sentBytes += update.byteLength;
+    this.emitSyncStatus();
+    return true;
   }
 
   private startSnapshotTimer(): void {
@@ -221,6 +306,23 @@ export class OpenRTCYjsProvider {
     }
   }
 
+  private scheduleStateVectorSync(): void {
+    if (!this.stateVectorSync || this.stateVectorTimer) {
+      return;
+    }
+    this.stateVectorTimer = setTimeout(() => {
+      this.stateVectorTimer = undefined;
+      this.requestSync();
+    }, Math.max(0, this.stateVectorSyncDelayMs));
+  }
+
+  private stopStateVectorTimer(): void {
+    if (this.stateVectorTimer) {
+      clearTimeout(this.stateVectorTimer);
+      this.stateVectorTimer = undefined;
+    }
+  }
+
   private async resolveToken(): Promise<string> {
     return typeof this.token === "function" ? this.token() : this.token;
   }
@@ -228,6 +330,33 @@ export class OpenRTCYjsProvider {
   private setStatus(status: YjsConnectionStatus): void {
     this.statusValue = status;
     this.emit("status", status);
+  }
+
+  private setSyncStatus(status: YjsSyncStatus): void {
+    this.syncStatusValue = status;
+    this.emitSyncStatus();
+  }
+
+  private emitSyncStatus(): void {
+    this.emit("sync-status", this.currentSyncState());
+  }
+
+  private currentSyncState(): OpenRTCYjsSyncState {
+    return {
+      status: this.syncStatusValue,
+      stateVectorHash: this.stateVectorHash(),
+      ...(this.snapshotHash ? { snapshotHash: this.snapshotHash } : {}),
+      ...(this.lastSyncedAt !== undefined ? { lastSyncedAt: this.lastSyncedAt } : {}),
+      receivedBytes: this.receivedBytes,
+      sentBytes: this.sentBytes,
+      updatesReceived: this.updatesReceived,
+      snapshotsReceived: this.snapshotsReceived,
+      diffsReceived: this.diffsReceived,
+    };
+  }
+
+  private stateVectorHash(): string {
+    return hashBytes(Y.encodeStateVector(this.doc));
   }
 
   private emit<K extends keyof OpenRTCYjsProviderEventMap>(type: K, event: OpenRTCYjsProviderEventMap[K]): void {
@@ -529,6 +658,25 @@ function isBlobLike(value: unknown): value is { arrayBuffer(): Promise<ArrayBuff
   return typeof value === "object" && value !== null && "arrayBuffer" in value;
 }
 
+function syncedKind(kind: number): YjsSyncedFrameKind {
+  if (kind === FRAME_SNAPSHOT) {
+    return "snapshot";
+  }
+  if (kind === FRAME_STATE_VECTOR_DIFF) {
+    return "state-vector-diff";
+  }
+  return "update";
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  let hash = 0x811c9dc5;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function parseAwarenessPresence(value: unknown): AwarenessPresencePayload | null {
   if (!isRecord(value)) {
     return null;
@@ -541,14 +689,15 @@ function parseAwarenessPresence(value: unknown): AwarenessPresencePayload | null
   if (typeof clientId !== "number" || !Number.isSafeInteger(clientId) || clientId < 0) {
     return null;
   }
-  if (state !== null && !isRecord(state)) {
+  const parsedState = state === null ? null : isRecord(state) ? state : undefined;
+  if (parsedState === undefined) {
     return null;
   }
   return {
     kind: "yjs-awareness",
     version: 1,
     clientId,
-    state,
+    state: parsedState,
     updatedAt: typeof value["updatedAt"] === "number" ? value["updatedAt"] : 0,
   };
 }

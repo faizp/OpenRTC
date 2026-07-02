@@ -52,6 +52,8 @@ const (
 	yjsPathPrefix             = "/yjs/"
 	yjsFrameUpdate            = byte(cluster.YJSEventUpdate)
 	yjsFrameSnapshot          = byte(cluster.YJSEventSnapshot)
+	yjsFrameStateVector       = byte(cluster.YJSEventStateVectorRequest)
+	yjsFrameStateVectorDiff   = byte(cluster.YJSEventStateVectorDiff)
 	writeWait                 = 5 * time.Second
 	readWait                  = 30 * time.Second
 )
@@ -326,17 +328,13 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
 			return
 		}
-		if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
-			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
-			return
-		}
 		if !conn.limiter.Allow() {
 			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRateLimited).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRateLimited))
 			return
 		}
 
 		kind := payload[0]
-		if kind != yjsFrameUpdate {
+		if !isClientYJSFrameKind(kind) {
 			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
 			return
 		}
@@ -348,10 +346,18 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			OriginNode:   s.cfg.NodeID,
 			OriginConnID: conn.id,
 		}
-		event, err = s.storeYJSEvent(event)
-		if err != nil {
-			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
-			return
+		if kind == yjsFrameUpdate || kind == yjsFrameStateVectorDiff {
+			if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
+				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
+				return
+			}
+		}
+		if kind == yjsFrameUpdate {
+			event, err = s.storeYJSEvent(event)
+			if err != nil {
+				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
+				return
+			}
 		}
 		if err := s.broadcastYJSEvent(event); err != nil {
 			return
@@ -363,6 +369,10 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func isClientYJSFrameKind(kind byte) bool {
+	return kind == yjsFrameUpdate || kind == yjsFrameStateVector || kind == yjsFrameStateVectorDiff
 }
 
 func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {

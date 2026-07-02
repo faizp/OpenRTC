@@ -515,6 +515,77 @@ func TestHandleYJSFrameBranches(t *testing.T) {
 		expectWebSocketClose(t, ws, "client yjs snapshot rejected")
 	})
 
+	t.Run("state vector request is transient read sync", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant": "tenant-a",
+			"join":   []string{"tenant-a:*"},
+			"scope":  "join:tenant-a:*",
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		receiver := &yjsConn{id: "state-vector-peer", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
+		registerRuntimeYJSConn(service, receiver)
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameStateVector}, []byte("state-vector")...)); err != nil {
+			t.Fatalf("write yjs state vector frame: %v", err)
+		}
+		frame := receiveRuntimeTestValue(t, receiver.send, "relayed yjs state vector")
+		if len(frame) == 0 || frame[0] != yjsFrameStateVector || string(frame[1:]) != "state-vector" {
+			t.Fatalf("unexpected yjs state vector frame: %v", frame)
+		}
+	})
+
+	t.Run("state vector diff requires publish", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant": "tenant-a",
+			"join":   []string{"tenant-a:*"},
+			"scope":  "join:tenant-a:*",
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameStateVectorDiff}, []byte("diff")...)); err != nil {
+			t.Fatalf("write forbidden yjs diff frame: %v", err)
+		}
+		expectWebSocketClose(t, ws, "forbidden yjs diff")
+	})
+
+	t.Run("state vector diff is relayed but not stored", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		store := &fakeRuntimeStore{
+			roomRecord:   runtimeWritableRoomRecord(),
+			appendCh:     make(chan []byte, 1),
+			publishYJSCh: make(chan cluster.YJSEvent, 1),
+		}
+		service.store = store
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		receiver := &yjsConn{id: "state-vector-diff-peer", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
+		registerRuntimeYJSConn(service, receiver)
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameStateVectorDiff}, []byte("diff")...)); err != nil {
+			t.Fatalf("write yjs diff frame: %v", err)
+		}
+		frame := receiveRuntimeTestValue(t, receiver.send, "relayed yjs diff")
+		if len(frame) == 0 || frame[0] != yjsFrameStateVectorDiff || string(frame[1:]) != "diff" {
+			t.Fatalf("unexpected yjs diff frame: %v", frame)
+		}
+		published := receiveRuntimeTestValue(t, store.publishYJSCh, "published yjs diff")
+		if published.Kind != cluster.YJSEventStateVectorDiff || string(published.Update) != "diff" {
+			t.Fatalf("unexpected published yjs diff: %+v", published)
+		}
+		select {
+		case update := <-store.appendCh:
+			t.Fatalf("transient yjs diff should not be stored, got %q", string(update))
+		default:
+		}
+	})
+
 	t.Run("store append error", func(t *testing.T) {
 		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
 			"tenant":  "tenant-a",
@@ -1861,6 +1932,8 @@ type fakeRuntimeStore struct {
 	storedSnapshot         []byte
 	storeSnapshotErr       error
 	publishYJSErr          error
+	publishedYJSEvents     []cluster.YJSEvent
+	publishYJSCh           chan cluster.YJSEvent
 	reconcileCh            chan string
 	subscribeErr           error
 	subscribePresenceErr   error
@@ -1899,7 +1972,13 @@ func (s *fakeRuntimeStore) SubscribePresence(context.Context, func(cluster.Prese
 	return s.subscribePresenceErr
 }
 
-func (s *fakeRuntimeStore) PublishYJSEvent(context.Context, cluster.YJSEvent) error {
+func (s *fakeRuntimeStore) PublishYJSEvent(_ context.Context, event cluster.YJSEvent) error {
+	if s.publishYJSErr == nil {
+		s.publishedYJSEvents = append(s.publishedYJSEvents, event)
+		if s.publishYJSCh != nil {
+			s.publishYJSCh <- event
+		}
+	}
 	return s.publishYJSErr
 }
 

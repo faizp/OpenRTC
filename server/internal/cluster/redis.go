@@ -68,8 +68,10 @@ type PresenceEvent struct {
 type YJSEventKind byte
 
 const (
-	YJSEventUpdate   YJSEventKind = 1
-	YJSEventSnapshot YJSEventKind = 2
+	YJSEventUpdate             YJSEventKind = 1
+	YJSEventSnapshot           YJSEventKind = 2
+	YJSEventStateVectorRequest YJSEventKind = 3
+	YJSEventStateVectorDiff    YJSEventKind = 4
 )
 
 type YJSEvent struct {

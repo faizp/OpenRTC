@@ -129,6 +129,7 @@ const providerA = new OpenRTCYjsProvider({
   doc: docA,
   WebSocket: FakeYjsSocket,
   connect: false,
+  stateVectorSync: false,
 });
 const providerB = new OpenRTCYjsProvider({
   url: "http://localhost:8080",
@@ -137,6 +138,7 @@ const providerB = new OpenRTCYjsProvider({
   doc: docB,
   WebSocket: FakeYjsSocket,
   connect: false,
+  stateVectorSync: false,
 });
 
 const connectA = providerA.connect();
@@ -167,6 +169,58 @@ assert.equal(socketA.sent.at(-1)?.[0], 1);
 
 providerA.destroy();
 providerB.destroy();
+
+const stateVectorDocA = new Y.Doc();
+const stateVectorDocB = new Y.Doc();
+stateVectorDocA.getText("body").insert(0, "server text");
+const stateVectorProviderA = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:state-vector-doc",
+  token: "token-a",
+  doc: stateVectorDocA,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+});
+const stateVectorProviderB = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:state-vector-doc",
+  token: "token-b",
+  doc: stateVectorDocB,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+});
+let diffSyncEvent: { kind: string; bytes: number; stateVectorHash: string } | undefined;
+stateVectorProviderB.on("synced", (event) => {
+  diffSyncEvent = event;
+});
+const stateVectorConnectA = stateVectorProviderA.connect();
+const stateVectorConnectB = stateVectorProviderB.connect();
+await Promise.resolve();
+const stateVectorSocketA = FakeYjsSocket.instances.at(-2);
+const stateVectorSocketB = FakeYjsSocket.instances.at(-1);
+assert.ok(stateVectorSocketA);
+assert.ok(stateVectorSocketB);
+stateVectorSocketA.peer = stateVectorSocketB;
+stateVectorSocketB.peer = stateVectorSocketA;
+stateVectorSocketA.open();
+stateVectorSocketB.open();
+await stateVectorConnectA;
+await stateVectorConnectB;
+
+assert.equal(stateVectorProviderB.requestSync(), true);
+await tick();
+assert.equal(stateVectorSocketB.sent.at(-1)?.[0], 3);
+assert.equal(stateVectorSocketA.sent.at(-1)?.[0], 4);
+assert.equal(stateVectorDocB.getText("body").toString(), "server text");
+assert.equal(diffSyncEvent?.kind, "state-vector-diff");
+assert.equal(typeof diffSyncEvent?.stateVectorHash, "string");
+assert.equal(stateVectorProviderB.getSyncState().status, "synced");
+assert.equal(stateVectorProviderB.getSyncState().diffsReceived, 1);
+assert.equal(stateVectorProviderA.getSyncState().sentBytes > 0, true);
+stateVectorProviderA.destroy();
+stateVectorProviderB.destroy();
 
 const awarenessA = new OpenRTCAwareness(new Y.Doc());
 const awarenessB = new OpenRTCAwareness(new Y.Doc());
