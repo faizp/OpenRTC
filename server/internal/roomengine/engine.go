@@ -27,6 +27,7 @@ type memoryYJSDocument struct {
 	SnapshotCheckpoint int64
 	Updates            [][]byte
 	UpdateSequences    []int64
+	UpdateKinds        []cluster.YJSEventKind
 	NextSequence       int64
 }
 
@@ -233,6 +234,7 @@ func (e *Engine) LoadYJSDocument(room string) cluster.YJSDocument {
 		SnapshotCheckpoint: doc.SnapshotCheckpoint,
 		Updates:            make([][]byte, 0, len(doc.Updates)),
 		UpdateSequences:    append([]int64(nil), doc.UpdateSequences...),
+		UpdateKinds:        append([]cluster.YJSEventKind(nil), doc.UpdateKinds...),
 	}
 	for _, update := range doc.Updates {
 		out.Updates = append(out.Updates, append([]byte(nil), update...))
@@ -258,6 +260,7 @@ func (e *Engine) StoreYJSEvent(event cluster.YJSEvent) cluster.YJSEvent {
 	event.Sequence = doc.NextSequence
 	doc.Updates = append(doc.Updates, append([]byte(nil), event.Update...))
 	doc.UpdateSequences = append(doc.UpdateSequences, doc.NextSequence)
+	doc.UpdateKinds = append(doc.UpdateKinds, event.Kind)
 	return event
 }
 

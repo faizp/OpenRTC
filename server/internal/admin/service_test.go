@@ -2676,7 +2676,7 @@ func (s *fakeAdminStore) LoadYJSDocument(context.Context, string) (cluster.YJSDo
 	return cluster.YJSDocument{}, nil
 }
 
-func (s *fakeAdminStore) AppendYJSUpdate(context.Context, string, []byte) (int64, error) {
+func (s *fakeAdminStore) AppendYJSUpdate(context.Context, string, cluster.YJSEventKind, []byte) (int64, error) {
 	return 0, nil
 }
 

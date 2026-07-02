@@ -22,6 +22,7 @@ export interface OpenRTCYjsProviderOptions {
   snapshotIntervalMs?: number;
   stateVectorSync?: boolean;
   stateVectorSyncDelayMs?: number;
+  syncSubdocs?: boolean;
   connect?: boolean;
   awareness?: OpenRTCAwareness;
   presenceClient?: OpenRTCAwarenessPresenceClient;
@@ -30,7 +31,7 @@ export interface OpenRTCYjsProviderOptions {
 
 export type YjsConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
 export type YjsSyncStatus = "idle" | "connecting" | "syncing" | "synced" | "closed" | "error";
-export type YjsSyncedFrameKind = "update" | "snapshot" | "state-vector-diff";
+export type YjsSyncedFrameKind = "update" | "snapshot" | "state-vector-diff" | "subdoc-update" | "subdoc-state-vector-diff";
 export type YjsOfflineUpdateSource = "local" | "remote";
 
 export interface OpenRTCYjsOfflineUpdateMeta {
@@ -63,6 +64,10 @@ export interface OpenRTCYjsSyncState {
   updatesReceived: number;
   snapshotsReceived: number;
   diffsReceived: number;
+  subdocsTracked: number;
+  subdocUpdatesReceived: number;
+  subdocUpdatesSent: number;
+  subdocDiffsReceived: number;
   offlineLoaded: boolean;
   offlineUpdatesLoaded: number;
   offlineBytesLoaded: number;
@@ -84,10 +89,26 @@ const FRAME_UPDATE = 1;
 const FRAME_SNAPSHOT = 2;
 const FRAME_STATE_VECTOR = 3;
 const FRAME_STATE_VECTOR_DIFF = 4;
+const FRAME_SUBDOC_UPDATE = 5;
+const FRAME_SUBDOC_STATE_VECTOR = 6;
+const FRAME_SUBDOC_STATE_VECTOR_DIFF = 7;
 const DEFAULT_STATE_VECTOR_SYNC_DELAY_MS = 25;
 const DEFAULT_INDEXEDDB_NAME = "openrtc-yjs";
 const DEFAULT_INDEXEDDB_STORE = "updates";
+const MAX_SUBDOC_GUID_BYTES = 0xffff;
 export const OPENRTC_AWARENESS_PRESENCE_KEY = "__openrtc_yjs_awareness";
+
+interface YjsSubdocEvent {
+  added: Set<Y.Doc>;
+  loaded: Set<Y.Doc>;
+  removed: Set<Y.Doc>;
+}
+
+interface PendingSubdocUpdate {
+  kind: number;
+  update: Uint8Array;
+  payload: Uint8Array;
+}
 
 export class OpenRTCYjsProvider {
   readonly doc: Y.Doc;
@@ -101,6 +122,7 @@ export class OpenRTCYjsProvider {
   private readonly snapshotIntervalMs: number | undefined;
   private readonly stateVectorSync: boolean;
   private readonly stateVectorSyncDelayMs: number;
+  private readonly syncSubdocs: boolean;
   private readonly ownsAwareness: boolean;
   private socket: YJSWebSocket | undefined;
   private statusValue: YjsConnectionStatus = "idle";
@@ -115,6 +137,12 @@ export class OpenRTCYjsProvider {
   private updatesReceived = 0;
   private snapshotsReceived = 0;
   private diffsReceived = 0;
+  private subdocUpdatesReceived = 0;
+  private subdocUpdatesSent = 0;
+  private subdocDiffsReceived = 0;
+  private readonly subdocs = new Map<string, Y.Doc>();
+  private readonly subdocUpdateHandlers = new Map<string, (update: Uint8Array, origin: unknown) => void>();
+  private readonly pendingSubdocUpdates = new Map<string, PendingSubdocUpdate[]>();
   private offlineLoaded = false;
   private offlineLoadPromise: Promise<void> | undefined;
   private offlineUpdatesLoaded = 0;
@@ -132,6 +160,7 @@ export class OpenRTCYjsProvider {
     this.snapshotIntervalMs = options.snapshotIntervalMs;
     this.stateVectorSync = options.stateVectorSync ?? true;
     this.stateVectorSyncDelayMs = options.stateVectorSyncDelayMs ?? DEFAULT_STATE_VECTOR_SYNC_DELAY_MS;
+    this.syncSubdocs = options.syncSubdocs ?? true;
     this.awareness = options.awareness ?? new OpenRTCAwareness(options.doc);
     this.ownsAwareness = !options.awareness;
     const defaultCtor = globalThis.WebSocket as unknown as YJSWebSocketConstructor | undefined;
@@ -140,6 +169,10 @@ export class OpenRTCYjsProvider {
     }
     this.WebSocketCtor = options.WebSocket ?? defaultCtor!;
     this.doc.on("update", this.handleLocalUpdate);
+    if (this.syncSubdocs) {
+      this.bindExistingSubdocs();
+      this.doc.on("subdocs", this.handleSubdocs);
+    }
     if (options.presenceClient) {
       this.awarenessBridge = bindOpenRTCAwareness(
         options.presenceClient,
@@ -226,6 +259,11 @@ export class OpenRTCYjsProvider {
   destroy(): void {
     this.disconnect();
     this.doc.off("update", this.handleLocalUpdate);
+    if (this.syncSubdocs) {
+      this.doc.off("subdocs", this.handleSubdocs);
+      this.unbindAllSubdocs();
+      this.pendingSubdocUpdates.clear();
+    }
     if (this.ownsAwareness) {
       this.awareness.setLocalState(null);
       this.awarenessBridge?.flush();
@@ -243,6 +281,22 @@ export class OpenRTCYjsProvider {
 
   requestSync(): boolean {
     const sent = this.sendFrame(FRAME_STATE_VECTOR, Y.encodeStateVector(this.doc));
+    if (sent) {
+      this.setSyncStatus("syncing");
+    }
+    return sent;
+  }
+
+  requestSubdocSync(subdocOrGuid: Y.Doc | string): boolean {
+    if (!this.syncSubdocs) {
+      return false;
+    }
+    const guid = typeof subdocOrGuid === "string" ? subdocOrGuid : subdocOrGuid.guid;
+    const subdoc = this.subdocs.get(guid);
+    if (!subdoc) {
+      return false;
+    }
+    const sent = this.sendSubdocFrame(FRAME_SUBDOC_STATE_VECTOR, guid, Y.encodeStateVector(subdoc));
     if (sent) {
       this.setSyncStatus("syncing");
     }
@@ -272,6 +326,18 @@ export class OpenRTCYjsProvider {
     this.sendFrame(FRAME_UPDATE, update);
   };
 
+  private handleSubdocs = (event: YjsSubdocEvent): void => {
+    for (const subdoc of event.removed) {
+      this.unbindSubdoc(subdoc);
+    }
+    for (const subdoc of event.added) {
+      this.bindSubdoc(subdoc);
+    }
+    for (const subdoc of event.loaded) {
+      this.bindSubdoc(subdoc);
+    }
+  };
+
   private async handleRemoteFrame(data: unknown): Promise<void> {
     const frame = await toUint8Array(data);
     if (frame.length < 1) {
@@ -281,6 +347,14 @@ export class OpenRTCYjsProvider {
     const payload = frame.subarray(1);
     if (kind === FRAME_STATE_VECTOR) {
       this.handleStateVectorRequest(payload);
+      return;
+    }
+    if (kind === FRAME_SUBDOC_STATE_VECTOR) {
+      this.handleSubdocStateVectorRequest(payload);
+      return;
+    }
+    if (kind === FRAME_SUBDOC_UPDATE || kind === FRAME_SUBDOC_STATE_VECTOR_DIFF) {
+      this.handleRemoteSubdocFrame(kind, payload);
       return;
     }
     if (kind !== FRAME_UPDATE && kind !== FRAME_SNAPSHOT && kind !== FRAME_STATE_VECTOR_DIFF) {
@@ -297,6 +371,117 @@ export class OpenRTCYjsProvider {
     } catch (error) {
       this.emit("error", error instanceof Error ? error : new Error("Yjs state vector sync failed"));
     }
+  }
+
+  private handleSubdocStateVectorRequest(payload: Uint8Array): void {
+    const decoded = decodeSubdocPayload(payload);
+    if (!decoded) {
+      return;
+    }
+    const subdoc = this.subdocs.get(decoded.guid);
+    if (!subdoc) {
+      return;
+    }
+    try {
+      this.sendSubdocFrame(FRAME_SUBDOC_STATE_VECTOR_DIFF, decoded.guid, Y.encodeStateAsUpdate(subdoc, decoded.update));
+    } catch (error) {
+      this.emit("error", error instanceof Error ? error : new Error("Yjs subdoc state vector sync failed"));
+    }
+  }
+
+  private handleRemoteSubdocFrame(kind: number, payload: Uint8Array): void {
+    const decoded = decodeSubdocPayload(payload);
+    if (!decoded) {
+      return;
+    }
+    const subdoc = this.subdocs.get(decoded.guid);
+    if (!subdoc) {
+      this.queuePendingSubdocUpdate(decoded.guid, kind, decoded.update, payload);
+      return;
+    }
+    this.applySubdocUpdate(subdoc, decoded.update, kind, payload);
+  }
+
+  private bindExistingSubdocs(): void {
+    for (const subdoc of this.doc.subdocs) {
+      this.bindSubdoc(subdoc);
+    }
+  }
+
+  private bindSubdoc(subdoc: Y.Doc): void {
+    const guid = subdoc.guid;
+    const current = this.subdocs.get(guid);
+    if (current === subdoc) {
+      return;
+    }
+    if (current) {
+      this.unbindSubdoc(current);
+    }
+    const handler = (update: Uint8Array, origin: unknown): void => {
+      if (origin === this) {
+        return;
+      }
+      if (this.sendSubdocFrame(FRAME_SUBDOC_UPDATE, guid, update)) {
+        this.subdocUpdatesSent++;
+        this.emitSyncStatus();
+      }
+    };
+    this.subdocs.set(guid, subdoc);
+    this.subdocUpdateHandlers.set(guid, handler);
+    subdoc.on("update", handler);
+    this.applyPendingSubdocUpdates(guid, subdoc);
+    if (this.statusValue === "open" && this.stateVectorSync) {
+      this.requestSubdocSync(guid);
+    } else {
+      this.emitSyncStatus();
+    }
+  }
+
+  private unbindSubdoc(subdoc: Y.Doc): void {
+    const guid = subdoc.guid;
+    if (this.subdocs.get(guid) !== subdoc) {
+      return;
+    }
+    const handler = this.subdocUpdateHandlers.get(guid);
+    if (handler) {
+      subdoc.off("update", handler);
+    }
+    this.subdocUpdateHandlers.delete(guid);
+    this.subdocs.delete(guid);
+    this.emitSyncStatus();
+  }
+
+  private unbindAllSubdocs(): void {
+    for (const [guid, subdoc] of this.subdocs) {
+      const handler = this.subdocUpdateHandlers.get(guid);
+      if (handler) {
+        subdoc.off("update", handler);
+      }
+    }
+    this.subdocs.clear();
+    this.subdocUpdateHandlers.clear();
+  }
+
+  private queuePendingSubdocUpdate(guid: string, kind: number, update: Uint8Array, payload: Uint8Array): void {
+    const updates = this.pendingSubdocUpdates.get(guid) ?? [];
+    updates.push({ kind, update: update.slice(), payload: payload.slice() });
+    this.pendingSubdocUpdates.set(guid, updates);
+  }
+
+  private applyPendingSubdocUpdates(guid: string, subdoc: Y.Doc): void {
+    const updates = this.pendingSubdocUpdates.get(guid);
+    if (!updates) {
+      return;
+    }
+    this.pendingSubdocUpdates.delete(guid);
+    for (const update of updates) {
+      this.applySubdocUpdate(subdoc, update.update, update.kind, update.payload);
+    }
+  }
+
+  private applySubdocUpdate(subdoc: Y.Doc, update: Uint8Array, kind: number, payload: Uint8Array): void {
+    Y.applyUpdate(subdoc, update, this);
+    this.recordRemoteSubdocSyncFrame(kind, payload);
   }
 
   private recordRemoteSyncFrame(kind: number, update: Uint8Array): void {
@@ -319,6 +504,23 @@ export class OpenRTCYjsProvider {
     });
   }
 
+  private recordRemoteSubdocSyncFrame(kind: number, payload: Uint8Array): void {
+    this.receivedBytes += payload.byteLength;
+    if (kind === FRAME_SUBDOC_STATE_VECTOR_DIFF) {
+      this.subdocDiffsReceived++;
+    } else {
+      this.subdocUpdatesReceived++;
+    }
+    this.lastSyncedAt = Date.now();
+    this.setSyncStatus("synced");
+    this.emit("synced", {
+      kind: syncedKind(kind),
+      bytes: payload.byteLength,
+      stateVectorHash: this.stateVectorHash(),
+      ...(this.snapshotHash ? { snapshotHash: this.snapshotHash } : {}),
+    });
+  }
+
   private sendFrame(kind: number, update: Uint8Array): boolean {
     if (!this.socket || this.socket.readyState !== WS_OPEN) {
       return false;
@@ -330,6 +532,15 @@ export class OpenRTCYjsProvider {
     this.sentBytes += update.byteLength;
     this.emitSyncStatus();
     return true;
+  }
+
+  private sendSubdocFrame(kind: number, guid: string, update: Uint8Array): boolean {
+    try {
+      return this.sendFrame(kind, encodeSubdocPayload(guid, update));
+    } catch (error) {
+      this.emit("error", error instanceof Error ? error : new Error("Yjs subdoc frame encoding failed"));
+      return false;
+    }
   }
 
   private startSnapshotTimer(): void {
@@ -353,7 +564,17 @@ export class OpenRTCYjsProvider {
     this.stateVectorTimer = setTimeout(() => {
       this.stateVectorTimer = undefined;
       this.requestSync();
+      this.requestAllSubdocSync();
     }, Math.max(0, this.stateVectorSyncDelayMs));
+  }
+
+  private requestAllSubdocSync(): void {
+    if (!this.syncSubdocs) {
+      return;
+    }
+    for (const guid of this.subdocs.keys()) {
+      this.requestSubdocSync(guid);
+    }
   }
 
   private stopStateVectorTimer(): void {
@@ -392,6 +613,10 @@ export class OpenRTCYjsProvider {
       updatesReceived: this.updatesReceived,
       snapshotsReceived: this.snapshotsReceived,
       diffsReceived: this.diffsReceived,
+      subdocsTracked: this.subdocs.size,
+      subdocUpdatesReceived: this.subdocUpdatesReceived,
+      subdocUpdatesSent: this.subdocUpdatesSent,
+      subdocDiffsReceived: this.subdocDiffsReceived,
       offlineLoaded: this.offlineLoaded,
       offlineUpdatesLoaded: this.offlineUpdatesLoaded,
       offlineBytesLoaded: this.offlineBytesLoaded,
@@ -824,6 +1049,37 @@ export function yjsWebSocketURL(rawURL: string, room: string, token: string): st
   return parsed.toString();
 }
 
+function encodeSubdocPayload(guid: string, update: Uint8Array): Uint8Array {
+  const encodedGuid = new TextEncoder().encode(guid);
+  if (encodedGuid.byteLength === 0 || encodedGuid.byteLength > MAX_SUBDOC_GUID_BYTES) {
+    throw new Error("Yjs subdoc guid must be 1-65535 UTF-8 bytes");
+  }
+  const payload = new Uint8Array(2 + encodedGuid.byteLength + update.byteLength);
+  payload[0] = (encodedGuid.byteLength >> 8) & 0xff;
+  payload[1] = encodedGuid.byteLength & 0xff;
+  payload.set(encodedGuid, 2);
+  payload.set(update, 2 + encodedGuid.byteLength);
+  return payload;
+}
+
+function decodeSubdocPayload(payload: Uint8Array): { guid: string; update: Uint8Array } | null {
+  if (payload.byteLength < 3) {
+    return null;
+  }
+  const guidLength = (payload[0]! << 8) | payload[1]!;
+  if (guidLength === 0 || payload.byteLength < 2 + guidLength) {
+    return null;
+  }
+  const update = payload.subarray(2 + guidLength);
+  if (update.byteLength === 0) {
+    return null;
+  }
+  return {
+    guid: new TextDecoder().decode(payload.subarray(2, 2 + guidLength)),
+    update,
+  };
+}
+
 function readMessageData(event: unknown): unknown {
   if (typeof event === "object" && event !== null && "data" in event) {
     return event.data;
@@ -878,6 +1134,12 @@ function syncedKind(kind: number): YjsSyncedFrameKind {
   }
   if (kind === FRAME_STATE_VECTOR_DIFF) {
     return "state-vector-diff";
+  }
+  if (kind === FRAME_SUBDOC_STATE_VECTOR_DIFF) {
+    return "subdoc-state-vector-diff";
+  }
+  if (kind === FRAME_SUBDOC_UPDATE) {
+    return "subdoc-update";
   }
   return "update";
 }

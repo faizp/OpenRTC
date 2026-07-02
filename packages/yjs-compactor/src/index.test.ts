@@ -73,6 +73,18 @@ if (legacySkipped.skipped) {
   assert.equal(legacySkipped.reason, "legacy-updates");
 }
 
+const subdocSkipped = await compactRoom(
+  new MemoryCompactionStore({ updates: [{ seq: 1, kind: "subdoc-update", update: new Uint8Array([1, 2, 3]) }] }),
+  "tenant-a:subdoc",
+);
+assert.equal(subdocSkipped.skipped, true);
+if (subdocSkipped.skipped) {
+  assert.equal(subdocSkipped.reason, "subdoc-updates");
+}
+assert.throws(() => compactYjsDocument({
+  updates: [{ seq: 1, kind: "subdoc-update", update: new Uint8Array([1, 2, 3]) }],
+}), /subdoc updates/);
+
 function makeTextUpdates(name: string, inserts: string[]): SequencedYjsUpdate[] {
   const doc = new Y.Doc();
   const out: SequencedYjsUpdate[] = [];

@@ -117,7 +117,7 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	update[0] = 'X'
 	second := engine.StoreYJSEvent(cluster.YJSEvent{
 		Room:   "room-a",
-		Kind:   cluster.YJSEventUpdate,
+		Kind:   cluster.YJSEventSubdocUpdate,
 		Update: []byte("update-2"),
 	})
 	if second.Sequence != 2 {
@@ -139,12 +139,16 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	if !reflect.DeepEqual(doc.UpdateSequences, []int64{1, 2}) {
 		t.Fatalf("unexpected update sequences: %#v", doc.UpdateSequences)
 	}
+	if !reflect.DeepEqual(doc.UpdateKinds, []cluster.YJSEventKind{cluster.YJSEventUpdate, cluster.YJSEventSubdocUpdate}) {
+		t.Fatalf("unexpected update kinds: %#v", doc.UpdateKinds)
+	}
 
 	doc.Snapshot[0] = 'X'
 	doc.Updates[0][0] = 'X'
 	doc.UpdateSequences[0] = 99
+	doc.UpdateKinds[0] = cluster.YJSEventSnapshot
 	reloaded := engine.LoadYJSDocument("room-a")
-	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateSequences[0] != 1 {
+	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateSequences[0] != 1 || reloaded.UpdateKinds[0] != cluster.YJSEventUpdate {
 		t.Fatalf("document load should return defensive copies, got %+v", reloaded)
 	}
 }

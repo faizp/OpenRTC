@@ -12,6 +12,7 @@ export interface ScanRoomsOptions {
 
 interface YjsUpdateRecord {
   seq: number;
+  kind?: number;
   update: string;
 }
 
@@ -58,7 +59,11 @@ export class OpenRTCYjsRedisStore implements YjsCompactionStore {
     for (const raw of records) {
       const record = decodeYJSUpdateRecord(raw);
       if (record.seq > snapshotRecord.checkpoint) {
-        updates.push({ seq: record.seq, update: record.update });
+        updates.push({
+          seq: record.seq,
+          kind: record.kind,
+          update: record.update,
+        });
       }
     }
 
@@ -135,12 +140,22 @@ export class OpenRTCYjsRedisStore implements YjsCompactionStore {
   }
 }
 
-function decodeYJSUpdateRecord(raw: unknown): { seq: number; update: Uint8Array } {
+function decodeYJSUpdateRecord(raw: unknown): { seq: number; kind: "update" | "subdoc-update"; update: Uint8Array } {
   const parsed = JSON.parse(decodeBulkString(raw)) as Partial<YjsUpdateRecord>;
   if (typeof parsed.seq !== "number" || parsed.seq <= 0 || typeof parsed.update !== "string") {
     throw new Error("invalid Yjs update record");
   }
-  return { seq: parsed.seq, update: decodeBytes(parsed.update) };
+  return { seq: parsed.seq, kind: decodeYJSUpdateKind(parsed.kind), update: decodeBytes(parsed.update) };
+}
+
+function decodeYJSUpdateKind(kind: number | undefined): "update" | "subdoc-update" {
+  if (kind === undefined || kind === 1) {
+    return "update";
+  }
+  if (kind === 5) {
+    return "subdoc-update";
+  }
+  throw new Error("invalid Yjs update kind");
 }
 
 function decodeYJSSnapshotRecord(raw: unknown): { checkpointSeq: number; snapshot: Uint8Array } {

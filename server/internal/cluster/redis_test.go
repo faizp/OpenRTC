@@ -336,7 +336,7 @@ func TestRedisPublishAndYJSWriteErrors(t *testing.T) {
 	if _, err := store.ListRoomSubscriptionSettings(ctx, "user-1", 0, 50); err == nil {
 		t.Fatalf("expected list room subscription settings failure when redis is unavailable")
 	}
-	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", []byte("update")); err == nil {
+	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", YJSEventUpdate, []byte("update")); err == nil {
 		t.Fatalf("expected append yjs update failure when redis is unavailable")
 	}
 	if err := store.StoreYJSSnapshot(ctx, "tenant-a:doc-1", []byte("snapshot")); err == nil {
@@ -494,7 +494,7 @@ func TestRedisCommandFailureBranches(t *testing.T) {
 	hook.clear()
 
 	hook.processFailures = map[string]error{"zadd": expected}
-	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:room-1", []byte("update")); !errors.Is(err, expected) {
+	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:room-1", YJSEventUpdate, []byte("update")); !errors.Is(err, expected) {
 		t.Fatalf("expected yjs append zadd failure, got %v", err)
 	}
 	hook.clear()
@@ -566,11 +566,11 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
-	seq1, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", []byte("update-1"))
+	seq1, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", YJSEventUpdate, []byte("update-1"))
 	if err != nil {
 		t.Fatalf("append update 1: %v", err)
 	}
-	seq2, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", []byte("update-2"))
+	seq2, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", YJSEventUpdate, []byte("update-2"))
 	if err != nil {
 		t.Fatalf("append update 2: %v", err)
 	}
@@ -582,7 +582,22 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load document: %v", err)
 	}
-	assertYJSUpdates(t, doc, []string{"update-1", "update-2"}, []int64{1, 2})
+	assertYJSUpdates(t, doc, []string{"update-1", "update-2"}, []int64{1, 2}, []YJSEventKind{YJSEventUpdate, YJSEventUpdate})
+
+	subdocSeq, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", YJSEventSubdocUpdate, []byte("subdoc-update"))
+	if err != nil {
+		t.Fatalf("append subdoc update: %v", err)
+	}
+	if subdocSeq != 3 {
+		t.Fatalf("unexpected subdoc sequence: %d", subdocSeq)
+	}
+	doc, err = store.LoadYJSDocument(ctx, "tenant-a:doc-1")
+	if err != nil {
+		t.Fatalf("load after subdoc update: %v", err)
+	}
+	if len(doc.UpdateKinds) != 3 || doc.UpdateKinds[2] != YJSEventSubdocUpdate || string(doc.Updates[2]) != "subdoc-update" {
+		t.Fatalf("expected subdoc update kind to round trip, got %+v", doc)
+	}
 
 	if err := store.CompactYJSDocument(ctx, "tenant-a:doc-1", seq1, []byte("snapshot-through-1")); err != nil {
 		t.Fatalf("compact document: %v", err)
@@ -594,7 +609,7 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	if string(doc.Snapshot) != "snapshot-through-1" || doc.SnapshotCheckpoint != seq1 {
 		t.Fatalf("unexpected compacted snapshot: checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
 	}
-	assertYJSUpdates(t, doc, []string{"update-2"}, []int64{2})
+	assertYJSUpdates(t, doc, []string{"update-2", "subdoc-update"}, []int64{2, 3}, []YJSEventKind{YJSEventUpdate, YJSEventSubdocUpdate})
 
 	if err := store.StoreYJSSnapshot(ctx, "tenant-a:doc-1", []byte("client-snapshot")); err != nil {
 		t.Fatalf("store client snapshot: %v", err)
@@ -606,14 +621,14 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	if string(doc.Snapshot) != "client-snapshot" || doc.SnapshotCheckpoint != seq1 {
 		t.Fatalf("client snapshot should preserve checkpoint, got checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
 	}
-	assertYJSUpdates(t, doc, []string{"update-2"}, []int64{2})
+	assertYJSUpdates(t, doc, []string{"update-2", "subdoc-update"}, []int64{2, 3}, []YJSEventKind{YJSEventUpdate, YJSEventSubdocUpdate})
 
-	seq3, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", []byte("update-3"))
+	seq3, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", YJSEventUpdate, []byte("update-3"))
 	if err != nil {
 		t.Fatalf("append update 3: %v", err)
 	}
-	if seq3 != 3 {
-		t.Fatalf("unexpected sequence 3: %d", seq3)
+	if seq3 != 4 {
+		t.Fatalf("unexpected update-3 sequence: %d", seq3)
 	}
 	if err := store.CompactYJSDocument(ctx, "tenant-a:doc-1", seq3, []byte("snapshot-through-3")); err != nil {
 		t.Fatalf("compact through 3: %v", err)
@@ -625,7 +640,7 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	if string(doc.Snapshot) != "snapshot-through-3" || doc.SnapshotCheckpoint != seq3 {
 		t.Fatalf("unexpected final snapshot: checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
 	}
-	assertYJSUpdates(t, doc, nil, nil)
+	assertYJSUpdates(t, doc, nil, nil, nil)
 }
 
 func TestRedisYJSDocumentLoadsLegacyUpdates(t *testing.T) {
@@ -656,7 +671,7 @@ func TestRedisYJSDocumentLoadsLegacyUpdates(t *testing.T) {
 	if string(doc.Snapshot) != "legacy-snapshot" || doc.SnapshotCheckpoint != 0 {
 		t.Fatalf("unexpected legacy snapshot: checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
 	}
-	assertYJSUpdates(t, doc, []string{"legacy-update"}, []int64{0})
+	assertYJSUpdates(t, doc, []string{"legacy-update"}, []int64{0}, []YJSEventKind{YJSEventUpdate})
 }
 
 func TestRedisYJSDocumentSkipsInvalidSequencedRecords(t *testing.T) {
@@ -692,7 +707,7 @@ func TestRedisYJSDocumentSkipsInvalidSequencedRecords(t *testing.T) {
 	if string(doc.Snapshot) != "checkpoint-5" || doc.SnapshotCheckpoint != 5 {
 		t.Fatalf("unexpected checkpoint snapshot: %+v", doc)
 	}
-	assertYJSUpdates(t, doc, []string{"current"}, []int64{6})
+	assertYJSUpdates(t, doc, []string{"current"}, []int64{6}, []YJSEventKind{YJSEventUpdate})
 
 	if err := store.client.Set(ctx, roomYJSSnapshotV2Key("tenant-a:broken-doc"), `{`, 0).Err(); err != nil {
 		t.Fatalf("seed broken snapshot: %v", err)
@@ -722,7 +737,7 @@ func TestRedisYJSDocumentRejectsInvalidCompaction(t *testing.T) {
 	if err := store.CompactYJSDocument(ctx, "tenant-a:doc-1", 0, nil); err == nil {
 		t.Fatalf("expected empty snapshot rejection")
 	}
-	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", nil); err == nil {
+	if _, err := store.AppendYJSUpdate(ctx, "tenant-a:doc-1", YJSEventUpdate, nil); err == nil {
 		t.Fatalf("expected empty yjs update rejection")
 	}
 	if err := store.StoreYJSSnapshot(ctx, "tenant-a:doc-1", nil); err == nil {
@@ -2052,13 +2067,22 @@ func TestJSONValueAndYJSRecordHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode update record: %v", err)
 	}
-	if updateRecord.Seq != 7 || string(updateRecord.Update) != "update" {
+	if updateRecord.Seq != 7 || updateRecord.KindValue() != YJSEventUpdate || string(updateRecord.Update) != "update" {
 		t.Fatalf("unexpected update record: %+v", updateRecord)
+	}
+	subdocRecord, err := decodeYJSUpdateRecord(`{"seq":8,"kind":5,"update":"c3ViZG9j"}`)
+	if err != nil {
+		t.Fatalf("decode subdoc update record: %v", err)
+	}
+	if subdocRecord.Seq != 8 || subdocRecord.KindValue() != YJSEventSubdocUpdate || string(subdocRecord.Update) != "subdoc" {
+		t.Fatalf("unexpected subdoc update record: %+v", subdocRecord)
 	}
 	for _, raw := range []string{
 		`{`,
 		`{"seq":0,"update":"dXBkYXRl"}`,
 		`{"seq":1,"update":""}`,
+		`{"seq":1,"kind":4,"update":"ZGlmZg=="}`,
+		`{"seq":1,"kind":6,"update":"c3RhdGUtdmVjdG9y"}`,
 	} {
 		if _, err := decodeYJSUpdateRecord(raw); err == nil {
 			t.Fatalf("expected invalid update record %q to fail", raw)
@@ -2083,10 +2107,10 @@ func TestJSONValueAndYJSRecordHelpers(t *testing.T) {
 	}
 }
 
-func assertYJSUpdates(t *testing.T, doc YJSDocument, wantUpdates []string, wantSeqs []int64) {
+func assertYJSUpdates(t *testing.T, doc YJSDocument, wantUpdates []string, wantSeqs []int64, wantKinds []YJSEventKind) {
 	t.Helper()
-	if len(doc.Updates) != len(wantUpdates) || len(doc.UpdateSequences) != len(wantSeqs) {
-		t.Fatalf("unexpected update counts: updates=%d seqs=%d", len(doc.Updates), len(doc.UpdateSequences))
+	if len(doc.Updates) != len(wantUpdates) || len(doc.UpdateSequences) != len(wantSeqs) || len(doc.UpdateKinds) != len(wantKinds) {
+		t.Fatalf("unexpected update counts: updates=%d seqs=%d kinds=%d", len(doc.Updates), len(doc.UpdateSequences), len(doc.UpdateKinds))
 	}
 	for i, want := range wantUpdates {
 		if string(doc.Updates[i]) != want {
@@ -2096,6 +2120,11 @@ func assertYJSUpdates(t *testing.T, doc YJSDocument, wantUpdates []string, wantS
 	for i, want := range wantSeqs {
 		if doc.UpdateSequences[i] != want {
 			t.Fatalf("sequence %d: expected %d, got %d", i, want, doc.UpdateSequences[i])
+		}
+	}
+	for i, want := range wantKinds {
+		if doc.UpdateKinds[i] != want {
+			t.Fatalf("kind %d: expected %d, got %d", i, want, doc.UpdateKinds[i])
 		}
 	}
 }

@@ -586,6 +586,99 @@ func TestHandleYJSFrameBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("subdoc state vector request is transient read sync", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant": "tenant-a",
+			"join":   []string{"tenant-a:*"},
+			"scope":  "join:tenant-a:*",
+		})
+		defer cleanup()
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		receiver := &yjsConn{id: "subdoc-state-vector-peer", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
+		registerRuntimeYJSConn(service, receiver)
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameSubdocStateVector}, []byte("subdoc-state-vector")...)); err != nil {
+			t.Fatalf("write yjs subdoc state vector frame: %v", err)
+		}
+		frame := receiveRuntimeTestValue(t, receiver.send, "relayed yjs subdoc state vector")
+		if len(frame) == 0 || frame[0] != yjsFrameSubdocStateVector || string(frame[1:]) != "subdoc-state-vector" {
+			t.Fatalf("unexpected yjs subdoc state vector frame: %v", frame)
+		}
+	})
+
+	t.Run("subdoc state vector diff is relayed but not stored", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		store := &fakeRuntimeStore{
+			roomRecord:   runtimeWritableRoomRecord(),
+			appendCh:     make(chan []byte, 1),
+			publishYJSCh: make(chan cluster.YJSEvent, 1),
+		}
+		service.store = store
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		receiver := &yjsConn{id: "subdoc-state-vector-diff-peer", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
+		registerRuntimeYJSConn(service, receiver)
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameSubdocDiff}, []byte("subdoc-diff")...)); err != nil {
+			t.Fatalf("write yjs subdoc diff frame: %v", err)
+		}
+		frame := receiveRuntimeTestValue(t, receiver.send, "relayed yjs subdoc diff")
+		if len(frame) == 0 || frame[0] != yjsFrameSubdocDiff || string(frame[1:]) != "subdoc-diff" {
+			t.Fatalf("unexpected yjs subdoc diff frame: %v", frame)
+		}
+		published := receiveRuntimeTestValue(t, store.publishYJSCh, "published yjs subdoc diff")
+		if published.Kind != cluster.YJSEventSubdocDiff || string(published.Update) != "subdoc-diff" {
+			t.Fatalf("unexpected published yjs subdoc diff: %+v", published)
+		}
+		select {
+		case update := <-store.appendCh:
+			t.Fatalf("transient yjs subdoc diff should not be stored, got %q", string(update))
+		default:
+		}
+	})
+
+	t.Run("subdoc update is durable", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant":  "tenant-a",
+			"join":    []string{"tenant-a:*"},
+			"publish": []string{"tenant-a:*"},
+			"scope":   "join:tenant-a:* publish:tenant-a:*",
+		})
+		defer cleanup()
+		store := &fakeRuntimeStore{
+			roomRecord:   runtimeWritableRoomRecord(),
+			appendCh:     make(chan []byte, 1),
+			publishYJSCh: make(chan cluster.YJSEvent, 1),
+		}
+		service.store = store
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		receiver := &yjsConn{id: "subdoc-update-peer", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
+		registerRuntimeYJSConn(service, receiver)
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameSubdocUpdate}, []byte("subdoc-update")...)); err != nil {
+			t.Fatalf("write yjs subdoc update frame: %v", err)
+		}
+		if got := receiveRuntimeTestValue(t, store.appendCh, "stored yjs subdoc update"); string(got) != "subdoc-update" {
+			t.Fatalf("unexpected stored yjs subdoc update: %q", string(got))
+		}
+		if store.appendedKind != cluster.YJSEventSubdocUpdate {
+			t.Fatalf("expected subdoc update kind to be stored, got %d", store.appendedKind)
+		}
+		frame := receiveRuntimeTestValue(t, receiver.send, "relayed yjs subdoc update")
+		if len(frame) == 0 || frame[0] != yjsFrameSubdocUpdate || string(frame[1:]) != "subdoc-update" {
+			t.Fatalf("unexpected yjs subdoc update frame: %v", frame)
+		}
+		published := receiveRuntimeTestValue(t, store.publishYJSCh, "published yjs subdoc update")
+		if published.Kind != cluster.YJSEventSubdocUpdate || string(published.Update) != "subdoc-update" {
+			t.Fatalf("unexpected published yjs subdoc update: %+v", published)
+		}
+	})
+
 	t.Run("store append error", func(t *testing.T) {
 		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
 			"tenant":  "tenant-a",
@@ -657,6 +750,9 @@ func TestHandleYJSFrameBranches(t *testing.T) {
 		}
 		if got := receiveRuntimeTestValue(t, store.appendCh, "stored yjs update"); string(got) != "client-update" {
 			t.Fatalf("unexpected stored yjs update: %q", string(got))
+		}
+		if store.appendedKind != cluster.YJSEventUpdate {
+			t.Fatalf("expected root update kind to be stored, got %d", store.appendedKind)
 		}
 	})
 }
@@ -1393,13 +1489,17 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	if string(doc.Snapshot) != "snapshot-1" || len(doc.Updates) != 1 || string(doc.Updates[0]) != "update-1" || doc.UpdateSequences[0] != 1 {
 		t.Fatalf("unexpected local yjs document: %+v", doc)
 	}
+	if len(doc.UpdateKinds) != 1 || doc.UpdateKinds[0] != cluster.YJSEventUpdate {
+		t.Fatalf("unexpected local yjs update kinds: %+v", doc.UpdateKinds)
+	}
 	doc.Snapshot[0] = 'X'
 	doc.Updates[0][0] = 'X'
+	doc.UpdateKinds[0] = cluster.YJSEventSnapshot
 	reloaded, err := service.loadYJSDocument("tenant-a:doc-1")
 	if err != nil {
 		t.Fatalf("reload local yjs document: %v", err)
 	}
-	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" {
+	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateKinds[0] != cluster.YJSEventUpdate {
 		t.Fatalf("loadYJSDocument should return defensive copies, got %+v", reloaded)
 	}
 
@@ -1439,7 +1539,7 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store redis-backed yjs update: %v", err)
 	}
-	if stored.Sequence != 42 || string(store.appendedUpdate) != "redis-update" {
+	if stored.Sequence != 42 || string(store.appendedUpdate) != "redis-update" || store.appendedKind != cluster.YJSEventUpdate {
 		t.Fatalf("unexpected redis-backed yjs store: event=%+v update=%q", stored, string(store.appendedUpdate))
 	}
 	if _, err := service.storeYJSEvent(cluster.YJSEvent{
@@ -1464,12 +1564,13 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 
 func TestSendYJSDocument(t *testing.T) {
 	conn := &yjsConn{
-		send: make(chan []byte, 2),
+		send: make(chan []byte, 3),
 		done: make(chan struct{}),
 	}
 	if err := sendYJSDocument(conn, cluster.YJSDocument{
-		Snapshot: []byte("snapshot"),
-		Updates:  [][]byte{[]byte("update")},
+		Snapshot:    []byte("snapshot"),
+		Updates:     [][]byte{[]byte("update"), []byte("subdoc-update")},
+		UpdateKinds: []cluster.YJSEventKind{cluster.YJSEventUpdate, cluster.YJSEventSubdocUpdate},
 	}); err != nil {
 		t.Fatalf("send yjs document: %v", err)
 	}
@@ -1478,6 +1579,9 @@ func TestSendYJSDocument(t *testing.T) {
 	}
 	if frame := <-conn.send; len(frame) == 0 || frame[0] != yjsFrameUpdate || string(frame[1:]) != "update" {
 		t.Fatalf("unexpected update frame: %v", frame)
+	}
+	if frame := <-conn.send; len(frame) == 0 || frame[0] != yjsFrameSubdocUpdate || string(frame[1:]) != "subdoc-update" {
+		t.Fatalf("unexpected subdoc update frame: %v", frame)
 	}
 
 	closedSnapshot := &yjsConn{done: make(chan struct{})}
@@ -1927,6 +2031,7 @@ type fakeRuntimeStore struct {
 	yjsErr                 error
 	appendSeq              int64
 	appendedUpdate         []byte
+	appendedKind           cluster.YJSEventKind
 	appendCh               chan []byte
 	appendErr              error
 	storedSnapshot         []byte
@@ -2168,10 +2273,11 @@ func (s *fakeRuntimeStore) LoadYJSDocument(context.Context, string) (cluster.YJS
 	return s.yjsDocument, nil
 }
 
-func (s *fakeRuntimeStore) AppendYJSUpdate(_ context.Context, _ string, update []byte) (int64, error) {
+func (s *fakeRuntimeStore) AppendYJSUpdate(_ context.Context, _ string, kind cluster.YJSEventKind, update []byte) (int64, error) {
 	if s.appendErr != nil {
 		return 0, s.appendErr
 	}
+	s.appendedKind = kind
 	s.appendedUpdate = append([]byte(nil), update...)
 	if s.appendCh != nil {
 		s.appendCh <- append([]byte(nil), update...)

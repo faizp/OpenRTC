@@ -20,23 +20,40 @@ class ScriptedRedisClient implements RedisCommandClient {
 
 const snapshot = new Uint8Array([1, 2, 3]);
 const update = new Uint8Array([4, 5, 6]);
+const subdocUpdate = new Uint8Array([7, 8, 9]);
 
 const loadClient = new ScriptedRedisClient([
   JSON.stringify({ checkpoint_seq: 2, snapshot: encode(snapshot) }),
   [],
-  [JSON.stringify({ seq: 3, update: encode(update) }), JSON.stringify({ seq: 1, update: encode(new Uint8Array([9])) })],
+  [
+    JSON.stringify({ seq: 3, update: encode(update) }),
+    JSON.stringify({ seq: 4, kind: 5, update: encode(subdocUpdate) }),
+    JSON.stringify({ seq: 1, update: encode(new Uint8Array([9])) }),
+  ],
 ]);
 const loaded = await OpenRTCYjsRedisStore.fromClient(loadClient).load("tenant-a:doc-1");
 assert.deepEqual(loaded.snapshot, snapshot);
 assert.equal(loaded.snapshotCheckpoint, 2);
-assert.equal(loaded.updates.length, 1);
+assert.equal(loaded.updates.length, 2);
 assert.equal(loaded.updates[0]!.seq, 3);
+assert.equal(loaded.updates[0]!.kind, "update");
 assert.deepEqual(loaded.updates[0]!.update, update);
+assert.equal(loaded.updates[1]!.seq, 4);
+assert.equal(loaded.updates[1]!.kind, "subdoc-update");
+assert.deepEqual(loaded.updates[1]!.update, subdocUpdate);
 assert.deepEqual(loadClient.commands, [
   ["GET", "room:tenant-a:doc-1:yjs:snapshot:v2"],
   ["LRANGE", "room:tenant-a:doc-1:yjs:updates", "0", "-1"],
   ["ZRANGEBYSCORE", "room:tenant-a:doc-1:yjs:updates:v2", "(2", "+inf"],
 ]);
+
+const invalidKindClient = new ScriptedRedisClient([
+  null,
+  null,
+  [],
+  [JSON.stringify({ seq: 1, kind: 4, update: encode(update) })],
+]);
+await assert.rejects(() => OpenRTCYjsRedisStore.fromClient(invalidKindClient).load("tenant-a:doc-invalid"), /invalid Yjs update kind/);
 
 const compactClient = new ScriptedRedisClient(["OK", "QUEUED", "QUEUED", ["OK", 2]]);
 await OpenRTCYjsRedisStore.fromClient(compactClient).compact("tenant-a:doc-1", 7, snapshot);

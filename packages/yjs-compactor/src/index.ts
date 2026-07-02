@@ -2,8 +2,11 @@ import * as Y from "yjs";
 
 export interface SequencedYjsUpdate {
   seq: number;
+  kind?: YjsUpdateKind | undefined;
   update: Uint8Array;
 }
+
+export type YjsUpdateKind = "update" | "subdoc-update";
 
 export interface YjsCompactionInput {
   snapshot?: Uint8Array | undefined;
@@ -37,7 +40,7 @@ export interface CompactRoomResult extends YjsCompactionResult {
 export interface SkippedCompactRoomResult {
   room: string;
   skipped: true;
-  reason: "no-updates" | "below-threshold" | "legacy-updates";
+  reason: "no-updates" | "below-threshold" | "legacy-updates" | "subdoc-updates";
   updateCount: number;
   updateBytes: number;
 }
@@ -56,6 +59,9 @@ export async function compactRoom(
 
   if (legacyUpdates > 0) {
     return { room, skipped: true, reason: "legacy-updates", updateCount: input.updates.length, updateBytes };
+  }
+  if (sequencedUpdates.some((update) => updateKind(update) !== "update")) {
+    return { room, skipped: true, reason: "subdoc-updates", updateCount: sequencedUpdates.length, updateBytes };
   }
   if (sequencedUpdates.length === 0) {
     return { room, skipped: true, reason: "no-updates", updateCount: 0, updateBytes: 0 };
@@ -93,6 +99,9 @@ export function compactYjsDocument(input: YjsCompactionInput): YjsCompactionResu
     if (update.update.byteLength === 0) {
       throw new Error("Yjs update payload is required");
     }
+    if (updateKind(update) !== "update") {
+      throw new Error("Yjs subdoc updates cannot be compacted into the root snapshot");
+    }
     mergedInputs.push(update.update);
   }
   if (mergedInputs.length === 0) {
@@ -108,6 +117,10 @@ export function compactYjsDocument(input: YjsCompactionInput): YjsCompactionResu
     beforeBytes: mergedInputs.reduce((total, update) => total + update.byteLength, 0),
     afterBytes: snapshot.byteLength,
   };
+}
+
+function updateKind(update: SequencedYjsUpdate): YjsUpdateKind {
+  return update.kind ?? "update";
 }
 
 function normalizeMergedUpdate(update: Uint8Array): Uint8Array {

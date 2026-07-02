@@ -72,6 +72,9 @@ const (
 	YJSEventSnapshot           YJSEventKind = 2
 	YJSEventStateVectorRequest YJSEventKind = 3
 	YJSEventStateVectorDiff    YJSEventKind = 4
+	YJSEventSubdocUpdate       YJSEventKind = 5
+	YJSEventSubdocStateVector  YJSEventKind = 6
+	YJSEventSubdocDiff         YJSEventKind = 7
 )
 
 type YJSEvent struct {
@@ -110,6 +113,7 @@ type YJSDocument struct {
 	SnapshotCheckpoint int64
 	Updates            [][]byte
 	UpdateSequences    []int64
+	UpdateKinds        []YJSEventKind
 }
 
 type RoomRecord struct {
@@ -207,7 +211,15 @@ type JSONPatchOperation struct {
 
 type yjsUpdateRecord struct {
 	Seq    int64  `json:"seq"`
+	Kind   byte   `json:"kind,omitempty"`
 	Update []byte `json:"update"`
+}
+
+func (r yjsUpdateRecord) KindValue() YJSEventKind {
+	if r.Kind == 0 {
+		return YJSEventUpdate
+	}
+	return YJSEventKind(r.Kind)
 }
 
 type yjsSnapshotRecord struct {
@@ -257,7 +269,7 @@ type Store interface {
 	DeleteStorage(ctx context.Context, room string) error
 	ApplyStoragePatch(ctx context.Context, room string, operations []JSONPatchOperation, maxBytes int) (json.RawMessage, error)
 	LoadYJSDocument(ctx context.Context, room string) (YJSDocument, error)
-	AppendYJSUpdate(ctx context.Context, room string, update []byte) (int64, error)
+	AppendYJSUpdate(ctx context.Context, room string, kind YJSEventKind, update []byte) (int64, error)
 	StoreYJSSnapshot(ctx context.Context, room string, snapshot []byte) error
 	CleanupConnection(ctx context.Context, nodeID string, connID string) error
 	ReconcileNode(ctx context.Context, nodeID string) error
@@ -1080,6 +1092,7 @@ func (s *RedisStore) LoadYJSDocument(ctx context.Context, room string) (YJSDocum
 	for _, update := range legacyUpdates {
 		doc.Updates = append(doc.Updates, []byte(update))
 		doc.UpdateSequences = append(doc.UpdateSequences, 0)
+		doc.UpdateKinds = append(doc.UpdateKinds, YJSEventUpdate)
 	}
 
 	records, err := s.client.ZRangeByScore(ctx, roomYJSUpdatesV2Key(room), &redis.ZRangeBy{
@@ -1096,13 +1109,17 @@ func (s *RedisStore) LoadYJSDocument(ctx context.Context, room string) (YJSDocum
 		}
 		doc.Updates = append(doc.Updates, append([]byte(nil), record.Update...))
 		doc.UpdateSequences = append(doc.UpdateSequences, record.Seq)
+		doc.UpdateKinds = append(doc.UpdateKinds, record.KindValue())
 	}
 	return doc, nil
 }
 
-func (s *RedisStore) AppendYJSUpdate(ctx context.Context, room string, update []byte) (int64, error) {
+func (s *RedisStore) AppendYJSUpdate(ctx context.Context, room string, kind YJSEventKind, update []byte) (int64, error) {
 	if len(update) == 0 {
 		return 0, errors.New("yjs update is required")
+	}
+	if !isDurableYJSEventKind(kind) {
+		return 0, errors.New("unsupported durable yjs update kind")
 	}
 	seq, err := s.client.Incr(ctx, roomYJSSequenceKey(room)).Result()
 	if err != nil {
@@ -1110,6 +1127,7 @@ func (s *RedisStore) AppendYJSUpdate(ctx context.Context, room string, update []
 	}
 	record := encodeYJSUpdateRecord(yjsUpdateRecord{
 		Seq:    seq,
+		Kind:   byte(kind),
 		Update: append([]byte(nil), update...),
 	})
 	if err := s.client.ZAdd(ctx, roomYJSUpdatesV2Key(room), redis.Z{
@@ -2030,7 +2048,14 @@ func decodeYJSUpdateRecord(raw string) (yjsUpdateRecord, error) {
 	if record.Seq <= 0 || len(record.Update) == 0 {
 		return yjsUpdateRecord{}, errors.New("invalid yjs update record")
 	}
+	if !isDurableYJSEventKind(record.KindValue()) {
+		return yjsUpdateRecord{}, errors.New("invalid yjs update kind")
+	}
 	return record, nil
+}
+
+func isDurableYJSEventKind(kind YJSEventKind) bool {
+	return kind == YJSEventUpdate || kind == YJSEventSubdocUpdate
 }
 
 func encodeYJSSnapshotRecord(record yjsSnapshotRecord) string {

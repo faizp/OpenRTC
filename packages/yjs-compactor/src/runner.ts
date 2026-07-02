@@ -214,7 +214,7 @@ async function compactRoomWithRetry(
 }
 
 function recordOutcome(metrics: CompactorMetrics, outcome: CompactRoomOutcome): void {
-  if (outcome.skipped) {
+  if (outcome.skipped === true) {
     metrics.recordSkipped(outcome.reason);
     return;
   }

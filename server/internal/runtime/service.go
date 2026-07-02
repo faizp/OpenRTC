@@ -54,6 +54,9 @@ const (
 	yjsFrameSnapshot          = byte(cluster.YJSEventSnapshot)
 	yjsFrameStateVector       = byte(cluster.YJSEventStateVectorRequest)
 	yjsFrameStateVectorDiff   = byte(cluster.YJSEventStateVectorDiff)
+	yjsFrameSubdocUpdate      = byte(cluster.YJSEventSubdocUpdate)
+	yjsFrameSubdocStateVector = byte(cluster.YJSEventSubdocStateVector)
+	yjsFrameSubdocDiff        = byte(cluster.YJSEventSubdocDiff)
 	writeWait                 = 5 * time.Second
 	readWait                  = 30 * time.Second
 )
@@ -346,13 +349,13 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			OriginNode:   s.cfg.NodeID,
 			OriginConnID: conn.id,
 		}
-		if kind == yjsFrameUpdate || kind == yjsFrameStateVectorDiff {
+		if yjsFrameRequiresPublish(kind) {
 			if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
 				return
 			}
 		}
-		if kind == yjsFrameUpdate {
+		if isDurableYJSFrameKind(kind) {
 			event, err = s.storeYJSEvent(event)
 			if err != nil {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
@@ -372,7 +375,23 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 }
 
 func isClientYJSFrameKind(kind byte) bool {
-	return kind == yjsFrameUpdate || kind == yjsFrameStateVector || kind == yjsFrameStateVectorDiff
+	return kind == yjsFrameUpdate ||
+		kind == yjsFrameStateVector ||
+		kind == yjsFrameStateVectorDiff ||
+		kind == yjsFrameSubdocUpdate ||
+		kind == yjsFrameSubdocStateVector ||
+		kind == yjsFrameSubdocDiff
+}
+
+func yjsFrameRequiresPublish(kind byte) bool {
+	return kind == yjsFrameUpdate ||
+		kind == yjsFrameStateVectorDiff ||
+		kind == yjsFrameSubdocUpdate ||
+		kind == yjsFrameSubdocDiff
+}
+
+func isDurableYJSFrameKind(kind byte) bool {
+	return kind == yjsFrameUpdate || kind == yjsFrameSubdocUpdate
 }
 
 func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {
@@ -402,8 +421,12 @@ func sendYJSDocument(conn *yjsConn, document cluster.YJSDocument) error {
 			return err
 		}
 	}
-	for _, update := range document.Updates {
-		if err := conn.enqueueFrame(yjsFrameUpdate, update); err != nil {
+	for index, update := range document.Updates {
+		kind := yjsFrameUpdate
+		if len(document.UpdateKinds) == len(document.Updates) {
+			kind = byte(document.UpdateKinds[index])
+		}
+		if err := conn.enqueueFrame(kind, update); err != nil {
 			return err
 		}
 	}
@@ -804,7 +827,7 @@ func (s *Service) storeYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error
 		if event.Kind == cluster.YJSEventSnapshot {
 			return event, s.store.StoreYJSSnapshot(s.ctx, event.Room, event.Update)
 		}
-		sequence, err := s.store.AppendYJSUpdate(s.ctx, event.Room, event.Update)
+		sequence, err := s.store.AppendYJSUpdate(s.ctx, event.Room, event.Kind, event.Update)
 		event.Sequence = sequence
 		return event, err
 	}

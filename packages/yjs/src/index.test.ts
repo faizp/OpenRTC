@@ -242,6 +242,117 @@ assert.equal(stateVectorProviderA.getSyncState().sentBytes > 0, true);
 stateVectorProviderA.destroy();
 stateVectorProviderB.destroy();
 
+const subdocParentA = new Y.Doc();
+const subdocParentB = new Y.Doc();
+const subdocA = new Y.Doc({ guid: "subdoc-live-1" });
+const subdocB = new Y.Doc({ guid: "subdoc-live-1" });
+subdocParentA.getMap<Y.Doc>("subdocs").set("body", subdocA);
+subdocParentB.getMap<Y.Doc>("subdocs").set("body", subdocB);
+const subdocProviderA = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:subdoc-doc",
+  token: "token-a",
+  doc: subdocParentA,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+});
+const subdocProviderB = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:subdoc-doc",
+  token: "token-b",
+  doc: subdocParentB,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+});
+let subdocSyncEvent: { kind: string; bytes: number; stateVectorHash: string } | undefined;
+subdocProviderB.on("synced", (event) => {
+  subdocSyncEvent = event;
+});
+const subdocSocketStart = FakeYjsSocket.instances.length;
+const subdocConnectA = subdocProviderA.connect();
+const subdocConnectB = subdocProviderB.connect();
+await waitForSocketCount(subdocSocketStart + 2);
+const subdocSocketA = FakeYjsSocket.instances[subdocSocketStart];
+const subdocSocketB = FakeYjsSocket.instances[subdocSocketStart + 1];
+assert.ok(subdocSocketA);
+assert.ok(subdocSocketB);
+subdocSocketA.peer = subdocSocketB;
+subdocSocketB.peer = subdocSocketA;
+subdocSocketA.open();
+subdocSocketB.open();
+await subdocConnectA;
+await subdocConnectB;
+
+subdocA.getText("body").insert(0, "subdoc text");
+await tick();
+assert.equal(subdocB.getText("body").toString(), "subdoc text");
+assert.equal(subdocSocketA.sent.at(-1)?.[0], 5);
+const subdocPayload = decodeTestSubdocPayload(subdocSocketA.sent.at(-1)!.subarray(1));
+assert.equal(subdocPayload.guid, "subdoc-live-1");
+assert.equal(subdocProviderA.getSyncState().subdocsTracked, 1);
+assert.equal(subdocProviderA.getSyncState().subdocUpdatesSent, 1);
+assert.equal(subdocProviderB.getSyncState().subdocUpdatesReceived, 1);
+assert.equal(subdocSyncEvent?.kind, "subdoc-update");
+subdocProviderA.destroy();
+subdocProviderB.destroy();
+
+const subdocStateParentA = new Y.Doc();
+const subdocStateParentB = new Y.Doc();
+const subdocStateA = new Y.Doc({ guid: "subdoc-state-1" });
+const subdocStateB = new Y.Doc({ guid: "subdoc-state-1" });
+subdocStateA.getText("body").insert(0, "server subdoc");
+subdocStateParentA.getMap<Y.Doc>("subdocs").set("body", subdocStateA);
+subdocStateParentB.getMap<Y.Doc>("subdocs").set("body", subdocStateB);
+const subdocStateProviderA = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:subdoc-state-doc",
+  token: "token-a",
+  doc: subdocStateParentA,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+});
+const subdocStateProviderB = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:subdoc-state-doc",
+  token: "token-b",
+  doc: subdocStateParentB,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+});
+let subdocDiffSyncEvent: { kind: string; bytes: number; stateVectorHash: string } | undefined;
+subdocStateProviderB.on("synced", (event) => {
+  subdocDiffSyncEvent = event;
+});
+const subdocStateSocketStart = FakeYjsSocket.instances.length;
+const subdocStateConnectA = subdocStateProviderA.connect();
+const subdocStateConnectB = subdocStateProviderB.connect();
+await waitForSocketCount(subdocStateSocketStart + 2);
+const subdocStateSocketA = FakeYjsSocket.instances[subdocStateSocketStart];
+const subdocStateSocketB = FakeYjsSocket.instances[subdocStateSocketStart + 1];
+assert.ok(subdocStateSocketA);
+assert.ok(subdocStateSocketB);
+subdocStateSocketA.peer = subdocStateSocketB;
+subdocStateSocketB.peer = subdocStateSocketA;
+subdocStateSocketA.open();
+subdocStateSocketB.open();
+await subdocStateConnectA;
+await subdocStateConnectB;
+
+assert.equal(subdocStateProviderB.requestSubdocSync("subdoc-state-1"), true);
+await tick();
+assert.equal(subdocStateSocketB.sent.at(-1)?.[0], 6);
+assert.equal(decodeTestSubdocPayload(subdocStateSocketB.sent.at(-1)!.subarray(1)).guid, "subdoc-state-1");
+assert.equal(subdocStateSocketA.sent.at(-1)?.[0], 7);
+assert.equal(subdocStateB.getText("body").toString(), "server subdoc");
+assert.equal(subdocDiffSyncEvent?.kind, "subdoc-state-vector-diff");
+assert.equal(subdocStateProviderB.getSyncState().subdocDiffsReceived, 1);
+subdocStateProviderA.destroy();
+subdocStateProviderB.destroy();
+
 const cachedDoc = new Y.Doc();
 cachedDoc.getText("body").insert(0, "cached");
 const offlineStore = new FakeOfflineStore([Y.encodeStateAsUpdate(cachedDoc)]);
@@ -346,6 +457,17 @@ function frame(kind: number, update: Uint8Array): Uint8Array {
   data[0] = kind;
   data.set(update, 1);
   return data;
+}
+
+function decodeTestSubdocPayload(payload: Uint8Array): { guid: string; update: Uint8Array } {
+  assert.equal(payload.byteLength >= 3, true);
+  const guidLength = (payload[0]! << 8) | payload[1]!;
+  assert.equal(guidLength > 0, true);
+  assert.equal(payload.byteLength > 2 + guidLength, true);
+  return {
+    guid: new TextDecoder().decode(payload.subarray(2, 2 + guidLength)),
+    update: payload.subarray(2 + guidLength),
+  };
 }
 
 async function tick(): Promise<void> {
