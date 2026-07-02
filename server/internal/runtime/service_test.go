@@ -309,9 +309,7 @@ func TestHandleWSAuthUpgradeAndHelloBranches(t *testing.T) {
 	blocked := runtimeTestConn(errorService, "conn-blocked", &auth.Claims{Tenant: "tenant-a"}, 1)
 	blocked.closed = true
 	blocked.send <- outboundMessage{T: "FULL"}
-	errorService.mu.Lock()
-	errorService.rooms["tenant-a:room-1"] = map[string]*clientConn{blocked.id: blocked}
-	errorService.mu.Unlock()
+	joinRuntimeRoom(t, errorService, blocked, "tenant-a:room-1")
 	if err := errorWS.WriteJSON(map[string]any{"t": "EMIT", "id": "emit-error", "room": "tenant-a:room-1", "event": "doc.update", "payload": map[string]any{"ok": true}}); err != nil {
 		t.Fatalf("write error websocket emit: %v", err)
 	}
@@ -786,8 +784,7 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		store := &fakeRuntimeStore{snapshotErr: expected}
 		service.store = store
 		conn := runtimeTestConn(service, "conn-duplicate-snapshot", claims, 2)
-		conn.rooms["tenant-a:room-1"] = struct{}{}
-		service.rooms["tenant-a:room-1"] = map[string]*clientConn{conn.id: conn}
+		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
 		if err := service.handleJoin(conn, protocol.Message{ID: "join", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected duplicate join snapshot error, got %v", err)
 		}
@@ -799,8 +796,7 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		store := &fakeRuntimeStore{leaveErr: expected}
 		service.store = store
 		conn := runtimeTestConn(service, "conn-leave", claims, 2)
-		conn.rooms["tenant-a:room-1"] = struct{}{}
-		service.rooms["tenant-a:room-1"] = map[string]*clientConn{conn.id: conn}
+		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
 		if err := service.handleLeave(conn, protocol.Message{ID: "leave", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected leave store error, got %v", err)
 		}
@@ -843,8 +839,7 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		store := &fakeRuntimeStore{publishPresenceErr: expected}
 		service.store = store
 		conn := runtimeTestConn(service, "conn-leave-publish", claims, 2)
-		conn.rooms["tenant-a:room-1"] = struct{}{}
-		service.rooms["tenant-a:room-1"] = map[string]*clientConn{conn.id: conn}
+		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
 		if err := service.handleLeave(conn, protocol.Message{ID: "leave", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected leave presence publish error, got %v", err)
 		}
@@ -922,14 +917,10 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 
 	sender := runtimeTestConn(service, "conn-sender", &auth.Claims{Tenant: "tenant-a"}, 2)
 	receiver := runtimeTestConn(service, "conn-receiver", &auth.Claims{Tenant: "tenant-a"}, 4)
-	service.rooms["tenant-a:room-1"] = map[string]*clientConn{
-		sender.id:   sender,
-		receiver.id: receiver,
-	}
-	service.presence["tenant-a:room-1"] = map[string]json.RawMessage{
-		sender.id:   json.RawMessage(`{"cursor":{"x":1}}`),
-		receiver.id: json.RawMessage(`{"cursor":{"x":2}}`),
-	}
+	joinRuntimeRoom(t, service, sender, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+	setRuntimePresence(service, sender, "tenant-a:room-1", json.RawMessage(`{"cursor":{"x":1}}`))
+	setRuntimePresence(service, receiver, "tenant-a:room-1", json.RawMessage(`{"cursor":{"x":2}}`))
 
 	members, presence, nextCursor, err := service.snapshotRoom("tenant-a:room-1", &protocol.JoinMeta{Limit: 1})
 	if err != nil {
@@ -959,7 +950,7 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 	overflow := runtimeTestConn(service, "conn-overflow", &auth.Claims{Tenant: "tenant-a"}, 1)
 	overflow.closed = true
 	overflow.send <- outboundMessage{T: "FULL"}
-	service.rooms["tenant-a:overflow"] = map[string]*clientConn{overflow.id: overflow}
+	joinRuntimeRoom(t, service, overflow, "tenant-a:overflow")
 	if err := service.broadcastEvent(cluster.PublishedEvent{Room: "tenant-a:overflow", Event: "doc.update"}, false); err == nil {
 		t.Fatalf("expected broadcast event overflow")
 	}
@@ -987,11 +978,8 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 	blockedReceiver := runtimeTestConn(service, "conn-blocked", sender.claims, 1)
 	blockedReceiver.closed = true
 	blockedReceiver.send <- outboundMessage{T: "FULL"}
-	leaver.rooms["tenant-a:leave-overflow"] = struct{}{}
-	service.rooms["tenant-a:leave-overflow"] = map[string]*clientConn{
-		leaver.id:          leaver,
-		blockedReceiver.id: blockedReceiver,
-	}
+	joinRuntimeRoom(t, service, leaver, "tenant-a:leave-overflow")
+	joinRuntimeRoom(t, service, blockedReceiver, "tenant-a:leave-overflow")
 	if err := service.handleLeave(leaver, protocol.Message{ID: "leave-overflow", Room: "tenant-a:leave-overflow"}); err == nil {
 		t.Fatalf("expected handle leave broadcast overflow")
 	}
@@ -1018,14 +1006,9 @@ func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 	}
 
 	receiver := runtimeTestConn(service, "conn-receiver", &auth.Claims{Tenant: "tenant-a"}, 2)
-	conn.rooms["tenant-a:room-1"] = struct{}{}
-	service.rooms["tenant-a:room-1"] = map[string]*clientConn{
-		conn.id:     conn,
-		receiver.id: receiver,
-	}
-	service.presence["tenant-a:room-1"] = map[string]json.RawMessage{
-		conn.id: json.RawMessage(`{"cursor":{"x":1}}`),
-	}
+	joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+	setRuntimePresence(service, conn, "tenant-a:room-1", json.RawMessage(`{"cursor":{"x":1}}`))
 	conn.closed = true
 	service.unregisterConn(conn)
 
@@ -1038,7 +1021,7 @@ func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 	if got := readRuntimeOutbound(t, receiver); got.T != "PRESENCE" {
 		t.Fatalf("expected receiver offline presence, got %+v", got)
 	}
-	if _, ok := service.rooms["tenant-a:room-1"][conn.id]; ok {
+	if got := service.roomEngine().MemberIDs("tenant-a:room-1", ""); len(got) != 1 || got[0] != receiver.id {
 		t.Fatalf("expected connection to be removed from room")
 	}
 }
@@ -1087,12 +1070,8 @@ func TestRuntimeEmitPresenceAndLeaveSuccessBranches(t *testing.T) {
 	}
 	sender := runtimeTestConn(service, "conn-sender", claims, 8)
 	receiver := runtimeTestConn(service, "conn-receiver", claims, 8)
-	sender.rooms["tenant-a:room-1"] = struct{}{}
-	receiver.rooms["tenant-a:room-1"] = struct{}{}
-	service.rooms["tenant-a:room-1"] = map[string]*clientConn{
-		sender.id:   sender,
-		receiver.id: receiver,
-	}
+	joinRuntimeRoom(t, service, sender, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
 
 	if err := service.handleEmit(sender, protocol.Message{
 		ID:       "emit-1",
@@ -1584,15 +1563,29 @@ func runtimeTestConn(service *Service, id string, claims *auth.Claims, depth int
 	if depth <= 0 {
 		depth = 4
 	}
-	return &clientConn{
+	conn := &clientConn{
 		id:      id,
 		service: service,
 		claims:  claims,
-		rooms:   make(map[string]struct{}),
 		send:    make(chan outboundMessage, depth),
 		done:    make(chan struct{}),
 		limiter: &emitLimiter{limit: service.cfg.Limits.EmitsPerSecond},
 	}
+	service.mu.Lock()
+	service.conns[id] = conn
+	service.mu.Unlock()
+	return conn
+}
+
+func joinRuntimeRoom(t *testing.T, service *Service, conn *clientConn, room string) {
+	t.Helper()
+	if _, err := service.roomEngine().Join(conn.id, room, 0); err != nil {
+		t.Fatalf("join test room: %v", err)
+	}
+}
+
+func setRuntimePresence(service *Service, conn *clientConn, room string, payload json.RawMessage) {
+	service.roomEngine().SetPresence(conn.id, room, payload)
 }
 
 func readRuntimeOutbound(t *testing.T, conn *clientConn) outboundMessage {

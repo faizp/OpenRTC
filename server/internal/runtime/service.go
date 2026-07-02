@@ -21,6 +21,7 @@ import (
 	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
 	"github.com/openrtc/openrtc/server/internal/observability"
 	"github.com/openrtc/openrtc/server/internal/protocol"
+	"github.com/openrtc/openrtc/server/internal/roomengine"
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
@@ -61,8 +62,7 @@ type Service struct {
 
 	mu       sync.RWMutex
 	conns    map[string]*clientConn
-	rooms    map[string]map[string]*clientConn
-	presence map[string]map[string]json.RawMessage
+	rooms    *roomengine.Engine
 	yjsRooms map[string]map[string]*yjsConn
 	yjsDocs  map[string]*memoryYJSDocument
 	stats    stats.Snapshot
@@ -73,7 +73,6 @@ type clientConn struct {
 	ws      *websocket.Conn
 	service *Service
 	claims  *auth.Claims
-	rooms   map[string]struct{}
 	send    chan outboundMessage
 	done    chan struct{}
 
@@ -133,8 +132,7 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 		ctx:      ctx,
 		cancel:   cancel,
 		conns:    make(map[string]*clientConn),
-		rooms:    make(map[string]map[string]*clientConn),
-		presence: make(map[string]map[string]json.RawMessage),
+		rooms:    roomengine.New(),
 		yjsRooms: make(map[string]map[string]*yjsConn),
 		yjsDocs:  make(map[string]*memoryYJSDocument),
 	}
@@ -211,7 +209,6 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 		ws:      ws,
 		service: s,
 		claims:  claims,
-		rooms:   make(map[string]struct{}),
 		send:    make(chan outboundMessage, s.cfg.Limits.OutboundQueueDepth),
 		done:    make(chan struct{}),
 		limiter: &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
@@ -412,21 +409,8 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		})
 	}
 
-	s.mu.Lock()
-	if _, exists := conn.rooms[message.Room]; exists {
-		s.mu.Unlock()
-		roomMembers, roomPresence, nextCursor, err := s.snapshotRoom(message.Room, message.JoinMeta)
-		if err != nil {
-			return err
-		}
-		return conn.enqueue(outboundMessage{T: "JOINED", ID: message.ID, Room: message.Room, Payload: map[string]any{
-			"members":     roomMembers,
-			"presence":    roomPresence,
-			"next_cursor": nextCursor,
-		}})
-	}
-	if len(conn.rooms) >= s.cfg.Limits.RoomsPerConnection {
-		s.mu.Unlock()
+	joinResult, err := s.roomEngine().Join(conn.id, message.Room, s.cfg.Limits.RoomsPerConnection)
+	if errors.Is(err, roomengine.ErrRoomLimitExceeded) {
 		return conn.enqueue(outboundMessage{
 			T:  "ERROR",
 			ID: message.ID,
@@ -437,22 +421,21 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 			},
 		})
 	}
-
-	conn.rooms[message.Room] = struct{}{}
-	members := s.rooms[message.Room]
-	if members == nil {
-		members = make(map[string]*clientConn)
-		s.rooms[message.Room] = members
+	if err != nil {
+		return err
 	}
-	members[conn.id] = conn
-	s.stats.JoinsTotal++
-	s.syncStatsLocked()
-	s.mu.Unlock()
 
-	s.metrics.JoinsTotal.Inc()
-	if s.store != nil {
-		if err := s.store.JoinRoom(s.ctx, conn.id, message.Room); err != nil {
-			return err
+	if !joinResult.AlreadyJoined {
+		s.mu.Lock()
+		s.stats.JoinsTotal++
+		s.syncStatsLocked()
+		s.mu.Unlock()
+
+		s.metrics.JoinsTotal.Inc()
+		if s.store != nil {
+			if err := s.store.JoinRoom(s.ctx, conn.id, message.Room); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -474,37 +457,23 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 }
 
 func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error {
-	left := false
-	s.mu.Lock()
-	if _, exists := conn.rooms[message.Room]; exists {
-		left = true
-		delete(conn.rooms, message.Room)
-		if members := s.rooms[message.Room]; members != nil {
-			delete(members, conn.id)
-			if len(members) == 0 {
-				delete(s.rooms, message.Room)
-			}
-		}
-		if roomPresence := s.presence[message.Room]; roomPresence != nil {
-			delete(roomPresence, conn.id)
-			if len(roomPresence) == 0 {
-				delete(s.presence, message.Room)
-			}
-		}
+	leaveResult := s.roomEngine().Leave(conn.id, message.Room)
+	if leaveResult.Left {
+		s.mu.Lock()
 		s.stats.LeavesTotal++
 		s.syncStatsLocked()
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 
-	if left {
+	if leaveResult.Left {
 		s.metrics.LeavesTotal.Inc()
 	}
-	if left && s.store != nil {
+	if leaveResult.Left && s.store != nil {
 		if err := s.store.LeaveRoom(s.ctx, conn.id, message.Room); err != nil {
 			return err
 		}
 	}
-	if left {
+	if leaveResult.Left {
 		event := cluster.PresenceEvent{
 			Room:       message.Room,
 			ConnID:     conn.id,
@@ -587,13 +556,8 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 		})
 	}
 
+	s.roomEngine().SetPresence(conn.id, message.Room, message.Payload)
 	s.mu.Lock()
-	roomPresence := s.presence[message.Room]
-	if roomPresence == nil {
-		roomPresence = make(map[string]json.RawMessage)
-		s.presence[message.Room] = roomPresence
-	}
-	roomPresence[conn.id] = append(json.RawMessage(nil), message.Payload...)
 	s.stats.PresenceUpdatesTotal++
 	s.syncStatsLocked()
 	s.mu.Unlock()
@@ -635,14 +599,13 @@ func (s *Service) handleClusterPresence(event cluster.PresenceEvent) {
 }
 
 func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool) error {
+	targetIDs := s.roomEngine().MemberIDs(event.Room, event.ExcludeSenderConnID)
 	s.mu.RLock()
-	members := s.rooms[event.Room]
-	targets := make([]*clientConn, 0, len(members))
-	for connID, member := range members {
-		if event.ExcludeSenderConnID != "" && connID == event.ExcludeSenderConnID {
-			continue
+	targets := make([]*clientConn, 0, len(targetIDs))
+	for _, connID := range targetIDs {
+		if member := s.conns[connID]; member != nil {
+			targets = append(targets, member)
 		}
-		targets = append(targets, member)
 	}
 	s.mu.RUnlock()
 
@@ -672,11 +635,13 @@ func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool)
 }
 
 func (s *Service) broadcastPresenceEvent(event cluster.PresenceEvent) error {
+	targetIDs := s.roomEngine().MemberIDs(event.Room, "")
 	s.mu.RLock()
-	members := s.rooms[event.Room]
-	targets := make([]*clientConn, 0, len(members))
-	for _, member := range members {
-		targets = append(targets, member)
+	targets := make([]*clientConn, 0, len(targetIDs))
+	for _, connID := range targetIDs {
+		if member := s.conns[connID]; member != nil {
+			targets = append(targets, member)
+		}
 	}
 	s.mu.RUnlock()
 
@@ -800,19 +765,9 @@ func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) ([]stri
 		return members, presence, nextCursor, nil
 	}
 
-	s.mu.RLock()
-	localMembers := s.rooms[room]
-	members := make([]string, 0, len(localMembers))
-	for connID := range localMembers {
-		members = append(members, connID)
-	}
-	presence := make(map[string]json.RawMessage, len(s.presence[room]))
-	for connID, state := range s.presence[room] {
-		presence[connID] = state
-	}
-	s.mu.RUnlock()
+	snapshot := s.roomEngine().Snapshot(room)
 
-	page, pagePresence, nextCursor := protocol.PaginateMembers(members, presence, limit, cursor)
+	page, pagePresence, nextCursor := protocol.PaginateMembers(snapshot.Members, snapshot.Presence, limit, cursor)
 	return page, pagePresence, nextCursor, nil
 }
 
@@ -857,24 +812,9 @@ func (s *Service) unregisterYJSConn(conn *yjsConn) {
 }
 
 func (s *Service) unregisterConn(conn *clientConn) {
-	rooms := make([]string, 0, len(conn.rooms))
+	rooms := s.roomEngine().Disconnect(conn.id)
 	s.mu.Lock()
 	delete(s.conns, conn.id)
-	for room := range conn.rooms {
-		rooms = append(rooms, room)
-		if members := s.rooms[room]; members != nil {
-			delete(members, conn.id)
-			if len(members) == 0 {
-				delete(s.rooms, room)
-			}
-		}
-		if roomPresence := s.presence[room]; roomPresence != nil {
-			delete(roomPresence, conn.id)
-			if len(roomPresence) == 0 {
-				delete(s.presence, room)
-			}
-		}
-	}
 	s.syncStatsLocked()
 	s.mu.Unlock()
 	s.metrics.ActiveConnections.Dec()
@@ -977,7 +917,7 @@ func (s *Service) handleReady(w http.ResponseWriter, _ *http.Request) {
 func (s *Service) syncStatsLocked() {
 	snapshot := stats.Snapshot{
 		ActiveConnections:    int64(len(s.conns)),
-		ActiveRooms:          int64(len(s.rooms)),
+		ActiveRooms:          int64(s.roomEngine().ActiveRoomCount()),
 		JoinsTotal:           s.stats.JoinsTotal,
 		LeavesTotal:          s.stats.LeavesTotal,
 		EventsTotal:          s.stats.EventsTotal,
@@ -989,6 +929,13 @@ func (s *Service) syncStatsLocked() {
 	if s.store != nil {
 		_ = s.store.SyncStats(s.ctx, s.cfg.NodeID, snapshot)
 	}
+}
+
+func (s *Service) roomEngine() *roomengine.Engine {
+	if s.rooms == nil {
+		s.rooms = roomengine.New()
+	}
+	return s.rooms
 }
 
 func (s *Service) tenantPrefix(claims *auth.Claims) string {
