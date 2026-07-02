@@ -112,9 +112,30 @@ const (
 	maxCommentReactionEmojiBytes = 64
 )
 
+const (
+	commentEventThreadCreated  = "openrtc.comments.thread.created"
+	commentEventCommentCreated = "openrtc.comments.comment.created"
+	commentEventCommentUpdated = "openrtc.comments.comment.updated"
+)
+
+const (
+	commentEventTypeThreadCreated  = "thread-created"
+	commentEventTypeCommentCreated = "comment-created"
+	commentEventTypeCommentUpdated = "comment-updated"
+)
+
 type roomListResponse struct {
 	Rooms      []cluster.RoomRecord `json:"rooms"`
 	NextCursor string               `json:"next_cursor,omitempty"`
+}
+
+type commentEventPayload struct {
+	Type      string                 `json:"type"`
+	RoomID    string                 `json:"roomId"`
+	ThreadID  string                 `json:"threadId"`
+	CommentID string                 `json:"commentId,omitempty"`
+	Thread    cluster.ThreadRecord   `json:"thread"`
+	Comment   *cluster.CommentRecord `json:"comment,omitempty"`
 }
 
 type activeUsersResponse struct {
@@ -572,6 +593,10 @@ func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	if err := s.publishCommentEvent(r.Context(), commentEventThreadCreated, thread, firstThreadComment(thread)); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusCreated, thread)
 }
 
@@ -615,6 +640,10 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	if err := s.publishCommentEvent(r.Context(), commentEventCommentCreated, thread, findThreadComment(thread, request.ID)); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusCreated, thread)
 }
 
@@ -652,6 +681,10 @@ func (s *Service) handleUpdateComment(w http.ResponseWriter, r *http.Request, ro
 		return
 	}
 	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.publishCommentEvent(r.Context(), commentEventCommentUpdated, thread, findThreadComment(thread, commentID)); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -1787,6 +1820,63 @@ func commentUpdateFromRequest(request CommentUpdateRequest) cluster.CommentUpdat
 		update.ReactionsSet = true
 	}
 	return update
+}
+
+func (s *Service) publishCommentEvent(ctx context.Context, eventName string, thread cluster.ThreadRecord, comment *cluster.CommentRecord) error {
+	if s.store == nil {
+		return nil
+	}
+	payload := commentEventPayload{
+		Type:     commentEventType(eventName),
+		RoomID:   thread.RoomID,
+		ThreadID: thread.ID,
+		Thread:   thread,
+	}
+	if comment != nil {
+		payload.CommentID = comment.ID
+		payload.Comment = comment
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return s.store.PublishEvent(ctx, cluster.PublishedEvent{
+		Room:       thread.RoomID,
+		Event:      eventName,
+		Payload:    raw,
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
+}
+
+func commentEventType(eventName string) string {
+	switch eventName {
+	case commentEventThreadCreated:
+		return commentEventTypeThreadCreated
+	case commentEventCommentCreated:
+		return commentEventTypeCommentCreated
+	case commentEventCommentUpdated:
+		return commentEventTypeCommentUpdated
+	default:
+		return eventName
+	}
+}
+
+func firstThreadComment(thread cluster.ThreadRecord) *cluster.CommentRecord {
+	if len(thread.Comments) == 0 {
+		return nil
+	}
+	comment := thread.Comments[0]
+	return &comment
+}
+
+func findThreadComment(thread cluster.ThreadRecord, commentID string) *cluster.CommentRecord {
+	for _, comment := range thread.Comments {
+		if comment.ID == commentID {
+			found := comment
+			return &found
+		}
+	}
+	return nil
 }
 
 func newRecordID(prefix string) string {

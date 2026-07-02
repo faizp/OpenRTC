@@ -3,6 +3,7 @@ import {
   OpenRTCAdminClient,
   OpenRTCAdminError,
   OpenRTCClient,
+  OPENRTC_COMMENT_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
   getCursorPeers,
@@ -18,6 +19,7 @@ import {
   liveMap,
   liveObject,
   liveObjectPatch,
+  type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
   type OpenRTCStorageEvent,
   type OpenRTCWebSocket,
@@ -301,6 +303,7 @@ assert.deepEqual(
 const othersEvents: string[] = [];
 const myPresenceValues: PresenceState[] = [];
 const roomEvents: string[] = [];
+const commentEvents: OpenRTCCommentEvent[] = [];
 const offOthers = room.subscribe("others", (_others, event) => {
   othersEvents.push(event.type);
 });
@@ -309,6 +312,9 @@ const offMyPresence = room.subscribe("my-presence", (presence) => {
 });
 const offEvents = room.subscribe("event", (event) => {
   roomEvents.push(event.event);
+});
+const offComments = room.subscribe("comments", (event) => {
+  commentEvents.push(event);
 });
 const storageEvents: OpenRTCStorageEvent[] = [];
 const storageStatuses: string[] = [];
@@ -389,6 +395,25 @@ roomSocket.receive({
   meta: { trace_id: "room-trace" },
 });
 assert.deepEqual(roomEvents, ["CANVAS_PING"]);
+
+roomSocket.receive({
+  t: "EVENT",
+  room: "tenant-a:room-api",
+  event: OPENRTC_COMMENT_EVENTS.commentUpdated,
+  payload: {
+    type: "comment-updated",
+    roomId: "tenant-a:room-api",
+    threadId: "thread-1",
+    commentId: "comment-1",
+    thread: { type: "thread", id: "thread-1", roomId: "tenant-a:room-api", comments: [{ id: "comment-1" }], resolved: false },
+    comment: { type: "comment", id: "comment-1", threadId: "thread-1", roomId: "tenant-a:room-api", userId: "user-1" },
+  },
+});
+assert.deepEqual(roomEvents, ["CANVAS_PING", OPENRTC_COMMENT_EVENTS.commentUpdated]);
+assert.equal(commentEvents.length, 1);
+assert.equal(commentEvents[0]?.type, "comment-updated");
+assert.equal(commentEvents[0]?.commentId, "comment-1");
+assert.equal(commentEvents[0]?.thread.id, "thread-1");
 
 const loadedStorage = room.getStorage<{ title: string; version: number }>();
 assert.equal(
@@ -581,6 +606,7 @@ assert.deepEqual(await typedUpdate, typedPublished);
 offOthers();
 offMyPresence();
 offEvents();
+offComments();
 offStorage();
 offStorageStatus();
 let sawClosedRoomReset = false;

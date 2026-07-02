@@ -27,6 +27,7 @@ import {
   type OpenRTCCursorOptions,
   type OpenRTCCursorPeer,
   type OpenRTCUserInfo,
+  type OpenRTCCommentEvent,
   type OpenRTCEvent,
   type OpenRTCError,
   type OpenRTCDiagnosticEvent,
@@ -494,6 +495,13 @@ export function useEventListener(room: string, callback: (event: OpenRTCEvent) =
   useEffect(() => roomHandle.subscribe("event", stableCallback), [roomHandle, stableCallback]);
 }
 
+export function useCommentListener(room: string, callback: (event: OpenRTCCommentEvent) => void): void {
+  const roomHandle = useRoomHandle(room);
+  const stableCallback = useStableCallback(callback);
+
+  useEffect(() => roomHandle.subscribe("comments", stableCallback), [roomHandle, stableCallback]);
+}
+
 export function useLostConnectionListener(
   room: string,
   callback: (event: OpenRTCLostConnectionEvent) => void,
@@ -834,6 +842,22 @@ export function useRoomEvents(room: string, limit = 200): OpenRTCEvent[] {
 
   useEffect(() => {
     return client.on("event", (event) => {
+      if (event.room === room) {
+        setEvents((current) => [...current.slice(1 - maxEvents), event]);
+      }
+    });
+  }, [client, room, maxEvents]);
+
+  return useMemo(() => events, [events]);
+}
+
+export function useRoomCommentEvents(room: string, limit = 200): OpenRTCCommentEvent[] {
+  const client = useOpenRTC();
+  const [events, setEvents] = useState<OpenRTCCommentEvent[]>([]);
+  const maxEvents = normalizeEventLimit(limit, 200);
+
+  useEffect(() => {
+    return client.on("comment", (event) => {
       if (event.room === room) {
         setEvents((current) => [...current.slice(1 - maxEvents), event]);
       }

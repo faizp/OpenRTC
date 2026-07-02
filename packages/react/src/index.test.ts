@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { isValidElement, type ReactElement } from "react";
 import {
   Cursor,
+  useCommentListener,
   usePatchStorage,
+  useRoomCommentEvents,
   useSetStorage,
   useStorage,
   useStorageListener,
@@ -30,6 +32,8 @@ assert.equal(typeof useSetStorage, "function");
 assert.equal(typeof usePatchStorage, "function");
 assert.equal(typeof useStorageMutation, "function");
 assert.equal(typeof useStorageListener, "function");
+assert.equal(typeof useCommentListener, "function");
+assert.equal(typeof useRoomCommentEvents, "function");
 
 const labeledCursor = asElement(
   Cursor({

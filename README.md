@@ -94,6 +94,9 @@ console.log(storage.title);
 room.subscribe("storage", (event) => {
   console.log(event.source, event.document);
 });
+room.subscribe("comments", (event) => {
+  console.log(event.type, event.threadId, event.commentId);
+});
 await room.patchStorage([{ op: "replace", path: "/title", value: "Review" }], {
   opId: "title-edit-1",
 });
@@ -141,7 +144,8 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useCursors`, `useOtherCursors`, `useCursorsMapped`, `useOther`, `useSelf`,
 `useSelfCursor`, `useCursor`, `useMyPresence`, `useMyPresenceSelector`,
 `useSetCursor`, `useBroadcastEvent`, `useBroadcastEventWithAck`, `useStatus`,
-`useRoomStatus`, `useRoomEvents`, `useDiagnostics`, `useErrorListener`,
+`useRoomStatus`, `useRoomEvents`, `useCommentListener`, `useRoomCommentEvents`,
+`useDiagnostics`, `useErrorListener`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useSetStorage`, `usePatchStorage`,
 `useStorageMutation`, and `useStorageListener`. It also exports

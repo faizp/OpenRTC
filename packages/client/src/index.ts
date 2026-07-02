@@ -117,6 +117,27 @@ export interface OpenRTCEvent {
   traceId?: string;
 }
 
+export const OPENRTC_COMMENT_EVENTS = {
+  threadCreated: "openrtc.comments.thread.created",
+  commentCreated: "openrtc.comments.comment.created",
+  commentUpdated: "openrtc.comments.comment.updated",
+} as const;
+
+export type OpenRTCCommentEventName = (typeof OPENRTC_COMMENT_EVENTS)[keyof typeof OPENRTC_COMMENT_EVENTS];
+export type OpenRTCCommentEventType = "thread-created" | "comment-created" | "comment-updated";
+
+export interface OpenRTCCommentEvent {
+  room: string;
+  event: OpenRTCCommentEventName;
+  type: OpenRTCCommentEventType;
+  roomId: string;
+  threadId: string;
+  commentId?: string;
+  thread: OpenRTCAdminThread;
+  comment?: OpenRTCAdminComment;
+  traceId?: string;
+}
+
 export interface OpenRTCError {
   code: string;
   message: string;
@@ -278,6 +299,7 @@ export interface OpenRTCRoom {
   subscribe(type: "others", callback: (others: PresencePeer[], event: OpenRTCOthersEvent) => void): () => void;
   subscribe(type: "my-presence", callback: (presence: PresenceState) => void): () => void;
   subscribe(type: "event", callback: (event: OpenRTCEvent) => void): () => void;
+  subscribe(type: "comments", callback: (event: OpenRTCCommentEvent) => void): () => void;
   subscribe(type: "storage", callback: (event: OpenRTCStorageEvent) => void): () => void;
   subscribe(type: "storage-status", callback: (status: OpenRTCStorageStatus) => void): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
@@ -462,6 +484,7 @@ export interface OpenRTCEventMap {
   room: OpenRTCRoomState;
   presence: OpenRTCPresenceUpdate;
   event: OpenRTCEvent;
+  comment: OpenRTCCommentEvent;
   storage: OpenRTCStorageEvent;
   "storage-status": OpenRTCStorageStatusUpdate;
   error: OpenRTCError;
@@ -1540,12 +1563,17 @@ export class OpenRTCClient {
     if (type === "EVENT") {
       const meta = asRecord(message["meta"]);
       const traceId = optionalString(meta["trace_id"]);
-      this.emit("event", {
+      const event: OpenRTCEvent = {
         room: asString(message["room"]),
         event: asString(message["event"]),
         payload: message["payload"],
         ...(traceId ? { traceId } : {}),
-      });
+      };
+      this.emit("event", event);
+      const commentEvent = asOpenRTCCommentEvent(event);
+      if (commentEvent) {
+        this.emit("comment", commentEvent);
+      }
       return;
     }
 
@@ -2205,17 +2233,28 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
   subscribe(type: "others", callback: (others: PresencePeer[], event: OpenRTCOthersEvent) => void): () => void;
   subscribe(type: "my-presence", callback: (presence: PresenceState) => void): () => void;
   subscribe(type: "event", callback: (event: OpenRTCEvent) => void): () => void;
+  subscribe(type: "comments", callback: (event: OpenRTCCommentEvent) => void): () => void;
   subscribe(type: "storage", callback: (event: OpenRTCStorageEvent) => void): () => void;
   subscribe(type: "storage-status", callback: (status: OpenRTCStorageStatus) => void): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
   subscribe(
-    type: "others" | "my-presence" | "event" | "storage" | "storage-status" | "status" | "error" | "lost-connection",
+    type:
+      | "others"
+      | "my-presence"
+      | "event"
+      | "comments"
+      | "storage"
+      | "storage-status"
+      | "status"
+      | "error"
+      | "lost-connection",
     callback:
       | ((others: PresencePeer[], event: OpenRTCOthersEvent) => void)
       | ((presence: PresenceState) => void)
       | ((event: OpenRTCEvent) => void)
+      | ((event: OpenRTCCommentEvent) => void)
       | ((event: OpenRTCStorageEvent) => void)
       | ((status: OpenRTCStorageStatus) => void)
       | ((status: ConnectionStatus) => void)
@@ -2232,6 +2271,13 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
       return this.client.on("event", (event) => {
         if (event.room === this.id) {
           (callback as (event: OpenRTCEvent) => void)(event);
+        }
+      });
+    }
+    if (type === "comments") {
+      return this.client.on("comment", (event) => {
+        if (event.room === this.id) {
+          (callback as (event: OpenRTCCommentEvent) => void)(event);
         }
       });
     }
@@ -2510,6 +2556,57 @@ function asPresenceState(value: unknown): PresenceState {
 
 function asStorageMutationKind(value: unknown): OpenRTCStorageMutationKind | undefined {
   return value === "set" || value === "patch" ? value : undefined;
+}
+
+function asOpenRTCCommentEvent(event: OpenRTCEvent): OpenRTCCommentEvent | undefined {
+  const type = commentEventTypeForName(event.event);
+  if (!type) {
+    return undefined;
+  }
+  const payload = asRecord(event.payload);
+  if (optionalString(payload["type"]) !== type) {
+    return undefined;
+  }
+  if (!isRecordObject(payload["thread"])) {
+    return undefined;
+  }
+  const threadObject = payload["thread"];
+  const thread = threadObject as unknown as OpenRTCAdminThread;
+  const threadId = optionalString(payload["threadId"]) ?? optionalString(threadObject["id"]);
+  if (!threadId) {
+    return undefined;
+  }
+  const roomId = optionalString(payload["roomId"]) ?? event.room;
+  const rawComment = payload["comment"];
+  const comment = isRecordObject(rawComment) ? (rawComment as unknown as OpenRTCAdminComment) : undefined;
+  const commentId = optionalString(payload["commentId"]) ?? optionalString(comment?.id);
+  if (type !== "thread-created" && !commentId) {
+    return undefined;
+  }
+  return {
+    room: event.room,
+    event: event.event as OpenRTCCommentEventName,
+    type,
+    roomId,
+    threadId,
+    thread,
+    ...(commentId ? { commentId } : {}),
+    ...(comment ? { comment } : {}),
+    ...(event.traceId ? { traceId: event.traceId } : {}),
+  };
+}
+
+function commentEventTypeForName(eventName: string): OpenRTCCommentEventType | undefined {
+  switch (eventName) {
+    case OPENRTC_COMMENT_EVENTS.threadCreated:
+      return "thread-created";
+    case OPENRTC_COMMENT_EVENTS.commentCreated:
+      return "comment-created";
+    case OPENRTC_COMMENT_EVENTS.commentUpdated:
+      return "comment-updated";
+    default:
+      return undefined;
+  }
 }
 
 function asJSONPatchOperations(value: unknown): JSONPatchOperation[] | undefined {

@@ -1295,6 +1295,7 @@ func TestAdminThreadHandlers(t *testing.T) {
 	if len(store.createdThread.Comments[0].Mentions) != 1 || store.createdThread.Comments[0].Mentions[0] != "user-2" || len(store.createdThread.Comments[0].Reactions) != 1 {
 		t.Fatalf("expected mention/reaction capture: %+v", store.createdThread.Comments[0])
 	}
+	assertCommentEvent(t, store.publishedEvents, 0, commentEventThreadCreated, commentEventTypeThreadCreated, "thread-1", "comment-1")
 
 	listResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads", "")
 	if listResp.Code != http.StatusOK {
@@ -1322,6 +1323,7 @@ func TestAdminThreadHandlers(t *testing.T) {
 	if len(updated.Comments) != 2 {
 		t.Fatalf("unexpected updated thread: %+v", updated)
 	}
+	assertCommentEvent(t, store.publishedEvents, 1, commentEventCommentCreated, commentEventTypeCommentCreated, "thread-1", "comment-2")
 
 	updateResp := performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"body":{"content":[{"type":"paragraph","text":"edited"}]},"metadata":{"status":"resolved"},"mentions":["user-2"],"reactions":[{"emoji":"+1","userId":"user-2"}]}`)
 	if updateResp.Code != http.StatusOK {
@@ -1349,6 +1351,7 @@ func TestAdminThreadHandlers(t *testing.T) {
 	if len(patched.Comments) != 1 || len(patched.Comments[0].Reactions) != 1 || patched.Comments[0].Mentions[0] != "user-2" {
 		t.Fatalf("unexpected patched thread response: %+v", patched)
 	}
+	assertCommentEvent(t, store.publishedEvents, 2, commentEventCommentUpdated, commentEventTypeCommentUpdated, "thread-1", "comment-1")
 
 	generatedStore := &fakeAdminStore{
 		addCommentThread: cluster.ThreadRecord{ID: "thread-1", RoomID: "tenant-a:room-1"},
@@ -1367,6 +1370,33 @@ func TestAdminThreadHandlers(t *testing.T) {
 	}
 	if !strings.HasPrefix(generatedStore.addedComment.ID, "cm_") {
 		t.Fatalf("expected generated comment id, got %+v", generatedStore.addedComment)
+	}
+}
+
+func assertCommentEvent(t *testing.T, events []cluster.PublishedEvent, index int, eventName string, eventType string, threadID string, commentID string) {
+	t.Helper()
+	if len(events) <= index {
+		t.Fatalf("expected published comment event %d, got %d events", index, len(events))
+	}
+	event := events[index]
+	if event.Room != "tenant-a:room-1" || event.Event != eventName || event.OriginNode != "admin:node-a" {
+		t.Fatalf("unexpected published comment event: %+v", event)
+	}
+	var payload commentEventPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("decode comment event payload: %v", err)
+	}
+	if payload.Type != eventType || payload.RoomID != "tenant-a:room-1" || payload.ThreadID != threadID || payload.Thread.ID != threadID {
+		t.Fatalf("unexpected comment event payload: %+v", payload)
+	}
+	if commentID == "" {
+		if payload.Comment != nil || payload.CommentID != "" {
+			t.Fatalf("unexpected comment payload for thread event: %+v", payload)
+		}
+		return
+	}
+	if payload.CommentID != commentID || payload.Comment == nil || payload.Comment.ID != commentID {
+		t.Fatalf("unexpected comment payload: %+v", payload)
 	}
 }
 
