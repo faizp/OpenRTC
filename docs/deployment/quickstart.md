@@ -20,7 +20,8 @@ go run ./server/cmd/openrtc dev
 Open `http://127.0.0.1:3000`. Use
 `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous local client
 tokens and `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect
-active users.
+room active users. Use `http://127.0.0.1:3000/dev/sockets` to inspect the
+actual local runtime WebSocket and Yjs sockets.
 
 ## Option 1: Docker Compose (Recommended for Getting Started)
 

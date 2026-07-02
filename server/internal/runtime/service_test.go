@@ -1241,6 +1241,47 @@ func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 	}
 }
 
+func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	connB := runtimeTestConn(service, "conn-b", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-b"}, Tenant: "tenant-a"}, 2)
+	connA := runtimeTestConn(service, "conn-a", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-a"}, Tenant: "tenant-a"}, 2)
+	joinRuntimeRoom(t, service, connA, "tenant-a:room-2")
+	joinRuntimeRoom(t, service, connA, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, connB, "tenant-a:room-1")
+	registerRuntimeYJSConn(service, &yjsConn{
+		id:     "yjs-a",
+		claims: &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "editor-a"}, Tenant: "tenant-a"},
+		room:   "tenant-a:doc-1",
+		send:   make(chan []byte, 1),
+		done:   make(chan struct{}),
+	})
+
+	snapshot := service.DevConnectionsSnapshot()
+	if snapshot.NodeID != "node-a" {
+		t.Fatalf("unexpected node id: %q", snapshot.NodeID)
+	}
+	if snapshot.ActiveSockets != 3 || snapshot.ActiveRoomCount != 2 {
+		t.Fatalf("unexpected counts: %+v", snapshot)
+	}
+	if len(snapshot.Connections) != 2 || snapshot.Connections[0].ConnectionID != "conn-a" || snapshot.Connections[1].ConnectionID != "conn-b" {
+		t.Fatalf("connections should be sorted by id: %+v", snapshot.Connections)
+	}
+	if snapshot.Connections[0].Subject != "user-a" || snapshot.Connections[0].Tenant != "tenant-a" {
+		t.Fatalf("unexpected conn-a claims: %+v", snapshot.Connections[0])
+	}
+	if len(snapshot.Connections[0].Rooms) != 2 || snapshot.Connections[0].Rooms[0] != "tenant-a:room-1" || snapshot.Connections[0].Rooms[1] != "tenant-a:room-2" {
+		t.Fatalf("unexpected conn-a rooms: %+v", snapshot.Connections[0].Rooms)
+	}
+	if len(snapshot.YJSConnections) != 1 || snapshot.YJSConnections[0].ConnectionID != "yjs-a" || snapshot.YJSConnections[0].Room != "tenant-a:doc-1" {
+		t.Fatalf("unexpected yjs connections: %+v", snapshot.YJSConnections)
+	}
+	if snapshot.YJSConnections[0].Subject != "editor-a" || snapshot.YJSConnections[0].Tenant != "tenant-a" {
+		t.Fatalf("unexpected yjs claims: %+v", snapshot.YJSConnections[0])
+	}
+}
+
 func TestRuntimeYJSStoreErrors(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()

@@ -49,6 +49,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
 - `http://127.0.0.1:8090` for the admin API.
 - `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.
+- `http://127.0.0.1:3000/dev/sockets` for local runtime WebSocket/Yjs socket inspection.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services.
 
 ## Client presence integration

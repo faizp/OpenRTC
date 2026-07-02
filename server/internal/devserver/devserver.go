@@ -134,6 +134,19 @@ func run(ctx context.Context, opts options) error {
 		return fmt.Errorf("seed rooms: %w", err)
 	}
 
+	var runtimeMu sync.RWMutex
+	var runtimeService *runtimeapp.Service
+	setRuntimeService := func(service *runtimeapp.Service) {
+		runtimeMu.Lock()
+		runtimeService = service
+		runtimeMu.Unlock()
+	}
+	currentRuntimeService := func() *runtimeapp.Service {
+		runtimeMu.RLock()
+		defer runtimeMu.RUnlock()
+		return runtimeService
+	}
+
 	runtimeSvc := &managedService{
 		name:   "runtime",
 		addr:   fmt.Sprintf("%s:%d", opts.host, opts.runtimePort),
@@ -147,7 +160,12 @@ func run(ctx context.Context, opts options) error {
 			if err != nil {
 				return nil, nil, err
 			}
-			return service.Handler(), service.Close, nil
+			setRuntimeService(service)
+			closeFn := func() error {
+				setRuntimeService(nil)
+				return service.Close()
+			}
+			return service.Handler(), closeFn, nil
 		},
 	}
 	adminSvc := &managedService{
@@ -183,6 +201,7 @@ func run(ctx context.Context, opts options) error {
 	mux.HandleFunc("/dev/config", handleDevConfig(opts))
 	mux.HandleFunc("/config", handleDevConfig(opts))
 	mux.HandleFunc("/dev/connections", handleConnections(store))
+	mux.HandleFunc("/dev/sockets", handleSockets(currentRuntimeService))
 	mux.HandleFunc("/dev/crash/runtime", handleRestart(runtimeSvc))
 	mux.HandleFunc("/dev/crash/admin", handleRestart(adminSvc))
 	mux.Handle("/admin/", reverseProxy("/admin", fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort)))
@@ -216,6 +235,7 @@ func run(ctx context.Context, opts options) error {
 	log.Printf("Admin API:       http://%s:%d", opts.host, opts.adminPort)
 	log.Printf("Local public key: %s", localPublicKey)
 	log.Printf("Seed rooms:      %s", strings.Join(opts.seedRooms, ","))
+	log.Printf("Dev sockets:     http://%s:%d/dev/sockets", opts.host, opts.appPort)
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("dev server exited: %w", err)
@@ -419,6 +439,51 @@ func handleConnections(store cluster.Store) http.HandlerFunc {
 			"connections": users,
 		})
 	}
+}
+
+func handleSockets(currentRuntimeService func() *runtimeapp.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		service := currentRuntimeService()
+		if service == nil {
+			http.Error(w, "runtime service is not running", http.StatusServiceUnavailable)
+			return
+		}
+
+		snapshot := service.DevConnectionsSnapshot()
+		if room := strings.TrimSpace(r.URL.Query().Get("room")); room != "" {
+			snapshot = filterSocketSnapshot(snapshot, room)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snapshot)
+	}
+}
+
+func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room string) runtimeapp.DevConnectionsSnapshot {
+	filtered := runtimeapp.DevConnectionsSnapshot{
+		NodeID:         snapshot.NodeID,
+		Connections:    make([]runtimeapp.DevConnectionSnapshot, 0),
+		YJSConnections: make([]runtimeapp.DevYJSConnectionSnapshot, 0),
+	}
+	for _, conn := range snapshot.Connections {
+		for _, joinedRoom := range conn.Rooms {
+			if joinedRoom == room {
+				filtered.Connections = append(filtered.Connections, conn)
+				break
+			}
+		}
+	}
+	for _, conn := range snapshot.YJSConnections {
+		if conn.Room == room {
+			filtered.YJSConnections = append(filtered.YJSConnections, conn)
+		}
+	}
+	filtered.ActiveSockets = len(filtered.Connections) + len(filtered.YJSConnections)
+	filtered.ActiveRoomCount = snapshot.ActiveRoomCount
+	return filtered
 }
 
 func handleRestart(service *managedService) http.HandlerFunc {

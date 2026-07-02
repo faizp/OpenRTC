@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/openrtc/openrtc/server/internal/config"
+	runtimeapp "github.com/openrtc/openrtc/server/internal/runtime"
 )
 
 func TestMainHelpReturnsSuccess(t *testing.T) {
@@ -169,6 +170,68 @@ func TestDevConfigBuildsClusterRuntimeConfig(t *testing.T) {
 	}
 	if cfg.Tenant.EnforcePrefix {
 		t.Fatalf("expected tenant prefix enforcement disabled for local dev")
+	}
+}
+
+func TestHandleSocketsReportsRuntimeSnapshot(t *testing.T) {
+	service := &runtimeapp.Service{}
+	handler := handleSockets(func() *runtimeapp.Service { return service })
+
+	req := httptest.NewRequest(http.MethodGet, "/dev/sockets", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body runtimeapp.DevConnectionsSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode sockets response: %v", err)
+	}
+	if body.ActiveSockets != 0 || len(body.Connections) != 0 || len(body.YJSConnections) != 0 {
+		t.Fatalf("expected empty socket snapshot, got %+v", body)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/sockets", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+
+	handler = handleSockets(func() *runtimeapp.Service { return nil })
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/sockets", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected missing runtime 503, got %d", rec.Code)
+	}
+}
+
+func TestFilterSocketSnapshotByRoom(t *testing.T) {
+	snapshot := runtimeapp.DevConnectionsSnapshot{
+		NodeID:          "node-a",
+		ActiveRoomCount: 3,
+		Connections: []runtimeapp.DevConnectionSnapshot{
+			{ConnectionID: "conn-a", Rooms: []string{"room-a", "room-b"}},
+			{ConnectionID: "conn-b", Rooms: []string{"room-c"}},
+		},
+		YJSConnections: []runtimeapp.DevYJSConnectionSnapshot{
+			{ConnectionID: "yjs-a", Room: "room-b"},
+			{ConnectionID: "yjs-b", Room: "room-c"},
+		},
+	}
+
+	filtered := filterSocketSnapshot(snapshot, "room-b")
+	if filtered.NodeID != "node-a" || filtered.ActiveRoomCount != 3 {
+		t.Fatalf("unexpected filtered metadata: %+v", filtered)
+	}
+	if filtered.ActiveSockets != 2 {
+		t.Fatalf("expected two sockets after filter, got %+v", filtered)
+	}
+	if len(filtered.Connections) != 1 || filtered.Connections[0].ConnectionID != "conn-a" {
+		t.Fatalf("unexpected filtered connections: %+v", filtered.Connections)
+	}
+	if len(filtered.YJSConnections) != 1 || filtered.YJSConnections[0].ConnectionID != "yjs-a" {
+		t.Fatalf("unexpected filtered yjs connections: %+v", filtered.YJSConnections)
 	}
 }
 
