@@ -88,6 +88,36 @@ func TestVerifierValidateAndClaimsAuthorize(t *testing.T) {
 	if !(&Claims{Scope: "presence:tenant-a:*"}).Allows("presence", "tenant-a:room-1", false, ":") {
 		t.Fatalf("expected scope presence pattern to allow room")
 	}
+	if !(&Claims{Scope: "room:read:tenant-a:*"}).Allows("join", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected normalized room read scope to allow join")
+	}
+	if !(&Claims{Scope: "room:write:tenant-a:*"}).Allows("publish", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected normalized room write scope to allow publish")
+	}
+	if !(&Claims{Scope: "storage:read:tenant-a:*"}).Allows("storage:read", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected normalized storage read scope to allow storage reads")
+	}
+	if (&Claims{Scope: "storage:read:tenant-a:*"}).Allows("storage:write", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected storage read scope to deny storage writes")
+	}
+	if !(&Claims{Scope: "storage:write:tenant-a:*"}).Allows("storage:read", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected storage write scope to allow storage reads")
+	}
+	if !(&Claims{Scope: "storage:tenant-a:*"}).Allows("storage:write", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected legacy storage scope to keep allowing storage writes")
+	}
+	if !(&Claims{Scope: "comments:read:tenant-a:*"}).Allows("comments:read", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected normalized comments read scope to allow comment reads")
+	}
+	if (&Claims{Scope: "comments:read:tenant-a:*"}).Allows("comments:write", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected comments read scope to deny comment writes")
+	}
+	if !(&Claims{Scope: "comments:write:tenant-a:*"}).Allows("comments:read", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected comments write scope to allow comment reads")
+	}
+	if !(&Claims{Scope: "comments:tenant-a:*"}).Allows("comments:write", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected legacy comments scope to keep allowing comment writes")
+	}
 	if (&Claims{Scope: "publish:tenant-a:*"}).Allows("join", "tenant-a:room-1", false, ":") {
 		t.Fatalf("expected unrelated scope action to be ignored")
 	}

@@ -828,7 +828,10 @@ func TestRuntimeAllowsRoomActionWithRoomGrants(t *testing.T) {
 		store: &fakeRuntimeStore{roomRecord: cluster.RoomRecord{
 			ID: "tenant-a:doc-1",
 			UsersAccesses: map[string][]string{
-				"user-1": {cluster.PermissionRoomRead},
+				"user-1":               {cluster.PermissionRoomRead},
+				"storage-reader":       {cluster.PermissionStorageRead},
+				"storage-writer":       {cluster.PermissionStorageWrite},
+				"normalized-room-user": {cluster.PermissionRoomWrite},
 			},
 			GroupsAccesses: map[string][]string{
 				"team-1": {cluster.PermissionRoomPresenceWrite},
@@ -848,6 +851,33 @@ func TestRuntimeAllowsRoomActionWithRoomGrants(t *testing.T) {
 	userClaims.Subject = "user-1"
 	if !service.allowsRoomAction(context.Background(), userClaims, "join", "tenant-a:doc-1") {
 		t.Fatalf("expected room user grant to allow join")
+	}
+	if service.allowsRoomAction(context.Background(), userClaims, "publish", "tenant-a:doc-1") {
+		t.Fatalf("expected room read grant to deny publish")
+	}
+
+	storageReaderClaims := &auth.Claims{Tenant: "tenant-a"}
+	storageReaderClaims.Subject = "storage-reader"
+	if !service.allowsRoomAction(context.Background(), storageReaderClaims, "storage:read", "tenant-a:doc-1") {
+		t.Fatalf("expected storage read grant to allow storage reads")
+	}
+	if service.allowsRoomAction(context.Background(), storageReaderClaims, "storage:write", "tenant-a:doc-1") {
+		t.Fatalf("expected storage read grant to deny storage writes")
+	}
+
+	storageWriterClaims := &auth.Claims{Tenant: "tenant-a"}
+	storageWriterClaims.Subject = "storage-writer"
+	if !service.allowsRoomAction(context.Background(), storageWriterClaims, "storage:read", "tenant-a:doc-1") {
+		t.Fatalf("expected storage write grant to allow storage reads")
+	}
+	if !service.allowsRoomAction(context.Background(), storageWriterClaims, "storage:write", "tenant-a:doc-1") {
+		t.Fatalf("expected storage write grant to allow storage writes")
+	}
+
+	normalizedRoomClaims := &auth.Claims{Tenant: "tenant-a"}
+	normalizedRoomClaims.Subject = "normalized-room-user"
+	if !service.allowsRoomAction(context.Background(), normalizedRoomClaims, "storage:write", "tenant-a:doc-1") {
+		t.Fatalf("expected room write grant to preserve storage write access")
 	}
 
 	groupClaims := &auth.Claims{

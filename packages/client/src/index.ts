@@ -130,6 +130,28 @@ export interface OpenRTCRoomState {
   nextCursor?: string;
 }
 
+export const OPENRTC_ROOM_PERMISSIONS = {
+  roomRead: "room:read",
+  roomWrite: "room:write",
+  roomPresenceWrite: "room:presence:write",
+  storageRead: "storage:read",
+  storageWrite: "storage:write",
+  commentsRead: "comments:read",
+  commentsWrite: "comments:write",
+  feedsRead: "feeds:read",
+  feedsWrite: "feeds:write",
+} as const;
+
+export type OpenRTCRoomPermission = (typeof OPENRTC_ROOM_PERMISSIONS)[keyof typeof OPENRTC_ROOM_PERMISSIONS];
+export type OpenRTCAccessLevel = "none" | "read" | "write";
+
+export interface OpenRTCPermissionMatrix {
+  room?: OpenRTCAccessLevel;
+  storage?: OpenRTCAccessLevel;
+  comments?: OpenRTCAccessLevel;
+  feeds?: OpenRTCAccessLevel;
+}
+
 export interface OpenRTCPresenceUpdate {
   room: string;
   connId: string;
@@ -278,6 +300,28 @@ export interface OpenRTCAdminRoomRecord {
   groupsAccesses?: Record<string, string[]>;
   created_at?: string;
   updated_at?: string;
+}
+
+export function accessMatrixPermissions(matrix: OpenRTCPermissionMatrix): OpenRTCRoomPermission[] {
+  const permissions: OpenRTCRoomPermission[] = [];
+  addMatrixPermission(permissions, matrix.room, OPENRTC_ROOM_PERMISSIONS.roomRead, OPENRTC_ROOM_PERMISSIONS.roomWrite);
+  addMatrixPermission(permissions, matrix.storage, OPENRTC_ROOM_PERMISSIONS.storageRead, OPENRTC_ROOM_PERMISSIONS.storageWrite);
+  addMatrixPermission(permissions, matrix.comments, OPENRTC_ROOM_PERMISSIONS.commentsRead, OPENRTC_ROOM_PERMISSIONS.commentsWrite);
+  addMatrixPermission(permissions, matrix.feeds, OPENRTC_ROOM_PERMISSIONS.feedsRead, OPENRTC_ROOM_PERMISSIONS.feedsWrite);
+  return permissions;
+}
+
+function addMatrixPermission(
+  permissions: OpenRTCRoomPermission[],
+  level: OpenRTCAccessLevel | undefined,
+  readPermission: OpenRTCRoomPermission,
+  writePermission: OpenRTCRoomPermission,
+): void {
+  if (level === "read") {
+    permissions.push(readPermission);
+  } else if (level === "write") {
+    permissions.push(writePermission);
+  }
 }
 
 export interface OpenRTCAdminRoomInput {

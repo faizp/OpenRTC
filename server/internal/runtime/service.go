@@ -622,7 +622,7 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 }
 
 func (s *Service) handleStorageGet(conn *clientConn, message protocol.Message) error {
-	if !s.allowsRoomAction(s.ctx, conn.claims, "storage", message.Room) {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "storage:read", message.Room) {
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
 	}
 
@@ -641,7 +641,7 @@ func (s *Service) handleStorageGet(conn *clientConn, message protocol.Message) e
 }
 
 func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) error {
-	if !s.allowsRoomAction(s.ctx, conn.claims, "storage", message.Room) {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "storage:write", message.Room) {
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
 	}
 
@@ -665,7 +665,7 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 }
 
 func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message) error {
-	if !s.allowsRoomAction(s.ctx, conn.claims, "storage", message.Room) {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "storage:write", message.Room) {
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
 	}
 

@@ -36,7 +36,12 @@ const (
 	PermissionRoomWrite         = "room:write"
 	PermissionRoomRead          = "room:read"
 	PermissionRoomPresenceWrite = "room:presence:write"
+	PermissionStorageWrite      = "storage:write"
+	PermissionStorageRead       = "storage:read"
 	PermissionCommentsWrite     = "comments:write"
+	PermissionCommentsRead      = "comments:read"
+	PermissionFeedsWrite        = "feeds:write"
+	PermissionFeedsRead         = "feeds:read"
 )
 
 const (
@@ -1615,25 +1620,36 @@ func (r RoomRecord) Allows(subject string, groupIDs []string, action string) boo
 
 func permissionsAllow(permissions []string, action string) bool {
 	for _, permission := range permissions {
-		if permission == PermissionRoomWrite {
+		if permissionAllowsAction(permission, action) {
 			return true
-		}
-		switch action {
-		case "join":
-			if permission == PermissionRoomRead {
-				return true
-			}
-		case "presence":
-			if permission == PermissionRoomPresenceWrite {
-				return true
-			}
-		case "comments":
-			if permission == PermissionCommentsWrite {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+func permissionAllowsAction(permission string, action string) bool {
+	switch action {
+	case "join", "room:read":
+		return permission == PermissionRoomRead || permission == PermissionRoomWrite
+	case "publish", "room:write":
+		return permission == PermissionRoomWrite
+	case "presence":
+		return permission == PermissionRoomPresenceWrite || permission == PermissionRoomWrite
+	case "storage", "storage:read":
+		return permission == PermissionStorageRead || permission == PermissionStorageWrite || permission == PermissionRoomWrite
+	case "storage:write":
+		return permission == PermissionStorageWrite || permission == PermissionRoomWrite
+	case "comments", "comments:write":
+		return permission == PermissionCommentsWrite || permission == PermissionRoomWrite
+	case "comments:read":
+		return permission == PermissionCommentsRead || permission == PermissionCommentsWrite || permission == PermissionRoomWrite
+	case "feeds", "feeds:write":
+		return permission == PermissionFeedsWrite || permission == PermissionRoomWrite
+	case "feeds:read":
+		return permission == PermissionFeedsRead || permission == PermissionFeedsWrite || permission == PermissionRoomWrite
+	default:
+		return false
+	}
 }
 
 func cloneAccessMap(input map[string][]string) map[string][]string {

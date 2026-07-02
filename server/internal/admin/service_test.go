@@ -413,6 +413,13 @@ func TestRoomAccessValidation(t *testing.T) {
 	if err := validateRoomAccesses(nil, nil, map[string][]string{"team-1": {cluster.PermissionCommentsWrite}}); err != nil {
 		t.Fatalf("expected valid group comments access to pass: %v", err)
 	}
+	if err := validateRoomAccesses(
+		[]string{cluster.PermissionStorageRead, cluster.PermissionCommentsRead, cluster.PermissionFeedsRead},
+		map[string][]string{"user-1": {cluster.PermissionStorageWrite, cluster.PermissionFeedsWrite}},
+		map[string][]string{"team-1": {cluster.PermissionCommentsWrite}},
+	); err != nil {
+		t.Fatalf("expected normalized read/write access permissions to pass: %v", err)
+	}
 	if err := validateRoomAccesses([]string{"room:delete"}, nil, nil); err == nil || err.Code != openrtcerr.CodeBadRequest {
 		t.Fatalf("expected unsupported access to fail with BAD_REQUEST, got %v", err)
 	}
@@ -1954,6 +1961,29 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	deleteStorageResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/storage", "")
 	if deleteStorageResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete storage 204, got %d", deleteStorageResp.Code)
+	}
+
+	readOnlyVerifier, readOnlyToken, readOnlyCleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "storage:read:tenant-a:* comments:read:tenant-a:*",
+	})
+	defer readOnlyCleanup()
+	readOnlyHandler := newTestAdminService(readOnlyVerifier, store).Handler()
+	readOnlyStorageResp := performAdminRequest(readOnlyHandler, readOnlyToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/storage", "")
+	if readOnlyStorageResp.Code != http.StatusOK {
+		t.Fatalf("expected read-only storage get 200, got %d", readOnlyStorageResp.Code)
+	}
+	readOnlyStorageWriteResp := performAdminRequest(readOnlyHandler, readOnlyToken, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/storage", `{"title":"Denied"}`)
+	if readOnlyStorageWriteResp.Code != http.StatusForbidden {
+		t.Fatalf("expected read-only storage write 403, got %d", readOnlyStorageWriteResp.Code)
+	}
+	readOnlyThreadsResp := performAdminRequest(readOnlyHandler, readOnlyToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads", "")
+	if readOnlyThreadsResp.Code != http.StatusOK {
+		t.Fatalf("expected read-only threads list 200, got %d", readOnlyThreadsResp.Code)
+	}
+	readOnlyThreadWriteResp := performAdminRequest(readOnlyHandler, readOnlyToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", `{"comment":{"userId":"user-1","body":{}}}`)
+	if readOnlyThreadWriteResp.Code != http.StatusForbidden {
+		t.Fatalf("expected read-only thread create 403, got %d", readOnlyThreadWriteResp.Code)
 	}
 }
 

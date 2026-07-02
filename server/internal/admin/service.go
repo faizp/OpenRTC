@@ -391,7 +391,7 @@ func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("storage:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -491,7 +491,7 @@ func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("comments:read", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -513,7 +513,7 @@ func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("comments:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -566,7 +566,7 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("comments:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -999,7 +999,7 @@ func (s *Service) handleGetStorage(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("storage:read", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -1026,7 +1026,7 @@ func (s *Service) handleSetStorage(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("storage:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -1054,7 +1054,7 @@ func (s *Service) handleDeleteStorage(w http.ResponseWriter, r *http.Request, ro
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !claims.Allows("storage:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -1585,7 +1585,15 @@ func validateAccessMap(accesses map[string][]string, field string) *protocol.Par
 func validateAccessList(permissions []string) *protocol.ParseError {
 	for _, permission := range permissions {
 		switch permission {
-		case cluster.PermissionRoomWrite, cluster.PermissionRoomRead, cluster.PermissionRoomPresenceWrite, cluster.PermissionCommentsWrite:
+		case cluster.PermissionRoomWrite,
+			cluster.PermissionRoomRead,
+			cluster.PermissionRoomPresenceWrite,
+			cluster.PermissionStorageWrite,
+			cluster.PermissionStorageRead,
+			cluster.PermissionCommentsWrite,
+			cluster.PermissionCommentsRead,
+			cluster.PermissionFeedsWrite,
+			cluster.PermissionFeedsRead:
 		default:
 			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "unsupported room access permission"}
 		}

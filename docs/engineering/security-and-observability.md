@@ -7,17 +7,20 @@
 - Admin API requires scoped service JWT claims.
 - WebSocket and Yjs upgrade requests must validate `Origin` against an explicit allowlist in production.
 - Room actions require explicit authorization through access-token action claims
-  (`join`, `publish`, `presence`), scoped claims, or Redis-backed room access
-  grants. Room-grant fallback still enforces tenant prefix isolation.
+  (`join`, `publish`, `presence`), normalized scoped claims, legacy scoped
+  claims, or Redis-backed room access grants. Room-grant fallback still enforces
+  tenant prefix isolation.
 - Room access grants support `defaultAccesses`, `usersAccesses`, and
-  `groupsAccesses`; only `room:write`, `room:read`,
-  `room:presence:write`, and `comments:write` are accepted.
+  `groupsAccesses`; accepted permissions are `room:read`, `room:write`,
+  `room:presence:write`, `storage:read`, `storage:write`, `comments:read`,
+  `comments:write`, `feeds:read`, and `feeds:write`.
 - Active-user admin reads require `presence:<pattern>` scope and are derived
   from room membership plus connection metadata; they should be monitored as
   Redis read load if used for dashboards.
-- Thread/comment admin APIs require `comments:<pattern>` scope. Comment bodies
-  and metadata must be object-rooted, bounded, and stored durably instead of
-  sent only through Pub/Sub.
+- Thread/comment admin reads require `comments:read:<pattern>` or legacy
+  `comments:<pattern>` scope; writes require `comments:write:<pattern>` or
+  legacy `comments:<pattern>` scope. Comment bodies and metadata must be
+  object-rooted, bounded, and stored durably instead of sent only through Pub/Sub.
 - Inbox notification and notification-settings APIs require
   `notifications:<user-pattern>` scope. Custom notification activity data and
   settings are bounded JSON objects; inbox reads mark durable records instead of
@@ -27,7 +30,9 @@
   authorization, payload-size limits, and privacy expectations as other
   presence state.
 - Room IDs, event names, connection IDs, JSON payloads, and Yjs frames must be bounded and validated before storage or fan-out.
-- Storage documents and JSON Patch requests must be bounded, object-rooted or valid typed storage roots, authorized with `storage:<pattern>`, and applied atomically.
+- Storage documents and JSON Patch requests must be bounded, object-rooted or
+  valid typed storage roots, authorized with `storage:read:<pattern>` /
+  `storage:write:<pattern>` or legacy `storage:<pattern>`, and applied atomically.
 - Typed storage envelopes reserve `liveblocksType` and must validate `LiveObject`,
   `LiveList`, and `LiveMap` `data` shapes before persistence.
 - Yjs update persistence must use sequenced logs; only trusted compaction checkpoints from runtime-approved code such as `@openrtc/yjs-compactor` may trim replay updates.

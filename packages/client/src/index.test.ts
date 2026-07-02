@@ -3,6 +3,8 @@ import {
   OpenRTCAdminClient,
   OpenRTCAdminError,
   OpenRTCClient,
+  OPENRTC_ROOM_PERMISSIONS,
+  accessMatrixPermissions,
   getCursorPeers,
   getPresenceColor,
   getPresenceCursor,
@@ -21,6 +23,18 @@ import {
   type OpenRTCWebSocket,
   type PresenceState,
 } from "./index.ts";
+
+assert.deepEqual(accessMatrixPermissions({
+  room: "read",
+  storage: "write",
+  comments: "none",
+  feeds: "read",
+}), [
+  OPENRTC_ROOM_PERMISSIONS.roomRead,
+  OPENRTC_ROOM_PERMISSIONS.storageWrite,
+  OPENRTC_ROOM_PERMISSIONS.feedsRead,
+]);
+assert.deepEqual(accessMatrixPermissions({ comments: "write" }), [OPENRTC_ROOM_PERMISSIONS.commentsWrite]);
 
 class FakeWebSocket implements OpenRTCWebSocket {
   static instances: FakeWebSocket[] = [];

@@ -181,12 +181,45 @@ func (c *Claims) patternsFor(action string) []string {
 	}
 
 	for _, token := range strings.Fields(c.Scope) {
-		prefix := action + ":"
-		if strings.HasPrefix(token, prefix) {
-			patterns = append(patterns, strings.TrimPrefix(token, prefix))
+		for _, prefix := range scopePrefixesForAction(action) {
+			if strings.HasPrefix(token, prefix) {
+				patterns = append(patterns, strings.TrimPrefix(token, prefix))
+				break
+			}
 		}
 	}
 	return patterns
+}
+
+func scopePrefixesForAction(action string) []string {
+	switch action {
+	case "join", "room:read":
+		return []string{"join:", "room:read:", "room:write:"}
+	case "publish", "room:write":
+		return []string{"publish:", "room:write:"}
+	case "presence":
+		return []string{"presence:", "room:presence:write:", "room:write:"}
+	case "storage":
+		return []string{"storage:read:", "storage:write:", "storage:", "room:write:"}
+	case "storage:read":
+		return []string{"storage:read:", "storage:write:", "storage:", "room:write:"}
+	case "storage:write":
+		return []string{"storage:write:", "storage:", "room:write:"}
+	case "comments":
+		return []string{"comments:write:", "comments:"}
+	case "comments:read":
+		return []string{"comments:read:", "comments:write:", "comments:"}
+	case "comments:write":
+		return []string{"comments:write:", "comments:"}
+	case "feeds":
+		return []string{"feeds:read:", "feeds:write:", "feeds:"}
+	case "feeds:read":
+		return []string{"feeds:read:", "feeds:write:", "feeds:"}
+	case "feeds:write":
+		return []string{"feeds:write:", "feeds:"}
+	default:
+		return []string{action + ":"}
+	}
 }
 
 func (c *Claims) RoomGroupIDs() []string {

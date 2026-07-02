@@ -808,6 +808,31 @@ func TestRedisRoomRecordLifecycle(t *testing.T) {
 	if !created.Allows("commenter", nil, "comments") {
 		t.Fatalf("expected comments grant to allow comments")
 	}
+	created.UsersAccesses["storage-reader"] = []string{PermissionStorageRead}
+	if !created.Allows("storage-reader", nil, "storage:read") {
+		t.Fatalf("expected storage read grant to allow storage reads")
+	}
+	if created.Allows("storage-reader", nil, "storage:write") {
+		t.Fatalf("expected storage read grant to deny storage writes")
+	}
+	created.UsersAccesses["storage-writer"] = []string{PermissionStorageWrite}
+	if !created.Allows("storage-writer", nil, "storage:read") || !created.Allows("storage-writer", nil, "storage:write") {
+		t.Fatalf("expected storage write grant to allow storage read/write")
+	}
+	created.UsersAccesses["comment-reader"] = []string{PermissionCommentsRead}
+	if !created.Allows("comment-reader", nil, "comments:read") {
+		t.Fatalf("expected comments read grant to allow comment reads")
+	}
+	if created.Allows("comment-reader", nil, "comments:write") {
+		t.Fatalf("expected comments read grant to deny comment writes")
+	}
+	created.UsersAccesses["feed-reader"] = []string{PermissionFeedsRead}
+	if !created.Allows("feed-reader", nil, "feeds:read") {
+		t.Fatalf("expected feeds read grant to allow feed reads")
+	}
+	if created.Allows("feed-reader", nil, "feeds:write") {
+		t.Fatalf("expected feeds read grant to deny feed writes")
+	}
 
 	if _, err := store.CreateRoom(ctx, RoomRecord{ID: "tenant-a:room-1"}); !errors.Is(err, ErrRoomAlreadyExists) {
 		t.Fatalf("expected room conflict, got %v", err)

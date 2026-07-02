@@ -209,7 +209,7 @@ expected versus observed delivery, loss percentage, p99 latency, and duration so
 integrators can verify multi-client realtime behavior before embedding OpenRTC.
 
 ```ts
-import { OpenRTCAdminClient } from "@openrtc/client";
+import { OpenRTCAdminClient, accessMatrixPermissions } from "@openrtc/client";
 
 const admin = new OpenRTCAdminClient({
   url: "https://openrtc.example.com",
@@ -218,7 +218,18 @@ const admin = new OpenRTCAdminClient({
 
 await admin.createRoom({
   id: "tenant-a:canvas-1",
-  defaultAccesses: ["room:read", "room:presence:write"],
+  defaultAccesses: accessMatrixPermissions({
+    room: "read",
+    storage: "read",
+    comments: "read",
+  }),
+  groupsAccesses: {
+    editors: accessMatrixPermissions({
+      room: "write",
+      storage: "write",
+      comments: "write",
+    }),
+  },
 });
 
 await admin.setPresence(
