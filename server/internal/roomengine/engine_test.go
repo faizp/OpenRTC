@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/openrtc/openrtc/server/internal/cluster"
 )
 
 func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
@@ -87,5 +89,62 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	snapshot = engine.Snapshot("room-a")
 	if _, ok := snapshot.Presence["conn-1"]; ok {
 		t.Fatalf("presence should be removed after leave")
+	}
+}
+
+func TestEngineYJSRoomsAndDocuments(t *testing.T) {
+	engine := New()
+	engine.RegisterYJSConn("conn-1", "room-a")
+	engine.RegisterYJSConn("conn-2", "room-a")
+
+	if got := engine.YJSTargetIDs("room-a", "conn-1"); !reflect.DeepEqual(got, []string{"conn-2"}) {
+		t.Fatalf("unexpected yjs targets: %#v", got)
+	}
+	engine.UnregisterYJSConn("conn-2", "room-a")
+	if got := engine.YJSTargetIDs("room-a", "conn-1"); len(got) != 0 {
+		t.Fatalf("expected no yjs targets after unregister, got %#v", got)
+	}
+
+	update := []byte("update-1")
+	event := engine.StoreYJSEvent(cluster.YJSEvent{
+		Room:   "room-a",
+		Kind:   cluster.YJSEventUpdate,
+		Update: update,
+	})
+	if event.Sequence != 1 {
+		t.Fatalf("expected first sequence to be 1, got %d", event.Sequence)
+	}
+	update[0] = 'X'
+	second := engine.StoreYJSEvent(cluster.YJSEvent{
+		Room:   "room-a",
+		Kind:   cluster.YJSEventUpdate,
+		Update: []byte("update-2"),
+	})
+	if second.Sequence != 2 {
+		t.Fatalf("expected second sequence to be 2, got %d", second.Sequence)
+	}
+	engine.StoreYJSEvent(cluster.YJSEvent{
+		Room:   "room-a",
+		Kind:   cluster.YJSEventSnapshot,
+		Update: []byte("snapshot-1"),
+	})
+
+	doc := engine.LoadYJSDocument("room-a")
+	if string(doc.Snapshot) != "snapshot-1" {
+		t.Fatalf("unexpected snapshot: %q", doc.Snapshot)
+	}
+	if len(doc.Updates) != 2 || string(doc.Updates[0]) != "update-1" || string(doc.Updates[1]) != "update-2" {
+		t.Fatalf("unexpected updates: %#v", doc.Updates)
+	}
+	if !reflect.DeepEqual(doc.UpdateSequences, []int64{1, 2}) {
+		t.Fatalf("unexpected update sequences: %#v", doc.UpdateSequences)
+	}
+
+	doc.Snapshot[0] = 'X'
+	doc.Updates[0][0] = 'X'
+	doc.UpdateSequences[0] = 99
+	reloaded := engine.LoadYJSDocument("room-a")
+	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateSequences[0] != 1 {
+		t.Fatalf("document load should return defensive copies, got %+v", reloaded)
 	}
 }

@@ -544,9 +544,7 @@ func TestHandleYJSFrameBranches(t *testing.T) {
 		defer closeConn()
 		blocked := &yjsConn{id: "blocked-yjs", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{}), closed: true}
 		blocked.send <- []byte("full")
-		service.mu.Lock()
-		service.yjsRooms["tenant-a:doc-1"][blocked.id] = blocked
-		service.mu.Unlock()
+		registerRuntimeYJSConn(service, blocked)
 		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameUpdate}, []byte("update")...)); err != nil {
 			t.Fatalf("write overflow yjs frame: %v", err)
 		}
@@ -986,7 +984,7 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 
 	yjsOverflow := &yjsConn{id: "yjs-overflow", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{}), closed: true}
 	yjsOverflow.send <- []byte("full")
-	service.yjsRooms["tenant-a:doc-1"] = map[string]*yjsConn{yjsOverflow.id: yjsOverflow}
+	registerRuntimeYJSConn(service, yjsOverflow)
 	if err := service.broadcastYJSEvent(cluster.YJSEvent{Room: "tenant-a:doc-1", Kind: cluster.YJSEventUpdate, Update: []byte("update")}); err == nil {
 		t.Fatalf("expected yjs broadcast overflow")
 	}
@@ -1586,6 +1584,13 @@ func joinRuntimeRoom(t *testing.T, service *Service, conn *clientConn, room stri
 
 func setRuntimePresence(service *Service, conn *clientConn, room string, payload json.RawMessage) {
 	service.roomEngine().SetPresence(conn.id, room, payload)
+}
+
+func registerRuntimeYJSConn(service *Service, conn *yjsConn) {
+	service.mu.Lock()
+	service.yjsConns[conn.id] = conn
+	service.mu.Unlock()
+	service.roomEngine().RegisterYJSConn(conn.id, conn.room)
 }
 
 func readRuntimeOutbound(t *testing.T, conn *clientConn) outboundMessage {

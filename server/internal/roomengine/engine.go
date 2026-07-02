@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sort"
 	"sync"
+
+	"github.com/openrtc/openrtc/server/internal/cluster"
 )
 
 var ErrRoomLimitExceeded = errors.New("room limit exceeded")
@@ -14,6 +16,16 @@ type Engine struct {
 	rooms     map[string]map[string]struct{}
 	connRooms map[string]map[string]struct{}
 	presence  map[string]map[string]json.RawMessage
+	yjsRooms  map[string]map[string]struct{}
+	yjsDocs   map[string]*memoryYJSDocument
+}
+
+type memoryYJSDocument struct {
+	Snapshot           []byte
+	SnapshotCheckpoint int64
+	Updates            [][]byte
+	UpdateSequences    []int64
+	NextSequence       int64
 }
 
 type JoinResult struct {
@@ -34,6 +46,8 @@ func New() *Engine {
 		rooms:     make(map[string]map[string]struct{}),
 		connRooms: make(map[string]map[string]struct{}),
 		presence:  make(map[string]map[string]json.RawMessage),
+		yjsRooms:  make(map[string]map[string]struct{}),
+		yjsDocs:   make(map[string]*memoryYJSDocument),
 	}
 }
 
@@ -161,6 +175,87 @@ func (e *Engine) JoinedRooms(connID string) []string {
 	}
 	sort.Strings(rooms)
 	return rooms
+}
+
+func (e *Engine) RegisterYJSConn(connID string, room string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	members := e.yjsRooms[room]
+	if members == nil {
+		members = make(map[string]struct{})
+		e.yjsRooms[room] = members
+	}
+	members[connID] = struct{}{}
+}
+
+func (e *Engine) UnregisterYJSConn(connID string, room string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if members := e.yjsRooms[room]; members != nil {
+		delete(members, connID)
+		if len(members) == 0 {
+			delete(e.yjsRooms, room)
+		}
+	}
+}
+
+func (e *Engine) YJSTargetIDs(room string, excludeConnID string) []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	members := make([]string, 0, len(e.yjsRooms[room]))
+	for connID := range e.yjsRooms[room] {
+		if excludeConnID != "" && connID == excludeConnID {
+			continue
+		}
+		members = append(members, connID)
+	}
+	sort.Strings(members)
+	return members
+}
+
+func (e *Engine) LoadYJSDocument(room string) cluster.YJSDocument {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	doc := e.yjsDocs[room]
+	if doc == nil {
+		return cluster.YJSDocument{}
+	}
+
+	out := cluster.YJSDocument{
+		Snapshot:           append([]byte(nil), doc.Snapshot...),
+		SnapshotCheckpoint: doc.SnapshotCheckpoint,
+		Updates:            make([][]byte, 0, len(doc.Updates)),
+		UpdateSequences:    append([]int64(nil), doc.UpdateSequences...),
+	}
+	for _, update := range doc.Updates {
+		out.Updates = append(out.Updates, append([]byte(nil), update...))
+	}
+	return out
+}
+
+func (e *Engine) StoreYJSEvent(event cluster.YJSEvent) cluster.YJSEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	doc := e.yjsDocs[event.Room]
+	if doc == nil {
+		doc = &memoryYJSDocument{}
+		e.yjsDocs[event.Room] = doc
+	}
+	if event.Kind == cluster.YJSEventSnapshot {
+		doc.Snapshot = append([]byte(nil), event.Update...)
+		return event
+	}
+
+	doc.NextSequence++
+	event.Sequence = doc.NextSequence
+	doc.Updates = append(doc.Updates, append([]byte(nil), event.Update...))
+	doc.UpdateSequences = append(doc.UpdateSequences, doc.NextSequence)
+	return event
 }
 
 func (e *Engine) removeRoomMemberLocked(connID string, room string) {

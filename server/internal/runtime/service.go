@@ -63,8 +63,7 @@ type Service struct {
 	mu       sync.RWMutex
 	conns    map[string]*clientConn
 	rooms    *roomengine.Engine
-	yjsRooms map[string]map[string]*yjsConn
-	yjsDocs  map[string]*memoryYJSDocument
+	yjsConns map[string]*yjsConn
 	stats    stats.Snapshot
 }
 
@@ -105,14 +104,6 @@ type yjsConn struct {
 	closed  bool
 }
 
-type memoryYJSDocument struct {
-	Snapshot           []byte
-	SnapshotCheckpoint int64
-	Updates            [][]byte
-	UpdateSequences    []int64
-	NextSequence       int64
-}
-
 type outboundMessage struct {
 	T       string      `json:"t"`
 	ID      string      `json:"id,omitempty"`
@@ -133,8 +124,7 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 		cancel:   cancel,
 		conns:    make(map[string]*clientConn),
 		rooms:    roomengine.New(),
-		yjsRooms: make(map[string]map[string]*yjsConn),
-		yjsDocs:  make(map[string]*memoryYJSDocument),
+		yjsConns: make(map[string]*yjsConn),
 	}
 
 	if cfg.Redis != nil {
@@ -679,23 +669,7 @@ func (s *Service) loadYJSDocument(room string) (cluster.YJSDocument, error) {
 		return s.store.LoadYJSDocument(s.ctx, room)
 	}
 
-	s.mu.RLock()
-	doc := s.yjsDocs[room]
-	if doc == nil {
-		s.mu.RUnlock()
-		return cluster.YJSDocument{}, nil
-	}
-	out := cluster.YJSDocument{
-		Snapshot:           append([]byte(nil), doc.Snapshot...),
-		SnapshotCheckpoint: doc.SnapshotCheckpoint,
-		Updates:            make([][]byte, 0, len(doc.Updates)),
-		UpdateSequences:    append([]int64(nil), doc.UpdateSequences...),
-	}
-	for _, update := range doc.Updates {
-		out.Updates = append(out.Updates, append([]byte(nil), update...))
-	}
-	s.mu.RUnlock()
-	return out, nil
+	return s.roomEngine().LoadYJSDocument(room), nil
 }
 
 func (s *Service) storeYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error) {
@@ -708,33 +682,17 @@ func (s *Service) storeYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error
 		return event, err
 	}
 
-	s.mu.Lock()
-	doc := s.yjsDocs[event.Room]
-	if doc == nil {
-		doc = &memoryYJSDocument{}
-		s.yjsDocs[event.Room] = doc
-	}
-	if event.Kind == cluster.YJSEventSnapshot {
-		doc.Snapshot = append([]byte(nil), event.Update...)
-	} else {
-		doc.NextSequence++
-		event.Sequence = doc.NextSequence
-		doc.Updates = append(doc.Updates, append([]byte(nil), event.Update...))
-		doc.UpdateSequences = append(doc.UpdateSequences, doc.NextSequence)
-	}
-	s.mu.Unlock()
-	return event, nil
+	return s.roomEngine().StoreYJSEvent(event), nil
 }
 
 func (s *Service) broadcastYJSEvent(event cluster.YJSEvent) error {
+	targetIDs := s.roomEngine().YJSTargetIDs(event.Room, event.OriginConnID)
 	s.mu.RLock()
-	members := s.yjsRooms[event.Room]
-	targets := make([]*yjsConn, 0, len(members))
-	for connID, member := range members {
-		if event.OriginConnID != "" && connID == event.OriginConnID {
-			continue
+	targets := make([]*yjsConn, 0, len(targetIDs))
+	for _, connID := range targetIDs {
+		if member := s.yjsConns[connID]; member != nil {
+			targets = append(targets, member)
 		}
-		targets = append(targets, member)
 	}
 	s.mu.RUnlock()
 
@@ -790,24 +748,16 @@ func (s *Service) registerConn(conn *clientConn) {
 
 func (s *Service) registerYJSConn(conn *yjsConn) {
 	s.mu.Lock()
-	members := s.yjsRooms[conn.room]
-	if members == nil {
-		members = make(map[string]*yjsConn)
-		s.yjsRooms[conn.room] = members
-	}
-	members[conn.id] = conn
+	s.yjsConns[conn.id] = conn
 	s.mu.Unlock()
+	s.roomEngine().RegisterYJSConn(conn.id, conn.room)
 }
 
 func (s *Service) unregisterYJSConn(conn *yjsConn) {
 	s.mu.Lock()
-	if members := s.yjsRooms[conn.room]; members != nil {
-		delete(members, conn.id)
-		if len(members) == 0 {
-			delete(s.yjsRooms, conn.room)
-		}
-	}
+	delete(s.yjsConns, conn.id)
 	s.mu.Unlock()
+	s.roomEngine().UnregisterYJSConn(conn.id, conn.room)
 	conn.close(websocket.CloseNormalClosure, "closing")
 }
 
