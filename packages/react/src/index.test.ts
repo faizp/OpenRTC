@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { isValidElement, type ReactElement } from "react";
-import { Cursor } from "./index.ts";
+import {
+  Cursor,
+  usePatchStorage,
+  useSetStorage,
+  useStorage,
+  useStorageListener,
+  useStorageMutation,
+  useStorageSelector,
+  useStorageStatus,
+} from "./index.ts";
 
 type ElementProps = Record<string, unknown>;
 type ElementWithProps = ReactElement<ElementProps>;
@@ -13,6 +22,14 @@ function asElement(value: unknown): ElementWithProps {
 function childrenOf(element: ElementWithProps): unknown[] {
   return Array.isArray(element.props.children) ? element.props.children : [element.props.children];
 }
+
+assert.equal(typeof useStorage, "function");
+assert.equal(typeof useStorageSelector, "function");
+assert.equal(typeof useStorageStatus, "function");
+assert.equal(typeof useSetStorage, "function");
+assert.equal(typeof usePatchStorage, "function");
+assert.equal(typeof useStorageMutation, "function");
+assert.equal(typeof useStorageListener, "function");
 
 const labeledCursor = asElement(
   Cursor({

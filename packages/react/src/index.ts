@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DependencyList,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -20,6 +21,7 @@ import {
   type BroadcastOptions,
   type ConnectionStatus,
   type EnterRoomOptions,
+  type JSONPatchOperation,
   type JoinOptions,
   type OpenRTCCursor,
   type OpenRTCCursorOptions,
@@ -32,6 +34,9 @@ import {
   type OpenRTCRoomPresence,
   type OpenRTCRoomState,
   type OpenRTCLostConnectionEvent,
+  type OpenRTCStorageEvent,
+  type OpenRTCStorageMutationOptions,
+  type OpenRTCStorageStatus,
   type PresencePeer,
   type PresenceState,
   type RoomBroadcastInput,
@@ -44,6 +49,13 @@ export type OtherSelector<T> = (other: PresencePeer) => T;
 export type CursorSelector<T> = (cursor: OpenRTCCursorPeer) => T;
 export type SelfSelector<T> = (self: PresencePeer) => T;
 export type MyPresenceSelector<T> = (presence: PresenceState) => T;
+export type StorageSelector<TDocument, TSelected> = (document: TDocument | undefined) => TSelected;
+
+export interface StorageMutationContext<TDocument = unknown> {
+  storage: TDocument | undefined;
+  setStorage(document: TDocument, options?: OpenRTCStorageMutationOptions): Promise<TDocument>;
+  patchStorage(operations: JSONPatchOperation[], options?: OpenRTCStorageMutationOptions): Promise<TDocument>;
+}
 
 export interface CursorOptions extends JoinOptions {
   presenceKey?: string;
@@ -353,6 +365,125 @@ export function useBroadcastEventWithAck(
     (event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions) =>
       roomHandle.broadcastEventWithAck(event, payload, options),
     [roomHandle],
+  );
+}
+
+export function useStorage<TDocument = unknown>(room: string, options: JoinOptions = {}): TDocument | undefined {
+  const client = useOpenRTC();
+  const roomHandle = useRoomHandle(room);
+  const [document, setDocument] = useState<TDocument | undefined>(() => roomHandle.getStorageSnapshot<TDocument>());
+  const limit = options.limit;
+  const cursor = options.cursor;
+
+  useEffect(() => {
+    let active = true;
+    const entered = client.enterRoom(room, {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    setDocument(roomHandle.getStorageSnapshot<TDocument>());
+
+    const offStorage = roomHandle.subscribe("storage", (event) => {
+      setDocument(event.document as TDocument);
+    });
+    void roomHandle.getStorage<TDocument>().then(
+      (next) => {
+        if (active) {
+          setDocument(next);
+        }
+      },
+      () => undefined,
+    );
+
+    return () => {
+      active = false;
+      offStorage();
+      entered.leave();
+    };
+  }, [client, roomHandle, room, limit, cursor]);
+
+  return document;
+}
+
+export function useStorageSelector<TDocument, TSelected>(
+  room: string,
+  selector: StorageSelector<TDocument, TSelected>,
+  options: JoinOptions = {},
+): TSelected {
+  const storage = useStorage<TDocument>(room, options);
+
+  return useMemo(() => selector(storage), [storage, selector]);
+}
+
+export function useStorageStatus(room: string): OpenRTCStorageStatus {
+  const roomHandle = useRoomHandle(room);
+  const [status, setStatus] = useState<OpenRTCStorageStatus>(roomHandle.getStorageStatus());
+
+  useEffect(() => {
+    setStatus(roomHandle.getStorageStatus());
+    return roomHandle.subscribe("storage-status", setStatus);
+  }, [roomHandle]);
+
+  return status;
+}
+
+export function useSetStorage<TDocument = unknown>(
+  room: string,
+): (document: TDocument, options?: OpenRTCStorageMutationOptions) => Promise<TDocument> {
+  const roomHandle = useRoomHandle(room);
+
+  return useCallback(
+    (document: TDocument, options?: OpenRTCStorageMutationOptions) => roomHandle.setStorage<TDocument>(document, options),
+    [roomHandle],
+  );
+}
+
+export function usePatchStorage<TDocument = unknown>(
+  room: string,
+): (operations: JSONPatchOperation[], options?: OpenRTCStorageMutationOptions) => Promise<TDocument> {
+  const roomHandle = useRoomHandle(room);
+
+  return useCallback(
+    (operations: JSONPatchOperation[], options?: OpenRTCStorageMutationOptions) =>
+      roomHandle.patchStorage<TDocument>(operations, options),
+    [roomHandle],
+  );
+}
+
+export function useStorageMutation<TDocument = unknown, Args extends unknown[] = [], TResult = void>(
+  room: string,
+  mutation: (context: StorageMutationContext<TDocument>, ...args: Args) => TResult,
+  deps: DependencyList = [],
+): (...args: Args) => TResult {
+  const roomHandle = useRoomHandle(room);
+  const mutationRef = useRef(mutation);
+  mutationRef.current = mutation;
+
+  return useCallback((...args: Args) => {
+    return mutationRef.current(
+      {
+        storage: roomHandle.getStorageSnapshot<TDocument>(),
+        setStorage: (document, options) => roomHandle.setStorage<TDocument>(document, options),
+        patchStorage: (operations, options) => roomHandle.patchStorage<TDocument>(operations, options),
+      },
+      ...args,
+    );
+  }, [roomHandle, ...deps]);
+}
+
+export function useStorageListener<TDocument = unknown>(
+  room: string,
+  callback: (event: OpenRTCStorageEvent<TDocument>) => void,
+): void {
+  const roomHandle = useRoomHandle(room);
+  const stableCallback = useStableCallback(callback);
+
+  useEffect(
+    () =>
+      roomHandle.subscribe("storage", (event) => {
+        stableCallback(event as OpenRTCStorageEvent<TDocument>);
+      }),
+    [roomHandle, stableCallback],
   );
 }
 

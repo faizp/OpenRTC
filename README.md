@@ -121,17 +121,21 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useSelfCursor`, `useCursor`, `useMyPresence`, `useMyPresenceSelector`,
 `useSetCursor`, `useBroadcastEvent`, `useBroadcastEventWithAck`, `useStatus`,
 `useRoomStatus`, `useRoomEvents`, `useDiagnostics`, `useErrorListener`,
-`useLostConnectionListener`, and `useRoomReconnect`. It also exports
+`useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
+`useStorageSelector`, `useStorageStatus`, `useSetStorage`, `usePatchStorage`,
+`useStorageMutation`, and `useStorageListener`. It also exports
 Liveblocks-style `Cursors`, `Cursor`, and `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with
 resolved `user`, `color`, and `mode` fields, and accept a `presenceKey` for apps
 with multiple cursor layers in one room. Broadcast hooks accept the same string
-or object-shaped events as room handles. Room hooks use shared entry tracking,
-so multiple components can subscribe to the same room without one cleanup
-leaving the room for the others. `initialPresence` is captured once per room
-entry, so inline initial presence objects do not cause accidental leave/rejoin
-churn on rerender.
+or object-shaped events as room handles. Storage hooks retain the room, request
+the latest storage snapshot, subscribe to realtime updates, expose storage
+status, and provide stable set/patch mutation callbacks. Room hooks use shared
+entry tracking, so multiple components can subscribe to the same room without
+one cleanup leaving the room for the others. `initialPresence` is captured once
+per room entry, so inline initial presence objects do not cause accidental
+leave/rejoin churn on rerender.
 
 ```tsx
 import {
@@ -140,6 +144,8 @@ import {
   useBroadcastEventWithAck,
   useEnterRoom,
   useLostConnectionListener,
+  usePatchStorage,
+  useStorage,
 } from "@openrtc/react";
 
 export function CanvasPresence() {
@@ -147,6 +153,8 @@ export function CanvasPresence() {
     initialPresence: { cursor: null, user: { id: "user-1", name: "Ada" } },
   });
   const broadcastWithAck = useBroadcastEventWithAck(room.id);
+  const storage = useStorage<{ title?: string }>(room.id);
+  const patchStorage = usePatchStorage(room.id);
 
   useLostConnectionListener(room.id, (event) => {
     console.info("room connection", event);
@@ -159,6 +167,12 @@ export function CanvasPresence() {
       mode="pointer"
     >
       <AvatarStack room={room.id} max={5} />
+      <button
+        type="button"
+        onClick={() => patchStorage([{ op: "replace", path: "/title", value: "Review" }])}
+      >
+        {storage?.title ?? "Untitled"}
+      </button>
       <Canvas onPing={() => broadcastWithAck({ type: "canvas.ping", at: Date.now() })} />
     </Cursors>
   );
