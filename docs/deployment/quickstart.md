@@ -6,6 +6,22 @@
 - Redis 7+ (required for cluster mode)
 - An OIDC provider with JWKS endpoint (Auth0, Keycloak, etc.)
 
+## Local Integration Dev Server
+
+For local SDK and reference-app integration work, `openrtc dev` starts a local
+issuer, runtime, admin API, seeded rooms, same-origin proxies, and the browser
+dev console with Redis-backed state.
+
+```bash
+docker run -d --name openrtc-redis -p 6379:6379 redis:7-alpine
+go run ./server/cmd/openrtc dev
+```
+
+Open `http://127.0.0.1:3000`. Use
+`http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous local client
+tokens and `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect
+active users.
+
 ## Option 1: Docker Compose (Recommended for Getting Started)
 
 ```bash

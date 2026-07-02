@@ -4,7 +4,7 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 
 ## Monorepo layout
 
-- `server/`: Go core backend module. It builds `openrtc-runtime` and `openrtc-admin`.
+- `server/`: Go core backend module. It builds `openrtc`, `openrtc-runtime`, and `openrtc-admin`.
 - `packages/client/`: TypeScript WebSocket client for rooms, events, and presence.
 - `packages/react/`: React hooks for room state, presence, and broadcast events.
 - `packages/rich-text/`: Yjs binding helpers plus presence adapters for Tiptap, Lexical, and BlockNote selection/cursor state.
@@ -27,6 +27,29 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 - `make test`
 - `make test-integration`
 - `make check`
+
+## Local dev server
+
+`openrtc dev` starts a full local stack for integration work: a local JWKS
+issuer, the runtime, the admin API, the reference UI, seeded rooms, and same
+origin proxies.
+
+```bash
+# Start Redis if one is not already running.
+docker run -d --name openrtc-redis -p 6379:6379 redis:7-alpine
+
+# Start the integrated dev server from the repo root.
+go run ./server/cmd/openrtc dev
+```
+
+Then open `http://127.0.0.1:3000`. The dev server exposes:
+
+- `http://127.0.0.1:3000/jwks` for local token verification.
+- `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous client JWTs.
+- `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
+- `http://127.0.0.1:8090` for the admin API.
+- `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.
+- `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services.
 
 ## Client presence integration
 

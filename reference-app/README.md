@@ -29,27 +29,34 @@ Prerequisites: Go 1.18+ and Redis.
 # Start Redis if one is not already running.
 docker run -d --name openrtc-redis -p 6379:6379 redis:7-alpine
 
-# Start the reference app from this directory.
-cd reference-app
-go run ./cmd/server
+# Start the integrated dev server from the repo root.
+go run ./server/cmd/openrtc dev
 ```
 
 Then open:
 
 ```bash
-open http://localhost:3000
+open http://127.0.0.1:3000
 ```
 
-The reference server starts:
+The dev server starts:
 
-- Mock JWKS provider at `http://localhost:3000/jwks`
-- Static dev console at `http://localhost:3000`
-- OpenRTC runtime at `http://localhost:8080`
-- Runtime WebSocket at `ws://localhost:8080/ws`
-- Runtime Yjs WebSocket at `ws://localhost:8080/yjs/{room}`
-- OpenRTC admin API at `http://localhost:8090`
-- Same-origin admin proxy at `http://localhost:3000/admin`
-- Same-origin runtime proxy at `http://localhost:3000/runtime`
+- Local JWKS provider at `http://127.0.0.1:3000/jwks`
+- Static dev console at `http://127.0.0.1:3000`
+- Anonymous token helper at `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev`
+- OpenRTC runtime at `http://127.0.0.1:8080`
+- Runtime WebSocket at `ws://127.0.0.1:8080/ws`
+- Runtime Yjs WebSocket at `ws://127.0.0.1:8080/yjs/{room}`
+- OpenRTC admin API at `http://127.0.0.1:8090`
+- Same-origin admin proxy at `http://127.0.0.1:3000/admin`
+- Same-origin runtime proxy at `http://127.0.0.1:3000/runtime`
+- Active-user reads at `http://127.0.0.1:3000/dev/connections?room=demo:room-1`
+
+The older reference server entrypoint still works from this directory:
+
+```bash
+go run ./cmd/server
+```
 
 ## Quick flow
 
