@@ -54,8 +54,8 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 ## Client presence integration
 
 `@openrtc/client` exposes both low-level protocol methods and a Liveblocks-style
-room handle for app integrations that need ephemeral presence, live cursors, and
-debuggable broadcast events without adopting durable storage APIs.
+room handle for app integrations that need ephemeral presence, live cursors,
+debuggable broadcast events, and realtime room storage.
 
 ```ts
 import { OpenRTCClient } from "@openrtc/client";
@@ -87,6 +87,15 @@ const unsubscribeLostConnection = room.subscribe("lost-connection", (event) => {
 room.setCursor({ x: 120, y: 240, mode: "comment" });
 room.broadcastEvent({ type: "CANVAS_PING", at: Date.now() });
 
+const storage = await room.getStorage<{ title: string; version: number }>();
+console.log(storage.title);
+room.subscribe("storage", (event) => {
+  console.log(event.source, event.document);
+});
+await room.patchStorage([{ op: "replace", path: "/title", value: "Review" }], {
+  opId: "title-edit-1",
+});
+
 unsubscribe();
 unsubscribeLostConnection();
 leave();
@@ -100,8 +109,11 @@ range. In browser environments, `backgroundKeepAliveTimeout` can close hidden
 tabs after an inactivity window and reconnect/replay rooms when the tab is
 focused again. Room handles emit `lost`, `restored`, and `failed` through the
 `lost-connection` subscription; call `room.reconnect()` for an explicit retry
-after a hard failure. Durable document state remains owned by the admin storage
-APIs and the Yjs provider.
+after a hard failure. Room storage uses the runtime `STORAGE_GET`,
+`STORAGE_SET`, and `STORAGE_PATCH` protocol, keeps the latest authoritative
+snapshot in memory, emits `storage` / `storage-status` updates, and requests a
+fresh snapshot when an active room reconnects. Collaborative text remains owned
+by the Yjs provider.
 
 The React package exposes the same lifecycle through `useEnterRoom`,
 `usePresence`, `useOthers`, `useOthersMapped`, `useOthersConnectionIds`,

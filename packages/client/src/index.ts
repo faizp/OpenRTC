@@ -175,6 +175,38 @@ export interface BroadcastOptions {
 
 export type RoomBroadcastInput = string | ({ type: string } & Record<string, unknown>);
 
+export type JSONPatchOperationType = "add" | "remove" | "replace" | "move" | "copy" | "test";
+
+export interface JSONPatchOperation {
+  op: JSONPatchOperationType;
+  path: string;
+  from?: string;
+  value?: unknown;
+}
+
+export type OpenRTCStorageStatus = "not-loaded" | "loading" | "synchronizing" | "synchronized" | "error";
+export type OpenRTCStorageMutationKind = "set" | "patch";
+export type OpenRTCStorageEventSource = "snapshot" | "ack" | "remote";
+
+export interface OpenRTCStorageMutationOptions {
+  opId?: string;
+}
+
+export interface OpenRTCStorageEvent<TDocument = unknown> {
+  room: string;
+  document: TDocument;
+  source: OpenRTCStorageEventSource;
+  kind?: OpenRTCStorageMutationKind;
+  opId?: string;
+  originConnId?: string;
+  operations?: JSONPatchOperation[];
+}
+
+export interface OpenRTCStorageStatusUpdate {
+  room: string;
+  status: OpenRTCStorageStatus;
+}
+
 export interface OpenRTCRoom {
   readonly id: string;
   getStatus(): ConnectionStatus;
@@ -188,9 +220,22 @@ export interface OpenRTCRoom {
   clearCursor(): string;
   broadcastEvent(event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions): string;
   broadcastEventWithAck(event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions): Promise<OpenRTCEvent>;
+  getStorage<TDocument = unknown>(): Promise<TDocument>;
+  getStorageSnapshot<TDocument = unknown>(): TDocument | undefined;
+  getStorageStatus(): OpenRTCStorageStatus;
+  setStorage<TDocument = unknown>(
+    document: TDocument,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<TDocument>;
+  patchStorage<TDocument = unknown>(
+    operations: JSONPatchOperation[],
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<TDocument>;
   subscribe(type: "others", callback: (others: PresencePeer[], event: OpenRTCOthersEvent) => void): () => void;
   subscribe(type: "my-presence", callback: (presence: PresenceState) => void): () => void;
   subscribe(type: "event", callback: (event: OpenRTCEvent) => void): () => void;
+  subscribe(type: "storage", callback: (event: OpenRTCStorageEvent) => void): () => void;
+  subscribe(type: "storage-status", callback: (status: OpenRTCStorageStatus) => void): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
@@ -335,6 +380,8 @@ export interface OpenRTCEventMap {
   room: OpenRTCRoomState;
   presence: OpenRTCPresenceUpdate;
   event: OpenRTCEvent;
+  storage: OpenRTCStorageEvent;
+  "storage-status": OpenRTCStorageStatusUpdate;
   error: OpenRTCError;
   diagnostic: OpenRTCDiagnosticEvent;
   "lost-connection": OpenRTCLostConnectionUpdate;
@@ -353,6 +400,15 @@ interface PendingSend {
 
 interface PendingPresenceSend extends PendingSend {
   id: string;
+}
+
+interface PendingStorageGet {
+  resolve(document: unknown): void;
+  reject(error: Error): void;
+}
+
+interface PendingStorageMutation extends PendingStorageGet {
+  room: string;
 }
 
 interface ActiveRoomEntry {
@@ -399,9 +455,15 @@ export class OpenRTCClient {
   private membersByRoom = new Map<string, Set<string>>();
   private localPresenceByRoom = new Map<string, PresenceState>();
   private nextCursorByRoom = new Map<string, string>();
+  private storageByRoom = new Map<string, unknown>();
+  private storageStatusByRoom = new Map<string, OpenRTCStorageStatus>();
+  private storageRequestedRooms = new Set<string>();
   private pendingRequests = new Map<string, PendingSend>();
   private pendingTraces = new Map<string, PendingSend>();
   private pendingPresenceByRoom = new Map<string, PendingPresenceSend[]>();
+  private pendingStorageGets = new Map<string, string>();
+  private storageGetWaitersByRoom = new Map<string, PendingStorageGet[]>();
+  private pendingStorageMutations = new Map<string, PendingStorageMutation>();
   private roomHandles = new Map<string, OpenRTCRoomHandle>();
   private activeRooms = new Map<string, ActiveRoomEntry>();
   private roomRetainCounts = new Map<string, number>();
@@ -489,6 +551,7 @@ export class OpenRTCClient {
     this.pendingRequests.clear();
     this.pendingTraces.clear();
     this.pendingPresenceByRoom.clear();
+    this.rejectPendingStorage(new Error("OpenRTC client closed before storage request completed"));
     this.connIdValue = undefined;
     this.activeRooms.clear();
     this.roomRetainCounts.clear();
@@ -662,6 +725,48 @@ export class OpenRTCClient {
     });
   }
 
+  getStorage<TDocument = unknown>(room: string): Promise<TDocument> {
+    if (this.storageByRoom.has(room) && this.getStorageStatus(room) === "synchronized") {
+      return Promise.resolve(this.storageByRoom.get(room) as TDocument);
+    }
+
+    return new Promise<TDocument>((resolve, reject) => {
+      const waiters = this.storageGetWaitersByRoom.get(room) ?? [];
+      waiters.push({
+        resolve: (document) => {
+          resolve(document as TDocument);
+        },
+        reject,
+      });
+      this.storageGetWaitersByRoom.set(room, waiters);
+      this.requestStorageSnapshot(room);
+    });
+  }
+
+  getStorageSnapshot<TDocument = unknown>(room: string): TDocument | undefined {
+    return this.storageByRoom.get(room) as TDocument | undefined;
+  }
+
+  getStorageStatus(room: string): OpenRTCStorageStatus {
+    return this.storageStatusByRoom.get(room) ?? "not-loaded";
+  }
+
+  setStorage<TDocument = unknown>(
+    room: string,
+    document: TDocument,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument> {
+    return this.mutateStorage<TDocument>("set", room, document, options);
+  }
+
+  patchStorage<TDocument = unknown>(
+    room: string,
+    operations: JSONPatchOperation[],
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument> {
+    return this.mutateStorage<TDocument>("patch", room, operations, options);
+  }
+
   getRoomState(room: string): OpenRTCRoomState {
     return {
       room,
@@ -806,6 +911,7 @@ export class OpenRTCClient {
     this.pendingRequests.clear();
     this.pendingTraces.clear();
     this.pendingPresenceByRoom.clear();
+    this.rejectPendingStorage(new Error("OpenRTC socket closed before storage request completed"));
     if (previousConnId) {
       for (const presence of this.presenceByRoom.values()) {
         presence.delete(previousConnId);
@@ -962,6 +1068,9 @@ export class OpenRTCClient {
         const id = this.nextID("presence");
         this.send({ t: "PRESENCE_SET", id, room, payload: this.localPresenceByRoom.get(room) ?? {} });
       }
+      if (this.storageRequestedRooms.has(room)) {
+        this.requestStorageSnapshot(room);
+      }
     }
   }
 
@@ -1035,6 +1144,67 @@ export class OpenRTCClient {
 
   private canSend(): boolean {
     return this.socket?.readyState === WS_OPEN;
+  }
+
+  private requestStorageSnapshot(room: string): void {
+    this.storageRequestedRooms.add(room);
+    this.setStorageStatus(room, "loading");
+    if (this.hasPendingStorageGet(room)) {
+      return;
+    }
+    if (!this.canSend()) {
+      if (this.activeRooms.has(room)) {
+        this.needsRoomReplay = true;
+        return;
+      }
+      this.rejectStorageGetWaiters(room, new Error("OpenRTC socket is not open"));
+      this.setStorageStatus(room, "error");
+      return;
+    }
+    const id = this.nextID("storage-get");
+    this.pendingStorageGets.set(id, room);
+    try {
+      this.send({ t: "STORAGE_GET", id, room });
+    } catch (error) {
+      this.pendingStorageGets.delete(id);
+      this.rejectStorageGetWaiters(room, error instanceof Error ? error : new Error(String(error)));
+      this.setStorageStatus(room, "error");
+    }
+  }
+
+  private mutateStorage<TDocument>(
+    kind: OpenRTCStorageMutationKind,
+    room: string,
+    payload: unknown,
+    options: OpenRTCStorageMutationOptions,
+  ): Promise<TDocument> {
+    const id = this.nextID(kind === "set" ? "storage-set" : "storage-patch");
+    const message: Record<string, unknown> = {
+      t: kind === "set" ? "STORAGE_SET" : "STORAGE_PATCH",
+      id,
+      room,
+      payload,
+      ...(options.opId ? { meta: { op_id: options.opId } } : {}),
+    };
+
+    return new Promise<TDocument>((resolve, reject) => {
+      this.pendingStorageMutations.set(id, {
+        room,
+        resolve: (document) => {
+          resolve(document as TDocument);
+        },
+        reject,
+      });
+      this.storageRequestedRooms.add(room);
+      this.setStorageStatus(room, "synchronizing");
+      try {
+        this.send(message);
+      } catch (error) {
+        this.pendingStorageMutations.delete(id);
+        this.setStorageStatus(room, "error");
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
 
   private async resolveToken(): Promise<string> {
@@ -1241,19 +1411,71 @@ export class OpenRTCClient {
       return;
     }
 
+    if (type === "STORAGE_SNAPSHOT") {
+      const room = asString(message["room"]);
+      const document = payload["document"];
+      if (requestId) {
+        this.pendingStorageGets.delete(requestId);
+      }
+      this.applyStorageMessage(room, document, { source: "snapshot" });
+      this.resolveStorageGetWaiters(room, document);
+      return;
+    }
+
+    if (type === "STORAGE_ACK") {
+      const room = asString(message["room"]);
+      const document = payload["document"];
+      const kind = asStorageMutationKind(payload["kind"]);
+      const opId = optionalString(payload["op_id"]);
+      this.applyStorageMessage(room, document, {
+        source: "ack",
+        ...(kind ? { kind } : {}),
+        ...(opId ? { opId } : {}),
+      });
+      if (requestId) {
+        const pending = this.pendingStorageMutations.get(requestId);
+        if (pending) {
+          this.pendingStorageMutations.delete(requestId);
+          pending.resolve(document);
+        }
+      }
+      return;
+    }
+
+    if (type === "STORAGE_UPDATE") {
+      const room = asString(message["room"]);
+      const document = payload["document"];
+      const kind = asStorageMutationKind(payload["kind"]);
+      const opId = optionalString(payload["op_id"]);
+      const originConnId = optionalString(payload["origin_conn_id"]);
+      const operations = asJSONPatchOperations(payload["operations"]);
+      this.storageRequestedRooms.add(room);
+      this.applyStorageMessage(room, document, {
+        source: "remote",
+        ...(kind ? { kind } : {}),
+        ...(opId ? { opId } : {}),
+        ...(originConnId ? { originConnId } : {}),
+        ...(operations ? { operations } : {}),
+      });
+      return;
+    }
+
     if (type === "ERROR") {
-      const requestId = optionalString(payload["request_id"]);
+      const error = {
+        code: asString(payload["code"]),
+        message: asString(payload["message"]),
+        ...(requestId ? { requestId } : {}),
+      };
       if (pendingRequest?.t === "JOIN" && pendingRequest.room) {
         this.failRoomJoin(
           pendingRequest.room,
           `${asString(payload["code"])}: ${asString(payload["message"])}`.replace(/^: /, ""),
         );
       }
-      this.emit("error", {
-        code: asString(payload["code"]),
-        message: asString(payload["message"]),
-        ...(requestId ? { requestId } : {}),
-      });
+      if (requestId) {
+        this.rejectStorageRequest(requestId, new Error(error.message || error.code || "OpenRTC storage request failed"));
+      }
+      this.emit("error", error);
     }
   }
 
@@ -1291,6 +1513,82 @@ export class OpenRTCClient {
     return pending;
   }
 
+  private applyStorageMessage(
+    room: string,
+    document: unknown,
+    options: Omit<OpenRTCStorageEvent, "room" | "document">,
+  ): void {
+    this.storageByRoom.set(room, document);
+    this.setStorageStatus(room, "synchronized");
+    this.emit("storage", {
+      room,
+      document,
+      ...options,
+    });
+  }
+
+  private hasPendingStorageGet(room: string): boolean {
+    for (const pendingRoom of this.pendingStorageGets.values()) {
+      if (pendingRoom === room) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private resolveStorageGetWaiters(room: string, document: unknown): void {
+    const waiters = this.storageGetWaitersByRoom.get(room);
+    if (!waiters) {
+      return;
+    }
+    this.storageGetWaitersByRoom.delete(room);
+    for (const waiter of waiters) {
+      waiter.resolve(document);
+    }
+  }
+
+  private rejectStorageRequest(requestId: string, error: Error): void {
+    const getRoom = this.pendingStorageGets.get(requestId);
+    if (getRoom) {
+      this.pendingStorageGets.delete(requestId);
+      this.rejectStorageGetWaiters(getRoom, error);
+      this.setStorageStatus(getRoom, "error");
+      return;
+    }
+
+    const mutation = this.pendingStorageMutations.get(requestId);
+    if (mutation) {
+      this.pendingStorageMutations.delete(requestId);
+      mutation.reject(error);
+      this.setStorageStatus(mutation.room, "error");
+    }
+  }
+
+  private rejectStorageGetWaiters(room: string, error: Error): void {
+    const waiters = this.storageGetWaitersByRoom.get(room);
+    if (!waiters) {
+      return;
+    }
+    this.storageGetWaitersByRoom.delete(room);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
+  }
+
+  private rejectPendingStorage(error: Error): void {
+    for (const room of new Set([...this.pendingStorageGets.values(), ...this.storageGetWaitersByRoom.keys()])) {
+      this.rejectStorageGetWaiters(room, error);
+      this.setStorageStatus(room, "error");
+    }
+    this.pendingStorageGets.clear();
+
+    for (const pending of this.pendingStorageMutations.values()) {
+      pending.reject(error);
+      this.setStorageStatus(pending.room, "error");
+    }
+    this.pendingStorageMutations.clear();
+  }
+
   private getOrCreatePresence(room: string): Map<string, PresenceState> {
     let presence = this.presenceByRoom.get(room);
     if (!presence) {
@@ -1323,6 +1621,19 @@ export class OpenRTCClient {
     this.emit("status", status);
   }
 
+  private setStorageStatus(room: string, status: OpenRTCStorageStatus): void {
+    const current = this.getStorageStatus(room);
+    if (current === status) {
+      return;
+    }
+    if (status === "not-loaded") {
+      this.storageStatusByRoom.delete(room);
+    } else {
+      this.storageStatusByRoom.set(room, status);
+    }
+    this.emit("storage-status", { room, status });
+  }
+
   private resetRooms(options: { rooms?: Iterable<string>; preserveLocal: boolean }): void {
     const rooms = new Set<string>(
       options.rooms
@@ -1332,6 +1643,9 @@ export class OpenRTCClient {
             ...this.presenceByRoom.keys(),
             ...this.localPresenceByRoom.keys(),
             ...this.nextCursorByRoom.keys(),
+            ...this.storageByRoom.keys(),
+            ...this.storageStatusByRoom.keys(),
+            ...this.storageRequestedRooms.keys(),
           ],
     );
     for (const room of rooms) {
@@ -1340,6 +1654,21 @@ export class OpenRTCClient {
       this.nextCursorByRoom.delete(room);
       if (!options.preserveLocal) {
         this.localPresenceByRoom.delete(room);
+        this.storageByRoom.delete(room);
+        this.storageRequestedRooms.delete(room);
+        this.rejectStorageGetWaiters(room, new Error(`Room ${room} was left before storage request completed`));
+        for (const [id, pendingRoom] of this.pendingStorageGets) {
+          if (pendingRoom === room) {
+            this.pendingStorageGets.delete(id);
+          }
+        }
+        for (const [id, pending] of this.pendingStorageMutations) {
+          if (pending.room === room) {
+            pending.reject(new Error(`Room ${room} was left before storage request completed`));
+            this.pendingStorageMutations.delete(id);
+          }
+        }
+        this.setStorageStatus(room, "not-loaded");
       }
     }
     for (const room of rooms) {
@@ -1665,18 +1994,48 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
     return this.client.broadcastWithAck(this.id, normalized.event, normalized.payload, options);
   }
 
+  getStorage<TDocument = unknown>(): Promise<TDocument> {
+    return this.client.getStorage<TDocument>(this.id);
+  }
+
+  getStorageSnapshot<TDocument = unknown>(): TDocument | undefined {
+    return this.client.getStorageSnapshot<TDocument>(this.id);
+  }
+
+  getStorageStatus(): OpenRTCStorageStatus {
+    return this.client.getStorageStatus(this.id);
+  }
+
+  setStorage<TDocument = unknown>(
+    document: TDocument,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument> {
+    return this.client.setStorage<TDocument>(this.id, document, options);
+  }
+
+  patchStorage<TDocument = unknown>(
+    operations: JSONPatchOperation[],
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument> {
+    return this.client.patchStorage<TDocument>(this.id, operations, options);
+  }
+
   subscribe(type: "others", callback: (others: PresencePeer[], event: OpenRTCOthersEvent) => void): () => void;
   subscribe(type: "my-presence", callback: (presence: PresenceState) => void): () => void;
   subscribe(type: "event", callback: (event: OpenRTCEvent) => void): () => void;
+  subscribe(type: "storage", callback: (event: OpenRTCStorageEvent) => void): () => void;
+  subscribe(type: "storage-status", callback: (status: OpenRTCStorageStatus) => void): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
   subscribe(
-    type: "others" | "my-presence" | "event" | "status" | "error" | "lost-connection",
+    type: "others" | "my-presence" | "event" | "storage" | "storage-status" | "status" | "error" | "lost-connection",
     callback:
       | ((others: PresencePeer[], event: OpenRTCOthersEvent) => void)
       | ((presence: PresenceState) => void)
       | ((event: OpenRTCEvent) => void)
+      | ((event: OpenRTCStorageEvent) => void)
+      | ((status: OpenRTCStorageStatus) => void)
       | ((status: ConnectionStatus) => void)
       | ((error: OpenRTCError) => void)
       | ((event: OpenRTCLostConnectionEvent) => void),
@@ -1691,6 +2050,20 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
       return this.client.on("event", (event) => {
         if (event.room === this.id) {
           (callback as (event: OpenRTCEvent) => void)(event);
+        }
+      });
+    }
+    if (type === "storage") {
+      return this.client.on("storage", (event) => {
+        if (event.room === this.id) {
+          (callback as (event: OpenRTCStorageEvent) => void)(event);
+        }
+      });
+    }
+    if (type === "storage-status") {
+      return this.client.on("storage-status", (event) => {
+        if (event.room === this.id) {
+          (callback as (status: OpenRTCStorageStatus) => void)(event.status);
         }
       });
     }
@@ -1873,6 +2246,46 @@ function asPresenceState(value: unknown): PresenceState {
     }
   }
   return isObject(value) ? value : {};
+}
+
+function asStorageMutationKind(value: unknown): OpenRTCStorageMutationKind | undefined {
+  return value === "set" || value === "patch" ? value : undefined;
+}
+
+function asJSONPatchOperations(value: unknown): JSONPatchOperation[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const operations: JSONPatchOperation[] = [];
+  for (const item of value) {
+    if (!isObject(item)) {
+      return undefined;
+    }
+    const op = item["op"];
+    const path = item["path"];
+    if (!isJSONPatchOperationType(op) || typeof path !== "string") {
+      return undefined;
+    }
+    const from = item["from"];
+    operations.push({
+      op,
+      path,
+      ...(typeof from === "string" ? { from } : {}),
+      ...("value" in item ? { value: item["value"] } : {}),
+    });
+  }
+  return operations;
+}
+
+function isJSONPatchOperationType(value: unknown): value is JSONPatchOperationType {
+  return (
+    value === "add" ||
+    value === "remove" ||
+    value === "replace" ||
+    value === "move" ||
+    value === "copy" ||
+    value === "test"
+  );
 }
 
 function normalizeRoomEvent(event: RoomBroadcastInput, payload: unknown): { event: string; payload: unknown } {

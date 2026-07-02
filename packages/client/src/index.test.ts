@@ -9,6 +9,7 @@ import {
   getPresenceUser,
   isOpenRTCCursor,
   type OpenRTCDiagnosticEvent,
+  type OpenRTCStorageEvent,
   type OpenRTCWebSocket,
   type PresenceState,
 } from "./index.ts";
@@ -287,6 +288,14 @@ const offMyPresence = room.subscribe("my-presence", (presence) => {
 const offEvents = room.subscribe("event", (event) => {
   roomEvents.push(event.event);
 });
+const storageEvents: OpenRTCStorageEvent[] = [];
+const storageStatuses: string[] = [];
+const offStorage = room.subscribe("storage", (event) => {
+  storageEvents.push(event);
+});
+const offStorageStatus = room.subscribe("storage-status", (status) => {
+  storageStatuses.push(status);
+});
 
 roomSocket.receive({
   t: "JOINED",
@@ -359,9 +368,104 @@ roomSocket.receive({
 });
 assert.deepEqual(roomEvents, ["CANVAS_PING"]);
 
+const loadedStorage = room.getStorage<{ title: string; version: number }>();
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_GET",
+    id: "storage-get-5",
+    room: "tenant-a:room-api",
+  }),
+);
+assert.equal(room.getStorageStatus(), "loading");
+roomSocket.receive({
+  t: "STORAGE_SNAPSHOT",
+  id: "storage-get-5",
+  room: "tenant-a:room-api",
+  payload: { document: { title: "Draft", version: 1 } },
+});
+assert.deepEqual(await loadedStorage, { title: "Draft", version: 1 });
+assert.deepEqual(room.getStorageSnapshot(), { title: "Draft", version: 1 });
+assert.deepEqual(storageStatuses.slice(-2), ["loading", "synchronized"]);
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Draft", version: 1 },
+  source: "snapshot",
+});
+
+const setStorage = room.setStorage({ title: "Published", version: 2 }, { opId: "op-set-1" });
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_SET",
+    id: "storage-set-6",
+    room: "tenant-a:room-api",
+    payload: { title: "Published", version: 2 },
+    meta: { op_id: "op-set-1" },
+  }),
+);
+assert.equal(room.getStorageStatus(), "synchronizing");
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-set-6",
+  room: "tenant-a:room-api",
+  payload: { kind: "set", op_id: "op-set-1", document: { title: "Published", version: 2 } },
+});
+assert.deepEqual(await setStorage, { title: "Published", version: 2 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Published", version: 2 },
+  source: "ack",
+  kind: "set",
+  opId: "op-set-1",
+});
+
+const patchStorage = room.patchStorage([{ op: "replace", path: "/title", value: "Patched" }], { opId: "op-patch-1" });
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_PATCH",
+    id: "storage-patch-7",
+    room: "tenant-a:room-api",
+    payload: [{ op: "replace", path: "/title", value: "Patched" }],
+    meta: { op_id: "op-patch-1" },
+  }),
+);
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-patch-7",
+  room: "tenant-a:room-api",
+  payload: { kind: "patch", op_id: "op-patch-1", document: { title: "Patched", version: 2 } },
+});
+assert.deepEqual(await patchStorage, { title: "Patched", version: 2 });
+
+roomSocket.receive({
+  t: "STORAGE_UPDATE",
+  room: "tenant-a:room-api",
+  payload: {
+    kind: "patch",
+    op_id: "remote-op-1",
+    origin_conn_id: "room-peer",
+    operations: [{ op: "replace", path: "/version", value: 3 }],
+    document: { title: "Patched", version: 3 },
+  },
+});
+assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Patched", version: 3 },
+  source: "remote",
+  kind: "patch",
+  opId: "remote-op-1",
+  originConnId: "room-peer",
+  operations: [{ op: "replace", path: "/version", value: 3 }],
+});
+
 offOthers();
 offMyPresence();
 offEvents();
+offStorage();
+offStorageStatus();
 let sawClosedRoomReset = false;
 const offRoomReset = roomClient.on("room", (state) => {
   if (state.room === "tenant-a:room-api" && state.members.length === 0 && state.others.length === 0) {
@@ -371,7 +475,7 @@ const offRoomReset = roomClient.on("room", (state) => {
 leave();
 assert.equal(
   roomSocket.sent.at(-1),
-  JSON.stringify({ t: "LEAVE", id: "leave-5", room: "tenant-a:room-api" }),
+  JSON.stringify({ t: "LEAVE", id: "leave-8", room: "tenant-a:room-api" }),
 );
 assert.equal(sawClosedRoomReset, true);
 roomSocket.close();
@@ -420,6 +524,18 @@ reconnectSocketA.receive({
 });
 assert.deepEqual(reconnectRoom.getOthers(), [{ connId: "peer-a", state: { cursor: { x: 30, y: 40 } } }]);
 reconnectRoom.updatePresence({ cursor: { x: 42, y: 84, mode: "comment" } });
+const reconnectStorage = reconnectRoom.getStorage<{ count: number }>();
+assert.equal(
+  reconnectSocketA.sent.at(-1),
+  JSON.stringify({ t: "STORAGE_GET", id: "storage-get-4", room: "tenant-a:reconnect" }),
+);
+reconnectSocketA.receive({
+  t: "STORAGE_SNAPSHOT",
+  id: "storage-get-4",
+  room: "tenant-a:reconnect",
+  payload: { document: { count: 1 } },
+});
+assert.deepEqual(await reconnectStorage, { count: 1 });
 const fastLostEvents: string[] = [];
 const offFastLost = reconnectRoom.subscribe("lost-connection", (event) => {
   fastLostEvents.push(event);
@@ -437,16 +553,17 @@ reconnectSocketB.receive({
 assert.deepEqual(
   reconnectSocketB.sent.map((item) => JSON.parse(item) as Record<string, unknown>),
   [
-    { t: "JOIN", id: "join-4", room: "tenant-a:reconnect" },
+    { t: "JOIN", id: "join-5", room: "tenant-a:reconnect" },
     {
       t: "PRESENCE_SET",
-      id: "presence-5",
+      id: "presence-6",
       room: "tenant-a:reconnect",
       payload: {
         cursor: { x: 42, y: 84, mode: "comment" },
         user: { id: "user-reconnect", name: "Reconnect User" },
       },
     },
+    { t: "STORAGE_GET", id: "storage-get-7", room: "tenant-a:reconnect" },
   ],
 );
 assert.deepEqual(reconnectRoom.getOthers(), [{ connId: "peer-a", state: { cursor: { x: 30, y: 40 } } }]);
@@ -465,6 +582,13 @@ reconnectSocketB.receive({
   },
 });
 assert.equal(reconnectClient.status, "open");
+reconnectSocketB.receive({
+  t: "STORAGE_SNAPSHOT",
+  id: "storage-get-7",
+  room: "tenant-a:reconnect",
+  payload: { document: { count: 2 } },
+});
+assert.deepEqual(reconnectRoom.getStorageSnapshot(), { count: 2 });
 assert.deepEqual(fastLostEvents, []);
 assert.deepEqual(reconnectRoom.getOthers(), [{ connId: "peer-b", state: { cursor: { x: 55, y: 89 } } }]);
 await wait(1050);
@@ -590,6 +714,7 @@ const preconnectClient = new OpenRTCClient({
 const preconnectEntry = preconnectClient.enterRoom("tenant-a:preconnect", {
   initialPresence: { cursor: null, user: { name: "Preconnect User" } },
 });
+const preconnectStorage = preconnectEntry.room.getStorage<{ title: string }>();
 const preconnectStarted = preconnectClient.connect();
 await Promise.resolve();
 const preconnectSocket = FakeWebSocket.instances[0];
@@ -611,8 +736,16 @@ assert.deepEqual(
       room: "tenant-a:preconnect",
       payload: { cursor: null, user: { name: "Preconnect User" } },
     },
+    { t: "STORAGE_GET", id: "storage-get-5", room: "tenant-a:preconnect" },
   ],
 );
+preconnectSocket.receive({
+  t: "STORAGE_SNAPSHOT",
+  id: "storage-get-5",
+  room: "tenant-a:preconnect",
+  payload: { document: { title: "Preconnect Draft" } },
+});
+assert.deepEqual(await preconnectStorage, { title: "Preconnect Draft" });
 preconnectEntry.leave();
 preconnectClient.close();
 
