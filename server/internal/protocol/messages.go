@@ -21,10 +21,13 @@ const (
 type MessageType string
 
 const (
-	TypeJoin        MessageType = "JOIN"
-	TypeLeave       MessageType = "LEAVE"
-	TypeEmit        MessageType = "EMIT"
-	TypePresenceSet MessageType = "PRESENCE_SET"
+	TypeJoin         MessageType = "JOIN"
+	TypeLeave        MessageType = "LEAVE"
+	TypeEmit         MessageType = "EMIT"
+	TypePresenceSet  MessageType = "PRESENCE_SET"
+	TypeStorageGet   MessageType = "STORAGE_GET"
+	TypeStorageSet   MessageType = "STORAGE_SET"
+	TypeStoragePatch MessageType = "STORAGE_PATCH"
 )
 
 type JoinMeta struct {
@@ -36,14 +39,19 @@ type EmitMeta struct {
 	TraceID string `json:"trace_id,omitempty"`
 }
 
+type StorageMeta struct {
+	OpID string `json:"op_id,omitempty"`
+}
+
 type Message struct {
-	Type     MessageType
-	ID       string
-	Room     string
-	Event    string
-	Payload  json.RawMessage
-	JoinMeta *JoinMeta
-	EmitMeta *EmitMeta
+	Type        MessageType
+	ID          string
+	Room        string
+	Event       string
+	Payload     json.RawMessage
+	JoinMeta    *JoinMeta
+	EmitMeta    *EmitMeta
+	StorageMeta *StorageMeta
 }
 
 type ParseOptions struct {
@@ -101,7 +109,7 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 	}
 
 	switch message.Type {
-	case TypeJoin, TypeLeave, TypeEmit, TypePresenceSet:
+	case TypeJoin, TypeLeave, TypeEmit, TypePresenceSet, TypeStorageGet, TypeStorageSet, TypeStoragePatch:
 	default:
 		return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("Unsupported message type: %s", message.Type)}
 	}
@@ -181,6 +189,45 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 	case TypePresenceSet:
 		if len(message.Payload) == 0 || !json.Valid(message.Payload) || message.Payload[0] != '{' {
 			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "PRESENCE_SET requires object payload"}
+		}
+	case TypeStorageGet:
+		if len(message.Payload) > 0 {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "STORAGE_GET does not accept payload"}
+		}
+		if len(meta) > 0 {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "STORAGE_GET does not accept meta"}
+		}
+	case TypeStorageSet, TypeStoragePatch:
+		if len(message.Payload) == 0 || !json.Valid(message.Payload) {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("%s requires JSON payload", message.Type)}
+		}
+		trimmedPayload := bytes.TrimSpace(message.Payload)
+		if message.Type == TypeStorageSet && (len(trimmedPayload) == 0 || trimmedPayload[0] != '{') {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "STORAGE_SET requires object payload"}
+		}
+		if message.Type == TypeStoragePatch && (len(trimmedPayload) == 0 || trimmedPayload[0] != '[') {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "STORAGE_PATCH requires JSON Patch array payload"}
+		}
+		if len(meta) > 0 {
+			var storageMeta map[string]json.RawMessage
+			if err := json.Unmarshal(meta, &storageMeta); err != nil {
+				return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Meta must be an object when present"}
+			}
+			for key := range storageMeta {
+				if key != "op_id" {
+					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("%s meta includes unsupported fields", message.Type)}
+				}
+			}
+			parsed := &StorageMeta{}
+			if opIDRaw, ok := storageMeta["op_id"]; ok {
+				if err := json.Unmarshal(opIDRaw, &parsed.OpID); err != nil || parsed.OpID == "" {
+					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("%s meta.op_id must be a non-empty string", message.Type)}
+				}
+				if err := ValidateMessageID(parsed.OpID); err != nil {
+					return Message{}, err
+				}
+			}
+			message.StorageMeta = parsed
 		}
 	}
 

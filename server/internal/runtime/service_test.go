@@ -1,6 +1,7 @@
 package runtimeapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -881,6 +882,7 @@ func TestRuntimeHandleClientMessageDispatchesValidTypes(t *testing.T) {
 		Join:     []string{"tenant-a:*"},
 		Publish:  []string{"tenant-a:*"},
 		Presence: []string{"tenant-a:*"},
+		Scope:    "storage:tenant-a:*",
 	}
 	conn := runtimeTestConn(service, "conn-dispatch", claims, 8)
 	if err := service.handleClientMessage(conn, []byte(`{"t":"JOIN","id":"join-1","room":"tenant-a:room-1"}`)); err != nil {
@@ -900,6 +902,24 @@ func TestRuntimeHandleClientMessageDispatchesValidTypes(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, conn); got.T != "PRESENCE" {
 		t.Fatalf("unexpected presence dispatch response: %+v", got)
+	}
+	if err := service.handleClientMessage(conn, []byte(`{"t":"STORAGE_SET","id":"storage-set-1","room":"tenant-a:room-1","payload":{"title":"Draft"},"meta":{"op_id":"op-1"}}`)); err != nil {
+		t.Fatalf("dispatch storage set: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "STORAGE_ACK" || got.ID != "storage-set-1" {
+		t.Fatalf("unexpected storage set dispatch response: %+v", got)
+	}
+	if err := service.handleClientMessage(conn, []byte(`{"t":"STORAGE_GET","id":"storage-get-1","room":"tenant-a:room-1"}`)); err != nil {
+		t.Fatalf("dispatch storage get: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "STORAGE_SNAPSHOT" || got.ID != "storage-get-1" {
+		t.Fatalf("unexpected storage get dispatch response: %+v", got)
+	}
+	if err := service.handleClientMessage(conn, []byte(`{"t":"STORAGE_PATCH","id":"storage-patch-1","room":"tenant-a:room-1","payload":[{"op":"replace","path":"/title","value":"Published"}],"meta":{"op_id":"op-2"}}`)); err != nil {
+		t.Fatalf("dispatch storage patch: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "STORAGE_ACK" || got.ID != "storage-patch-1" {
+		t.Fatalf("unexpected storage patch dispatch response: %+v", got)
 	}
 	if err := service.handleClientMessage(conn, []byte(`{"t":"LEAVE","id":"leave-1","room":"tenant-a:room-1"}`)); err != nil {
 		t.Fatalf("dispatch leave: %v", err)
@@ -1144,6 +1164,131 @@ func TestRuntimeEmitPresenceAndLeaveSuccessBranches(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, denied); got.T != "ERROR" || got.ID != "presence-denied" {
 		t.Fatalf("unexpected denied presence response: %+v", got)
+	}
+}
+
+func TestRuntimeStorageRealtimeBranches(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	claims := &auth.Claims{Tenant: "tenant-a", Scope: "storage:tenant-a:*"}
+	sender := runtimeTestConn(service, "conn-storage-sender", claims, 8)
+	receiver := runtimeTestConn(service, "conn-storage-receiver", claims, 8)
+	joinRuntimeRoom(t, service, sender, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+
+	if err := service.handleStorageSet(sender, protocol.Message{
+		ID:          "storage-set",
+		Room:        "tenant-a:room-1",
+		Payload:     json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Draft"}}`),
+		StorageMeta: &protocol.StorageMeta{OpID: "op-set"},
+	}); err != nil {
+		t.Fatalf("storage set: %v", err)
+	}
+	setUpdate := readRuntimeOutbound(t, receiver)
+	if setUpdate.T != "STORAGE_UPDATE" || setUpdate.Room != "tenant-a:room-1" {
+		t.Fatalf("unexpected storage set update: %+v", setUpdate)
+	}
+	setPayload, ok := setUpdate.Payload.(storageUpdatePayload)
+	if !ok || setPayload.Kind != "set" || setPayload.OpID != "op-set" || setPayload.OriginConnID != sender.id {
+		t.Fatalf("unexpected storage set payload: %#v", setUpdate.Payload)
+	}
+	if string(setPayload.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+		t.Fatalf("unexpected storage set document: %s", setPayload.Document)
+	}
+	setAck := readRuntimeOutbound(t, sender)
+	if setAck.T != "STORAGE_ACK" || setAck.ID != "storage-set" {
+		t.Fatalf("unexpected storage set ack: %+v", setAck)
+	}
+
+	if err := service.handleStorageGet(sender, protocol.Message{ID: "storage-get", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("storage get: %v", err)
+	}
+	snapshot := readRuntimeOutbound(t, sender)
+	if snapshot.T != "STORAGE_SNAPSHOT" || snapshot.ID != "storage-get" {
+		t.Fatalf("unexpected storage snapshot: %+v", snapshot)
+	}
+
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-patch",
+		Room:    "tenant-a:room-1",
+		Payload: json.RawMessage(`[{"op":"replace","path":"/data/title","value":"Published"}]`),
+		StorageMeta: &protocol.StorageMeta{
+			OpID: "op-patch",
+		},
+	}); err != nil {
+		t.Fatalf("storage patch: %v", err)
+	}
+	patchUpdate := readRuntimeOutbound(t, receiver)
+	if patchUpdate.T != "STORAGE_UPDATE" {
+		t.Fatalf("unexpected storage patch update: %+v", patchUpdate)
+	}
+	patchPayload, ok := patchUpdate.Payload.(storageUpdatePayload)
+	if !ok || patchPayload.Kind != "patch" || patchPayload.OpID != "op-patch" || len(patchPayload.Operations) != 1 {
+		t.Fatalf("unexpected storage patch payload: %#v", patchUpdate.Payload)
+	}
+	if string(patchPayload.Document) != `{"data":{"title":"Published"},"liveblocksType":"LiveObject"}` {
+		t.Fatalf("unexpected storage patch document: %s", patchPayload.Document)
+	}
+	patchAck := readRuntimeOutbound(t, sender)
+	if patchAck.T != "STORAGE_ACK" || patchAck.ID != "storage-patch" {
+		t.Fatalf("unexpected storage patch ack: %+v", patchAck)
+	}
+
+	denied := runtimeTestConn(service, "conn-storage-denied", &auth.Claims{Tenant: "tenant-a"}, 1)
+	if err := service.handleStorageGet(denied, protocol.Message{ID: "storage-denied", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("denied storage should enqueue error, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, denied); got.T != "ERROR" || got.ID != "storage-denied" {
+		t.Fatalf("unexpected denied storage response: %+v", got)
+	}
+
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-missing",
+		Room:    "tenant-a:missing",
+		Payload: json.RawMessage(`[{"op":"add","path":"/title","value":"Draft"}]`),
+	}); err != nil {
+		t.Fatalf("missing storage patch should enqueue error, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, sender); got.T != "ERROR" || got.ID != "storage-missing" {
+		t.Fatalf("unexpected missing storage response: %+v", got)
+	}
+}
+
+func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	store := &fakeRuntimeStore{storage: json.RawMessage(`{"title":"Draft"}`)}
+	service.store = store
+	claims := &auth.Claims{Tenant: "tenant-a", Scope: "storage:tenant-a:*"}
+	sender := runtimeTestConn(service, "conn-storage-store", claims, 4)
+
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:          "storage-patch-store",
+		Room:        "tenant-a:room-1",
+		Payload:     json.RawMessage(`[{"op":"replace","path":"/title","value":"Published"}]`),
+		StorageMeta: &protocol.StorageMeta{OpID: "op-store"},
+	}); err != nil {
+		t.Fatalf("store backed storage patch: %v", err)
+	}
+	if got := readRuntimeOutbound(t, sender); got.T != "STORAGE_ACK" || got.ID != "storage-patch-store" {
+		t.Fatalf("unexpected store backed storage ack: %+v", got)
+	}
+	if len(store.storagePatchOperations) != 1 || store.storagePatchOperations[0].Path != "/title" {
+		t.Fatalf("expected storage patch operation to reach store: %#v", store.storagePatchOperations)
+	}
+	if len(store.publishedEvents) != 1 || store.publishedEvents[0].Event != storageClusterEvent {
+		t.Fatalf("expected storage cluster event publish, got %#v", store.publishedEvents)
+	}
+
+	receiver := runtimeTestConn(service, "conn-storage-cluster", claims, 4)
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+	clusterEvent := store.publishedEvents[0]
+	clusterEvent.OriginNode = "node-b"
+	service.handleClusterEvent(clusterEvent)
+	if got := readRuntimeOutbound(t, receiver); got.T != "STORAGE_UPDATE" {
+		t.Fatalf("expected storage update from cluster event, got %+v", got)
 	}
 }
 
@@ -1593,6 +1738,14 @@ func registerRuntimeYJSConn(service *Service, conn *yjsConn) {
 	service.roomEngine().RegisterYJSConn(conn.id, conn.room)
 }
 
+func compactRuntimeTestJSON(raw json.RawMessage) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return nil, err
+	}
+	return append(json.RawMessage(nil), buf.Bytes()...), nil
+}
+
 func readRuntimeOutbound(t *testing.T, conn *clientConn) outboundMessage {
 	t.Helper()
 	select {
@@ -1690,35 +1843,44 @@ type fakeRuntimeStore struct {
 	cleanupNodeID string
 	cleanupConnID string
 
-	publishEventErr      error
-	publishPresenceErr   error
-	publishedPresence    []cluster.PresenceEvent
-	joinErr              error
-	leaveErr             error
-	setPresenceErr       error
-	snapshot             cluster.Snapshot
-	snapshotErr          error
-	yjsDocument          cluster.YJSDocument
-	yjsErr               error
-	appendSeq            int64
-	appendedUpdate       []byte
-	appendCh             chan []byte
-	appendErr            error
-	storedSnapshot       []byte
-	storeSnapshotErr     error
-	publishYJSErr        error
-	reconcileCh          chan string
-	subscribeErr         error
-	subscribePresenceErr error
-	subscribeYJSErr      error
-	closed               bool
+	publishEventErr        error
+	publishedEvents        []cluster.PublishedEvent
+	publishPresenceErr     error
+	publishedPresence      []cluster.PresenceEvent
+	joinErr                error
+	leaveErr               error
+	setPresenceErr         error
+	snapshot               cluster.Snapshot
+	snapshotErr            error
+	yjsDocument            cluster.YJSDocument
+	yjsErr                 error
+	appendSeq              int64
+	appendedUpdate         []byte
+	appendCh               chan []byte
+	appendErr              error
+	storedSnapshot         []byte
+	storeSnapshotErr       error
+	publishYJSErr          error
+	reconcileCh            chan string
+	subscribeErr           error
+	subscribePresenceErr   error
+	subscribeYJSErr        error
+	storage                json.RawMessage
+	getStorageErr          error
+	setStorageErr          error
+	patchStorageErr        error
+	storagePatchOperations []cluster.JSONPatchOperation
+	closed                 bool
 }
 
 func (s *fakeRuntimeStore) Healthy(context.Context) error {
 	return s.healthyErr
 }
 
-func (s *fakeRuntimeStore) PublishEvent(context.Context, cluster.PublishedEvent) error {
+func (s *fakeRuntimeStore) PublishEvent(_ context.Context, event cluster.PublishedEvent) error {
+	if s.publishEventErr == nil {
+		s.publishedEvents = append(s.publishedEvents, event)
+	}
 	return s.publishEventErr
 }
 
@@ -1876,19 +2038,48 @@ func (s *fakeRuntimeStore) ListRoomSubscriptionSettings(context.Context, string,
 }
 
 func (s *fakeRuntimeStore) GetStorage(context.Context, string) (json.RawMessage, error) {
-	return nil, cluster.ErrStorageNotFound
+	if s.getStorageErr != nil {
+		return nil, s.getStorageErr
+	}
+	if s.storage == nil {
+		return nil, cluster.ErrStorageNotFound
+	}
+	return append(json.RawMessage(nil), s.storage...), nil
 }
 
-func (s *fakeRuntimeStore) SetStorage(context.Context, string, json.RawMessage) (json.RawMessage, error) {
-	return nil, nil
+func (s *fakeRuntimeStore) SetStorage(_ context.Context, _ string, document json.RawMessage) (json.RawMessage, error) {
+	if s.setStorageErr != nil {
+		return nil, s.setStorageErr
+	}
+	stored, err := compactRuntimeTestJSON(document)
+	if err != nil {
+		return nil, err
+	}
+	s.storage = append(json.RawMessage(nil), stored...)
+	return append(json.RawMessage(nil), stored...), nil
 }
 
 func (s *fakeRuntimeStore) DeleteStorage(context.Context, string) error {
 	return cluster.ErrStorageNotFound
 }
 
-func (s *fakeRuntimeStore) ApplyStoragePatch(context.Context, string, []cluster.JSONPatchOperation, int) (json.RawMessage, error) {
-	return nil, cluster.ErrStorageNotFound
+func (s *fakeRuntimeStore) ApplyStoragePatch(_ context.Context, _ string, operations []cluster.JSONPatchOperation, _ int) (json.RawMessage, error) {
+	if s.patchStorageErr != nil {
+		return nil, s.patchStorageErr
+	}
+	if s.storage == nil {
+		return nil, cluster.ErrStorageNotFound
+	}
+	patched, err := cluster.ApplyJSONPatch(s.storage, operations)
+	if err != nil {
+		return nil, err
+	}
+	if err := cluster.ValidateStorageDocument(patched); err != nil {
+		return nil, err
+	}
+	s.storagePatchOperations = append([]cluster.JSONPatchOperation(nil), operations...)
+	s.storage = append(json.RawMessage(nil), patched...)
+	return append(json.RawMessage(nil), patched...), nil
 }
 
 func (s *fakeRuntimeStore) LoadYJSDocument(context.Context, string) (cluster.YJSDocument, error) {

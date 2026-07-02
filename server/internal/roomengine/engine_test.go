@@ -148,3 +148,49 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 		t.Fatalf("document load should return defensive copies, got %+v", reloaded)
 	}
 }
+
+func TestEngineStorageSetGetAndPatch(t *testing.T) {
+	engine := New()
+	if _, err := engine.GetStorage("room-a"); !errors.Is(err, cluster.ErrStorageNotFound) {
+		t.Fatalf("expected missing storage, got %v", err)
+	}
+	if _, err := engine.SetStorage("room-a", json.RawMessage(`[]`), 0); !errors.Is(err, cluster.ErrStoragePatch) {
+		t.Fatalf("expected invalid storage root error, got %v", err)
+	}
+
+	stored, err := engine.SetStorage("room-a", json.RawMessage(`{
+		"liveblocksType":"LiveObject",
+		"data":{"title":"Draft","items":{"liveblocksType":"LiveList","data":["a"]}}
+	}`), 0)
+	if err != nil {
+		t.Fatalf("set typed storage: %v", err)
+	}
+	if string(stored) != `{"liveblocksType":"LiveObject","data":{"title":"Draft","items":{"liveblocksType":"LiveList","data":["a"]}}}` {
+		t.Fatalf("unexpected compacted storage: %s", stored)
+	}
+	stored[0] = 'X'
+	loaded, err := engine.GetStorage("room-a")
+	if err != nil {
+		t.Fatalf("get storage: %v", err)
+	}
+	if string(loaded) != `{"liveblocksType":"LiveObject","data":{"title":"Draft","items":{"liveblocksType":"LiveList","data":["a"]}}}` {
+		t.Fatalf("storage should be defensively copied, got %s", loaded)
+	}
+
+	patched, err := engine.ApplyStoragePatch("room-a", []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+		{Op: "add", Path: "/data/items/data/-", Value: json.RawMessage(`"b"`)},
+	}, 0)
+	if err != nil {
+		t.Fatalf("patch storage: %v", err)
+	}
+	if string(patched) != `{"data":{"items":{"data":["a","b"],"liveblocksType":"LiveList"},"title":"Published"},"liveblocksType":"LiveObject"}` {
+		t.Fatalf("unexpected patched storage: %s", patched)
+	}
+
+	if _, err := engine.ApplyStoragePatch("missing", []cluster.JSONPatchOperation{
+		{Op: "add", Path: "/title", Value: json.RawMessage(`"Draft"`)},
+	}, 0); !errors.Is(err, cluster.ErrStorageNotFound) {
+		t.Fatalf("expected missing patch error, got %v", err)
+	}
+}

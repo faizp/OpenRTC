@@ -1,6 +1,7 @@
 package runtimeapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -33,21 +34,26 @@ var (
 	}
 	randomRead            = rand.Read
 	clientMessageHandlers = map[protocol.MessageType]func(*Service, *clientConn, protocol.Message) error{
-		protocol.TypeJoin:        (*Service).handleJoin,
-		protocol.TypeLeave:       (*Service).handleLeave,
-		protocol.TypeEmit:        (*Service).handleEmit,
-		protocol.TypePresenceSet: (*Service).handlePresence,
+		protocol.TypeJoin:         (*Service).handleJoin,
+		protocol.TypeLeave:        (*Service).handleLeave,
+		protocol.TypeEmit:         (*Service).handleEmit,
+		protocol.TypePresenceSet:  (*Service).handlePresence,
+		protocol.TypeStorageGet:   (*Service).handleStorageGet,
+		protocol.TypeStorageSet:   (*Service).handleStorageSet,
+		protocol.TypeStoragePatch: (*Service).handleStoragePatch,
 	}
 	sendInitialYJSDocument = sendYJSDocument
 )
 
 const (
-	defaultJoinLimit = 100
-	yjsPathPrefix    = "/yjs/"
-	yjsFrameUpdate   = byte(cluster.YJSEventUpdate)
-	yjsFrameSnapshot = byte(cluster.YJSEventSnapshot)
-	writeWait        = 5 * time.Second
-	readWait         = 30 * time.Second
+	defaultJoinLimit          = 100
+	maxStoragePatchOperations = 100
+	storageClusterEvent       = "$openrtc.storage.update"
+	yjsPathPrefix             = "/yjs/"
+	yjsFrameUpdate            = byte(cluster.YJSEventUpdate)
+	yjsFrameSnapshot          = byte(cluster.YJSEventSnapshot)
+	writeWait                 = 5 * time.Second
+	readWait                  = 30 * time.Second
 )
 
 type Service struct {
@@ -111,6 +117,14 @@ type outboundMessage struct {
 	Event   string      `json:"event,omitempty"`
 	Payload interface{} `json:"payload,omitempty"`
 	Meta    interface{} `json:"meta,omitempty"`
+}
+
+type storageUpdatePayload struct {
+	Kind         string                       `json:"kind"`
+	OpID         string                       `json:"op_id,omitempty"`
+	OriginConnID string                       `json:"origin_conn_id,omitempty"`
+	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
+	Document     json.RawMessage              `json:"document"`
 }
 
 func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) {
@@ -574,8 +588,88 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 	return nil
 }
 
+func (s *Service) handleStorageGet(conn *clientConn, message protocol.Message) error {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "storage", message.Room) {
+		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
+	}
+
+	document, err := s.getStorage(message.Room)
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
+	return conn.enqueue(outboundMessage{
+		T:    "STORAGE_SNAPSHOT",
+		ID:   message.ID,
+		Room: message.Room,
+		Payload: map[string]any{
+			"document": document,
+		},
+	})
+}
+
+func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) error {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "storage", message.Room) {
+		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
+	}
+
+	document, err := s.setStorage(message.Room, message.Payload)
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
+	update := storageUpdatePayload{
+		Kind:         "set",
+		OpID:         storageOpID(message),
+		OriginConnID: conn.id,
+		Document:     document,
+	}
+	if err := s.broadcastStorageUpdate(message.Room, update, conn.id); err != nil {
+		return err
+	}
+	if err := s.publishStorageUpdate(message.Room, update, conn.id); err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
+	return conn.enqueue(storageAckMessage(message, "set", document))
+}
+
+func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message) error {
+	if !s.allowsRoomAction(s.ctx, conn.claims, "storage", message.Room) {
+		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
+	}
+
+	operations, parseErr := decodeStoragePatchPayload(message.Payload)
+	if parseErr != nil {
+		return conn.enqueue(runtimeErrorMessage(message.ID, parseErr.Code, parseErr.Message))
+	}
+	document, err := s.applyStoragePatch(message.Room, operations)
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
+	update := storageUpdatePayload{
+		Kind:         "patch",
+		OpID:         storageOpID(message),
+		OriginConnID: conn.id,
+		Operations:   operations,
+		Document:     document,
+	}
+	if err := s.broadcastStorageUpdate(message.Room, update, conn.id); err != nil {
+		return err
+	}
+	if err := s.publishStorageUpdate(message.Room, update, conn.id); err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
+	return conn.enqueue(storageAckMessage(message, "patch", document))
+}
+
 func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 	if event.OriginNode == s.cfg.NodeID {
+		return
+	}
+	if event.Event == storageClusterEvent {
+		var update storageUpdatePayload
+		if err := json.Unmarshal(event.Payload, &update); err != nil {
+			return
+		}
+		_ = s.broadcastStorageUpdate(event.Room, update, event.ExcludeSenderConnID)
 		return
 	}
 	_ = s.broadcastEvent(event, false)
@@ -657,6 +751,29 @@ func (s *Service) broadcastPresenceEvent(event cluster.PresenceEvent) error {
 	return nil
 }
 
+func (s *Service) broadcastStorageUpdate(room string, update storageUpdatePayload, excludeConnID string) error {
+	targetIDs := s.roomEngine().MemberIDs(room, excludeConnID)
+	s.mu.RLock()
+	targets := make([]*clientConn, 0, len(targetIDs))
+	for _, connID := range targetIDs {
+		if member := s.conns[connID]; member != nil {
+			targets = append(targets, member)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, target := range targets {
+		if err := target.enqueue(outboundMessage{
+			T:       "STORAGE_UPDATE",
+			Room:    room,
+			Payload: update,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) handleClusterYJSEvent(event cluster.YJSEvent) {
 	if event.OriginNode == s.cfg.NodeID {
 		return
@@ -727,6 +844,44 @@ func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) ([]stri
 
 	page, pagePresence, nextCursor := protocol.PaginateMembers(snapshot.Members, snapshot.Presence, limit, cursor)
 	return page, pagePresence, nextCursor, nil
+}
+
+func (s *Service) getStorage(room string) (json.RawMessage, error) {
+	if s.store != nil {
+		return s.store.GetStorage(s.ctx, room)
+	}
+	return s.roomEngine().GetStorage(room)
+}
+
+func (s *Service) setStorage(room string, document json.RawMessage) (json.RawMessage, error) {
+	if s.store != nil {
+		return s.store.SetStorage(s.ctx, room, document)
+	}
+	return s.roomEngine().SetStorage(room, document, s.cfg.Limits.PayloadMaxBytes)
+}
+
+func (s *Service) applyStoragePatch(room string, operations []cluster.JSONPatchOperation) (json.RawMessage, error) {
+	if s.store != nil {
+		return s.store.ApplyStoragePatch(s.ctx, room, operations, s.cfg.Limits.PayloadMaxBytes)
+	}
+	return s.roomEngine().ApplyStoragePatch(room, operations, s.cfg.Limits.PayloadMaxBytes)
+}
+
+func (s *Service) publishStorageUpdate(room string, update storageUpdatePayload, excludeConnID string) error {
+	if s.store == nil {
+		return nil
+	}
+	payload, err := json.Marshal(update)
+	if err != nil {
+		return err
+	}
+	return s.store.PublishEvent(s.ctx, cluster.PublishedEvent{
+		Room:                room,
+		Event:               storageClusterEvent,
+		Payload:             payload,
+		ExcludeSenderConnID: excludeConnID,
+		OriginNode:          s.cfg.NodeID,
+	})
 }
 
 func (s *Service) registerConn(conn *clientConn) {
@@ -912,6 +1067,73 @@ func (s *Service) allowsRoomAction(ctx context.Context, claims *auth.Claims, act
 		return false
 	}
 	return record.Allows(claims.Subject, claims.RoomGroupIDs(), action)
+}
+
+func decodeStoragePatchPayload(payload json.RawMessage) ([]cluster.JSONPatchOperation, *protocol.ParseError) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var operations []cluster.JSONPatchOperation
+	if err := decoder.Decode(&operations); err != nil {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage patch must be a valid JSON Patch array"}
+	}
+	if len(operations) == 0 || len(operations) > maxStoragePatchOperations {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage patch must contain 1-100 operations"}
+	}
+	for _, operation := range operations {
+		if operation.Op == "" {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "storage patch operation requires op"}
+		}
+		if operation.Op != "add" && operation.Op != "remove" && operation.Op != "replace" && operation.Op != "test" && operation.Op != "copy" && operation.Op != "move" {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodePatchFailed, Message: "unsupported storage patch operation"}
+		}
+		if operation.Path == "" && operation.Op == "remove" {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodePatchFailed, Message: "removing storage root is not supported"}
+		}
+	}
+	return operations, nil
+}
+
+func storageAckMessage(message protocol.Message, kind string, document json.RawMessage) outboundMessage {
+	return outboundMessage{
+		T:    "STORAGE_ACK",
+		ID:   message.ID,
+		Room: message.Room,
+		Payload: map[string]any{
+			"kind":     kind,
+			"op_id":    storageOpID(message),
+			"document": document,
+		},
+	}
+}
+
+func storageOpID(message protocol.Message) string {
+	if message.StorageMeta == nil {
+		return ""
+	}
+	return message.StorageMeta.OpID
+}
+
+func runtimeErrorMessage(requestID string, code openrtcerr.Code, message string) outboundMessage {
+	return outboundMessage{
+		T:  "ERROR",
+		ID: requestID,
+		Payload: openrtcerr.APIError{
+			Code:      code,
+			Message:   message,
+			RequestID: requestID,
+		},
+	}
+}
+
+func storageErrorMessage(requestID string, err error) outboundMessage {
+	switch {
+	case errors.Is(err, cluster.ErrStorageNotFound):
+		return runtimeErrorMessage(requestID, openrtcerr.CodeStorageNotFound, "storage document not found")
+	case errors.Is(err, cluster.ErrStoragePatch):
+		return runtimeErrorMessage(requestID, openrtcerr.CodePatchFailed, err.Error())
+	default:
+		return runtimeErrorMessage(requestID, openrtcerr.CodeInternal, err.Error())
+	}
 }
 
 func tokenFromRequest(r *http.Request) string {

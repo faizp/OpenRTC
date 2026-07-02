@@ -60,6 +60,30 @@ func TestParseValidMessageVariants(t *testing.T) {
 		t.Fatalf("unexpected presence message: %+v", presence)
 	}
 
+	storageGet, err := ParseClientMessage([]byte(`{"t":"STORAGE_GET","id":"req-5","room":"tenant-a:room-1"}`), ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse storage get: %v", err)
+	}
+	if storageGet.Type != TypeStorageGet || storageGet.Room != "tenant-a:room-1" {
+		t.Fatalf("unexpected storage get message: %+v", storageGet)
+	}
+
+	storageSet, err := ParseClientMessage([]byte(`{"t":"STORAGE_SET","id":"req-6","room":"tenant-a:room-1","payload":{"liveblocksType":"LiveObject","data":{}},"meta":{"op_id":"op-1"}}`), ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse storage set: %v", err)
+	}
+	if storageSet.Type != TypeStorageSet || storageSet.StorageMeta == nil || storageSet.StorageMeta.OpID != "op-1" {
+		t.Fatalf("unexpected storage set message: %+v", storageSet)
+	}
+
+	storagePatch, err := ParseClientMessage([]byte(`{"t":"STORAGE_PATCH","id":"req-7","room":"tenant-a:room-1","payload":[{"op":"add","path":"/title","value":"Draft"}],"meta":{"op_id":"op-2"}}`), ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse storage patch: %v", err)
+	}
+	if storagePatch.Type != TypeStoragePatch || storagePatch.StorageMeta == nil || storagePatch.StorageMeta.OpID != "op-2" {
+		t.Fatalf("unexpected storage patch message: %+v", storagePatch)
+	}
+
 	uppercaseAndUnderscore, err := ParseClientMessage([]byte(`{"t":"JOIN","id":"REQ_1","room":"TENANT_A:ROOM_1"}`), ParseOptions{})
 	if err != nil {
 		t.Fatalf("parse uppercase and underscore identifiers: %v", err)
@@ -222,6 +246,36 @@ func TestParseRejectsInvalidMessageShapes(t *testing.T) {
 		{
 			name: "presence requires object",
 			raw:  []byte(`{"t":"PRESENCE_SET","id":"req-1","room":"tenant-a:room-1","payload":[]}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage get rejects meta",
+			raw:  []byte(`{"t":"STORAGE_GET","id":"req-1","room":"tenant-a:room-1","meta":{"op_id":"op-1"}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage get rejects payload",
+			raw:  []byte(`{"t":"STORAGE_GET","id":"req-1","room":"tenant-a:room-1","payload":{}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage set requires object",
+			raw:  []byte(`{"t":"STORAGE_SET","id":"req-1","room":"tenant-a:room-1","payload":[]}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage patch requires array",
+			raw:  []byte(`{"t":"STORAGE_PATCH","id":"req-1","room":"tenant-a:room-1","payload":{}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage meta unsupported field",
+			raw:  []byte(`{"t":"STORAGE_PATCH","id":"req-1","room":"tenant-a:room-1","payload":[],"meta":{"trace_id":"x"}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage meta bad op id",
+			raw:  []byte(`{"t":"STORAGE_PATCH","id":"req-1","room":"tenant-a:room-1","payload":[],"meta":{"op_id":"bad id"}}`),
 			want: openrtcerr.CodeBadRequest,
 		},
 	}

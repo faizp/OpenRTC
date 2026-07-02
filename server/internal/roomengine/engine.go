@@ -1,6 +1,7 @@
 package roomengine
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -18,6 +19,7 @@ type Engine struct {
 	presence  map[string]map[string]json.RawMessage
 	yjsRooms  map[string]map[string]struct{}
 	yjsDocs   map[string]*memoryYJSDocument
+	storage   map[string]json.RawMessage
 }
 
 type memoryYJSDocument struct {
@@ -48,6 +50,7 @@ func New() *Engine {
 		presence:  make(map[string]map[string]json.RawMessage),
 		yjsRooms:  make(map[string]map[string]struct{}),
 		yjsDocs:   make(map[string]*memoryYJSDocument),
+		storage:   make(map[string]json.RawMessage),
 	}
 }
 
@@ -258,6 +261,57 @@ func (e *Engine) StoreYJSEvent(event cluster.YJSEvent) cluster.YJSEvent {
 	return event
 }
 
+func (e *Engine) GetStorage(room string) (json.RawMessage, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	document := e.storage[room]
+	if document == nil {
+		return nil, cluster.ErrStorageNotFound
+	}
+	return append(json.RawMessage(nil), document...), nil
+}
+
+func (e *Engine) SetStorage(room string, document json.RawMessage, maxBytes int) (json.RawMessage, error) {
+	compacted, err := compactJSON(document)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && len(compacted) > maxBytes {
+		return nil, cluster.ErrStoragePatch
+	}
+	if err := cluster.ValidateStorageDocument(compacted); err != nil {
+		return nil, err
+	}
+
+	e.mu.Lock()
+	e.storage[room] = append(json.RawMessage(nil), compacted...)
+	e.mu.Unlock()
+	return append(json.RawMessage(nil), compacted...), nil
+}
+
+func (e *Engine) ApplyStoragePatch(room string, operations []cluster.JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	current := e.storage[room]
+	if current == nil {
+		return nil, cluster.ErrStorageNotFound
+	}
+	patched, err := cluster.ApplyJSONPatch(current, operations)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && len(patched) > maxBytes {
+		return nil, cluster.ErrStoragePatch
+	}
+	if err := cluster.ValidateStorageDocument(patched); err != nil {
+		return nil, err
+	}
+	e.storage[room] = append(json.RawMessage(nil), patched...)
+	return append(json.RawMessage(nil), patched...), nil
+}
+
 func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 	if members := e.rooms[room]; members != nil {
 		delete(members, connID)
@@ -265,6 +319,14 @@ func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 			delete(e.rooms, room)
 		}
 	}
+}
+
+func compactJSON(raw json.RawMessage) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return nil, err
+	}
+	return append(json.RawMessage(nil), buf.Bytes()...), nil
 }
 
 func (e *Engine) removePresenceLocked(connID string, room string) {
