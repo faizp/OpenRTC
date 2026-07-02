@@ -2273,6 +2273,10 @@ func (s *fakeRuntimeStore) AddComment(context.Context, string, string, cluster.C
 	return cluster.ThreadRecord{}, nil
 }
 
+func (s *fakeRuntimeStore) UpdateComment(context.Context, string, string, string, cluster.CommentUpdate) (cluster.ThreadRecord, error) {
+	return cluster.ThreadRecord{}, nil
+}
+
 func (s *fakeRuntimeStore) CreateInboxNotification(context.Context, cluster.InboxNotificationRecord) (cluster.InboxNotificationRecord, error) {
 	return cluster.InboxNotificationRecord{}, cluster.ErrInboxAlreadyExists
 }

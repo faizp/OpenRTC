@@ -201,8 +201,9 @@ export function CanvasPresence() {
 ```
 
 For server-side product surfaces, `OpenRTCAdminClient` wraps the admin REST APIs
-used for rooms, active users, comments, notifications, subscription settings,
-ephemeral presence, and broadcast.
+used for rooms, active users, comments, comment metadata/reaction/mention
+updates, notifications, subscription settings, ephemeral presence, and
+broadcast.
 
 The reference app Presence Lab includes a fan-out benchmark for production
 debugging. Spawn lab clients, run the benchmark, and it stamps every synthetic
@@ -243,10 +244,17 @@ await admin.setPresence(
 
 const active = await admin.activeUsers("tenant-a:canvas-1");
 await admin.createThread("tenant-a:canvas-1", {
+  id: "thread-1",
   comment: {
+    id: "comment-1",
     userId: "user-1",
     body: { type: "text", text: "Ready for review" },
+    mentions: ["user-2"],
   },
+});
+await admin.updateComment("tenant-a:canvas-1", "thread-1", "comment-1", {
+  metadata: { status: "resolved" },
+  reactions: [{ emoji: "+1", userId: "user-2" }],
 });
 await admin.triggerInboxNotification({
   userId: "user-1",

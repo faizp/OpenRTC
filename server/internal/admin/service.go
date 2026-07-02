@@ -75,10 +75,19 @@ type ThreadCreateRequest struct {
 }
 
 type CommentCreateRequest struct {
-	ID       string          `json:"id,omitempty"`
-	UserID   string          `json:"userId"`
-	Body     json.RawMessage `json:"body"`
-	Metadata json.RawMessage `json:"metadata,omitempty"`
+	ID        string                    `json:"id,omitempty"`
+	UserID    string                    `json:"userId"`
+	Body      json.RawMessage           `json:"body"`
+	Metadata  json.RawMessage           `json:"metadata,omitempty"`
+	Mentions  []string                  `json:"mentions,omitempty"`
+	Reactions []cluster.CommentReaction `json:"reactions,omitempty"`
+}
+
+type CommentUpdateRequest struct {
+	Body      *json.RawMessage           `json:"body,omitempty"`
+	Metadata  *json.RawMessage           `json:"metadata,omitempty"`
+	Mentions  *[]string                  `json:"mentions,omitempty"`
+	Reactions *[]cluster.CommentReaction `json:"reactions,omitempty"`
 }
 
 type InboxNotificationTriggerRequest struct {
@@ -96,7 +105,12 @@ type RoomSubscriptionSettingsRequest struct {
 	TextMentions string `json:"textMentions,omitempty"`
 }
 
-const maxStoragePatchOperations = 100
+const (
+	maxStoragePatchOperations    = 100
+	maxCommentMentions           = 100
+	maxCommentReactions          = 500
+	maxCommentReactionEmojiBytes = 64
+)
 
 type roomListResponse struct {
 	Rooms      []cluster.RoomRecord `json:"rooms"`
@@ -465,6 +479,15 @@ func (s *Service) handleThreadSubresource(w http.ResponseWriter, r *http.Request
 		s.handleAddComment(w, r, room, threadID)
 		return
 	}
+	if strings.HasPrefix(child, "comments/") {
+		commentID, err := commentPathPart(child)
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+			return
+		}
+		s.handleUpdateComment(w, r, room, threadID, commentID)
+		return
+	}
 	s.writeError(w, openrtcerr.CodeBadRequest, "unsupported thread subresource", "", http.StatusBadRequest)
 }
 
@@ -593,6 +616,46 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room 
 		return
 	}
 	writeJSON(w, http.StatusCreated, thread)
+}
+
+func (s *Service) handleUpdateComment(w http.ResponseWriter, r *http.Request, room string, threadID string, commentID string) {
+	if r.Method != http.MethodPatch {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !claims.Allows("comments:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+
+	var request CommentUpdateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if parseErr := validateCommentUpdateRequest(request, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	thread, err := s.store.UpdateComment(r.Context(), room, threadID, commentID, commentUpdateFromRequest(request))
+	if errors.Is(err, cluster.ErrThreadNotFound) || errors.Is(err, cluster.ErrCommentNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, err.Error(), "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
 }
 
 func (s *Service) handleUser(w http.ResponseWriter, r *http.Request) {
@@ -1325,6 +1388,24 @@ func threadPathParts(subresource string) (string, string, error) {
 	return threadID, child, nil
 }
 
+func commentPathPart(child string) (string, error) {
+	raw := strings.TrimPrefix(child, "comments/")
+	if raw == "" || raw == child {
+		return "", errors.New("comment id is required")
+	}
+	if strings.Contains(raw, "/") {
+		return "", errors.New("unsupported comment subresource")
+	}
+	commentID, err := url.PathUnescape(raw)
+	if err != nil {
+		return "", errors.New("comment id must be URL-escaped")
+	}
+	if err := protocol.ValidateConnectionID(commentID); err != nil {
+		return "", err
+	}
+	return commentID, nil
+}
+
 func roomUserPathParts(subresource string) (string, string, error) {
 	raw := strings.TrimPrefix(subresource, "users/")
 	if raw == "" || raw == subresource {
@@ -1535,6 +1616,72 @@ func validateCommentRequest(comment CommentCreateRequest, maxBytes int) *protoco
 		err.Message = "comment metadata " + err.Message
 		return err
 	}
+	if err := validateCommentMentions(comment.Mentions); err != nil {
+		return err
+	}
+	if err := validateCommentReactions(comment.Reactions); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCommentUpdateRequest(request CommentUpdateRequest, maxBytes int) *protocol.ParseError {
+	if request.Body == nil && request.Metadata == nil && request.Mentions == nil && request.Reactions == nil {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "comment update must include body, metadata, mentions, or reactions"}
+	}
+	if request.Body != nil {
+		if err := validateMetadata(*request.Body, false, maxBytes); err != nil {
+			err.Message = "comment body " + err.Message
+			return err
+		}
+	}
+	if request.Metadata != nil {
+		if err := validateMetadata(*request.Metadata, false, maxBytes); err != nil {
+			err.Message = "comment metadata " + err.Message
+			return err
+		}
+	}
+	if request.Mentions != nil {
+		if err := validateCommentMentions(*request.Mentions); err != nil {
+			return err
+		}
+	}
+	if request.Reactions != nil {
+		if err := validateCommentReactions(*request.Reactions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCommentMentions(mentions []string) *protocol.ParseError {
+	if len(mentions) > maxCommentMentions {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "comment mentions support at most 100 user ids"}
+	}
+	for _, userID := range mentions {
+		if err := protocol.ValidateConnectionID(userID); err != nil {
+			parseErr := err.(*protocol.ParseError)
+			parseErr.Message = "comment mentions must contain safe user ids"
+			return parseErr
+		}
+	}
+	return nil
+}
+
+func validateCommentReactions(reactions []cluster.CommentReaction) *protocol.ParseError {
+	if len(reactions) > maxCommentReactions {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "comment reactions support at most 500 entries"}
+	}
+	for _, reaction := range reactions {
+		if strings.TrimSpace(reaction.Emoji) == "" || len(reaction.Emoji) > maxCommentReactionEmojiBytes {
+			return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "comment reaction emoji must be 1-64 bytes"}
+		}
+		if err := protocol.ValidateConnectionID(reaction.UserID); err != nil {
+			parseErr := err.(*protocol.ParseError)
+			parseErr.Message = "comment reaction userId must be safe ASCII"
+			return parseErr
+		}
+	}
 	return nil
 }
 
@@ -1610,13 +1757,36 @@ func normalizedMetadata(metadata json.RawMessage) json.RawMessage {
 
 func commentRecordFromRequest(room string, threadID string, request CommentCreateRequest) cluster.CommentRecord {
 	return cluster.CommentRecord{
-		ID:       request.ID,
-		ThreadID: threadID,
-		RoomID:   room,
-		UserID:   request.UserID,
-		Body:     normalizedMetadata(request.Body),
-		Metadata: normalizedMetadata(request.Metadata),
+		ID:        request.ID,
+		ThreadID:  threadID,
+		RoomID:    room,
+		UserID:    request.UserID,
+		Body:      normalizedMetadata(request.Body),
+		Metadata:  normalizedMetadata(request.Metadata),
+		Mentions:  request.Mentions,
+		Reactions: request.Reactions,
 	}
+}
+
+func commentUpdateFromRequest(request CommentUpdateRequest) cluster.CommentUpdate {
+	update := cluster.CommentUpdate{}
+	if request.Body != nil {
+		update.Body = normalizedMetadata(*request.Body)
+		update.BodySet = true
+	}
+	if request.Metadata != nil {
+		update.Metadata = normalizedMetadata(*request.Metadata)
+		update.MetadataSet = true
+	}
+	if request.Mentions != nil {
+		update.Mentions = append([]string(nil), (*request.Mentions)...)
+		update.MentionsSet = true
+	}
+	if request.Reactions != nil {
+		update.Reactions = append([]cluster.CommentReaction(nil), (*request.Reactions)...)
+		update.ReactionsSet = true
+	}
+	return update
 }
 
 func newRecordID(prefix string) string {

@@ -61,6 +61,22 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	if _, _, err := threadPathParts("threads"); err == nil {
 		t.Fatalf("expected incomplete thread path to fail")
 	}
+	commentID, err := commentPathPart("comments/comment-1")
+	if err != nil {
+		t.Fatalf("comment path rejected: %v", err)
+	}
+	if commentID != "comment-1" {
+		t.Fatalf("unexpected comment id: %s", commentID)
+	}
+	if _, err := commentPathPart("comments/bad%20comment"); err == nil {
+		t.Fatalf("expected unsafe comment id to fail")
+	}
+	if _, err := commentPathPart("comments/%zz"); err == nil {
+		t.Fatalf("expected malformed comment escape to fail")
+	}
+	if _, err := commentPathPart("comments/comment-1/reactions"); err == nil {
+		t.Fatalf("expected nested comment path to fail")
+	}
 	userID, userChild, err := roomUserPathParts("users/user-1/subscription-settings")
 	if err != nil {
 		t.Fatalf("room user path rejected: %v", err)
@@ -493,6 +509,21 @@ func TestThreadValidation(t *testing.T) {
 			comment: CommentCreateRequest{ID: "comment-1", UserID: "user-1", Body: json.RawMessage(`{}`), Metadata: json.RawMessage(`[]`)},
 			want:    openrtcerr.CodeBadRequest,
 		},
+		{
+			name:    "invalid mention",
+			comment: CommentCreateRequest{ID: "comment-1", UserID: "user-1", Body: json.RawMessage(`{}`), Mentions: []string{"bad user"}},
+			want:    openrtcerr.CodeBadRequest,
+		},
+		{
+			name:    "invalid reaction emoji",
+			comment: CommentCreateRequest{ID: "comment-1", UserID: "user-1", Body: json.RawMessage(`{}`), Reactions: []cluster.CommentReaction{{Emoji: "", UserID: "user-1"}}},
+			want:    openrtcerr.CodeBadRequest,
+		},
+		{
+			name:    "invalid reaction user",
+			comment: CommentCreateRequest{ID: "comment-1", UserID: "user-1", Body: json.RawMessage(`{}`), Reactions: []cluster.CommentReaction{{Emoji: "+1", UserID: "bad user"}}},
+			want:    openrtcerr.CodeBadRequest,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -501,6 +532,48 @@ func TestThreadValidation(t *testing.T) {
 			}
 		})
 	}
+
+	validUpdateBody := json.RawMessage(`{"content":[]}`)
+	validUpdateMetadata := json.RawMessage(`{"status":"open"}`)
+	validUpdateMentions := []string{"user-1"}
+	validUpdateReactions := []cluster.CommentReaction{{Emoji: "+1", UserID: "user-1"}}
+	if err := validateCommentUpdateRequest(CommentUpdateRequest{
+		Body:      &validUpdateBody,
+		Metadata:  &validUpdateMetadata,
+		Mentions:  &validUpdateMentions,
+		Reactions: &validUpdateReactions,
+	}, 128); err != nil {
+		t.Fatalf("expected valid comment update: %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		request CommentUpdateRequest
+		want    openrtcerr.Code
+	}{
+		{name: "empty update", request: CommentUpdateRequest{}, want: openrtcerr.CodeBadRequest},
+		{name: "array body", request: CommentUpdateRequest{Body: rawMessagePtr(json.RawMessage(`[]`))}, want: openrtcerr.CodeBadRequest},
+		{name: "invalid metadata", request: CommentUpdateRequest{Metadata: rawMessagePtr(json.RawMessage(`[]`))}, want: openrtcerr.CodeBadRequest},
+		{name: "invalid mention", request: CommentUpdateRequest{Mentions: stringSlicePtr([]string{"bad user"})}, want: openrtcerr.CodeBadRequest},
+		{name: "invalid reaction", request: CommentUpdateRequest{Reactions: reactionSlicePtr([]cluster.CommentReaction{{Emoji: "+1", UserID: "bad user"}})}, want: openrtcerr.CodeBadRequest},
+	} {
+		t.Run("update "+tc.name, func(t *testing.T) {
+			if err := validateCommentUpdateRequest(tc.request, 8); err == nil || err.Code != tc.want {
+				t.Fatalf("expected %s, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func rawMessagePtr(value json.RawMessage) *json.RawMessage {
+	return &value
+}
+
+func stringSlicePtr(value []string) *[]string {
+	return &value
+}
+
+func reactionSlicePtr(value []cluster.CommentReaction) *[]cluster.CommentReaction {
+	return &value
 }
 
 func TestNotificationValidation(t *testing.T) {
@@ -1186,16 +1259,41 @@ func TestAdminThreadHandlers(t *testing.T) {
 				CreatedAt: now.Add(time.Second),
 			}),
 		},
+		updateCommentThread: cluster.ThreadRecord{
+			Type:      "thread",
+			ID:        "thread-1",
+			RoomID:    "tenant-a:room-1",
+			Metadata:  json.RawMessage(`{"anchor":"shape-1"}`),
+			CreatedAt: now,
+			UpdatedAt: now.Add(2 * time.Second),
+			Comments: []cluster.CommentRecord{
+				{
+					Type:      "comment",
+					ID:        "comment-1",
+					ThreadID:  "thread-1",
+					RoomID:    "tenant-a:room-1",
+					UserID:    "user-1",
+					Body:      json.RawMessage(`{"content":[{"type":"paragraph","text":"edited"}]}`),
+					Metadata:  json.RawMessage(`{"status":"resolved"}`),
+					Mentions:  []string{"user-2"},
+					Reactions: []cluster.CommentReaction{{Emoji: "+1", UserID: "user-2"}},
+					CreatedAt: now,
+				},
+			},
+		},
 	}
 	handler := newTestAdminService(verifier, store).Handler()
 
-	createBody := `{"id":"thread-1","metadata":{"anchor":"shape-1"},"comment":{"id":"comment-1","userId":"user-1","body":{"content":[{"type":"paragraph","text":"first"}]}}}`
+	createBody := `{"id":"thread-1","metadata":{"anchor":"shape-1"},"comment":{"id":"comment-1","userId":"user-1","body":{"content":[{"type":"paragraph","text":"first"}]},"mentions":["user-2"],"reactions":[{"emoji":"+1","userId":"user-2"}]}}`
 	createResp := performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", createBody)
 	if createResp.Code != http.StatusCreated {
 		t.Fatalf("expected create thread 201, got %d body=%q", createResp.Code, createResp.Body.String())
 	}
 	if store.createdThread.ID != "thread-1" || len(store.createdThread.Comments) != 1 || store.createdThread.Comments[0].UserID != "user-1" {
 		t.Fatalf("unexpected created thread capture: %+v", store.createdThread)
+	}
+	if len(store.createdThread.Comments[0].Mentions) != 1 || store.createdThread.Comments[0].Mentions[0] != "user-2" || len(store.createdThread.Comments[0].Reactions) != 1 {
+		t.Fatalf("expected mention/reaction capture: %+v", store.createdThread.Comments[0])
 	}
 
 	listResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads", "")
@@ -1223,6 +1321,33 @@ func TestAdminThreadHandlers(t *testing.T) {
 	}
 	if len(updated.Comments) != 2 {
 		t.Fatalf("unexpected updated thread: %+v", updated)
+	}
+
+	updateResp := performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"body":{"content":[{"type":"paragraph","text":"edited"}]},"metadata":{"status":"resolved"},"mentions":["user-2"],"reactions":[{"emoji":"+1","userId":"user-2"}]}`)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("expected update comment 200, got %d body=%q", updateResp.Code, updateResp.Body.String())
+	}
+	if store.updatedComment.Room != "tenant-a:room-1" || store.updatedComment.ThreadID != "thread-1" || store.updatedComment.CommentID != "comment-1" {
+		t.Fatalf("unexpected updated comment target: %+v", store.updatedComment)
+	}
+	if !store.updatedComment.Update.BodySet || string(store.updatedComment.Update.Body) != `{"content":[{"type":"paragraph","text":"edited"}]}` {
+		t.Fatalf("unexpected updated comment body: %+v", store.updatedComment.Update)
+	}
+	if !store.updatedComment.Update.MetadataSet || string(store.updatedComment.Update.Metadata) != `{"status":"resolved"}` {
+		t.Fatalf("unexpected updated comment metadata: %+v", store.updatedComment.Update)
+	}
+	if !store.updatedComment.Update.MentionsSet || len(store.updatedComment.Update.Mentions) != 1 || store.updatedComment.Update.Mentions[0] != "user-2" {
+		t.Fatalf("unexpected updated comment mentions: %+v", store.updatedComment.Update)
+	}
+	if !store.updatedComment.Update.ReactionsSet || len(store.updatedComment.Update.Reactions) != 1 || store.updatedComment.Update.Reactions[0].UserID != "user-2" {
+		t.Fatalf("unexpected updated comment reactions: %+v", store.updatedComment.Update)
+	}
+	var patched cluster.ThreadRecord
+	if err := json.NewDecoder(updateResp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patched thread: %v", err)
+	}
+	if len(patched.Comments) != 1 || len(patched.Comments[0].Reactions) != 1 || patched.Comments[0].Mentions[0] != "user-2" {
+		t.Fatalf("unexpected patched thread response: %+v", patched)
 	}
 
 	generatedStore := &fakeAdminStore{
@@ -1268,6 +1393,10 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected no-store add comment 503, got %d", resp.Code)
 	}
+	resp = performAdminRequest(noStoreHandler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"metadata":{}}`)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected no-store update comment 503, got %d", resp.Code)
+	}
 
 	for _, tc := range []struct {
 		method string
@@ -1277,6 +1406,7 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 		{method: http.MethodGet, path: "/v1/rooms/tenant-a%3Aroom-1/threads"},
 		{method: http.MethodPost, path: "/v1/rooms/tenant-a%3Aroom-1/threads", body: `{"comment":{"userId":"user-1","body":{}}}`},
 		{method: http.MethodPost, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", body: `{"userId":"user-1","body":{}}`},
+		{method: http.MethodPatch, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", body: `{"metadata":{}}`},
 	} {
 		request := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 		noAuthResp := httptest.NewRecorder()
@@ -1294,9 +1424,17 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected add-comment GET 405, got %d", resp.Code)
 	}
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", "")
+	if resp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected update-comment GET 405, got %d", resp.Code)
+	}
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/bad%20thread/comments", `{"id":"comment-1","userId":"user-1","body":{}}`)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected unsafe thread id 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/bad%20comment", `{"metadata":{}}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected unsafe comment id 400, got %d", resp.Code)
 	}
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/reactions", `{}`)
 	if resp.Code != http.StatusBadRequest {
@@ -1351,6 +1489,33 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusInternalServerError {
 		t.Fatalf("expected add comment failure 500, got %d", resp.Code)
 	}
+	store.addCommentErr = nil
+
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed update-comment body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected empty update-comment body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"body":[]}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid update-comment body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"mentions":["bad user"]}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid update-comment mentions 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"metadata":{}}`)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected missing comment 404, got %d", resp.Code)
+	}
+	store.updateCommentErr = errors.New("update comment failed")
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"metadata":{}}`)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected update comment failure 500, got %d", resp.Code)
+	}
 
 	forbiddenVerifier, forbiddenToken, forbiddenCleanup := newAdminTestVerifier(t, map[string]any{
 		"tenant": "tenant-a",
@@ -1369,6 +1534,10 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-1","userId":"user-1","body":{}}`)
 	if resp.Code != http.StatusForbidden {
 		t.Fatalf("expected add comment forbidden 403, got %d", resp.Code)
+	}
+	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"metadata":{}}`)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected update comment forbidden 403, got %d", resp.Code)
 	}
 }
 
@@ -2329,22 +2498,30 @@ type fakeAdminStore struct {
 	deleteStorageErr   error
 	applyStorageErr    error
 
-	stats                             stats.Snapshot
-	publishedEvents                   []cluster.PublishedEvent
-	presenceEvents                    []cluster.PresenceEvent
-	syncedStats                       []stats.Snapshot
-	createRoomRecord                  cluster.RoomRecord
-	getRoomRecord                     cluster.RoomRecord
-	updateRoomRecord                  cluster.RoomRecord
-	listRooms                         cluster.RoomList
-	createdThread                     cluster.ThreadRecord
-	createThreadRecord                cluster.ThreadRecord
-	createThreadErr                   error
-	listThreads                       []cluster.ThreadRecord
-	listThreadsErr                    error
-	addedComment                      cluster.CommentRecord
-	addCommentThread                  cluster.ThreadRecord
-	addCommentErr                     error
+	stats              stats.Snapshot
+	publishedEvents    []cluster.PublishedEvent
+	presenceEvents     []cluster.PresenceEvent
+	syncedStats        []stats.Snapshot
+	createRoomRecord   cluster.RoomRecord
+	getRoomRecord      cluster.RoomRecord
+	updateRoomRecord   cluster.RoomRecord
+	listRooms          cluster.RoomList
+	createdThread      cluster.ThreadRecord
+	createThreadRecord cluster.ThreadRecord
+	createThreadErr    error
+	listThreads        []cluster.ThreadRecord
+	listThreadsErr     error
+	addedComment       cluster.CommentRecord
+	addCommentThread   cluster.ThreadRecord
+	addCommentErr      error
+	updatedComment     struct {
+		Room      string
+		ThreadID  string
+		CommentID string
+		Update    cluster.CommentUpdate
+	}
+	updateCommentThread               cluster.ThreadRecord
+	updateCommentErr                  error
 	createdInboxNotification          cluster.InboxNotificationRecord
 	createInboxNotificationRecord     cluster.InboxNotificationRecord
 	createInboxNotificationErr        error
@@ -2549,6 +2726,20 @@ func (s *fakeAdminStore) AddComment(_ context.Context, _ string, _ string, comme
 		return s.addCommentThread, nil
 	}
 	return cluster.ThreadRecord{}, cluster.ErrThreadNotFound
+}
+
+func (s *fakeAdminStore) UpdateComment(_ context.Context, room string, threadID string, commentID string, update cluster.CommentUpdate) (cluster.ThreadRecord, error) {
+	if s.updateCommentErr != nil {
+		return cluster.ThreadRecord{}, s.updateCommentErr
+	}
+	s.updatedComment.Room = room
+	s.updatedComment.ThreadID = threadID
+	s.updatedComment.CommentID = commentID
+	s.updatedComment.Update = update
+	if s.updateCommentThread.ID != "" {
+		return s.updateCommentThread, nil
+	}
+	return cluster.ThreadRecord{}, cluster.ErrCommentNotFound
 }
 
 func (s *fakeAdminStore) CreateInboxNotification(_ context.Context, notification cluster.InboxNotificationRecord) (cluster.InboxNotificationRecord, error) {

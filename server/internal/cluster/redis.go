@@ -28,6 +28,7 @@ var (
 	ErrStoragePatch        = errors.New("storage patch failed")
 	ErrThreadAlreadyExists = errors.New("thread already exists")
 	ErrThreadNotFound      = errors.New("thread not found")
+	ErrCommentNotFound     = errors.New("comment not found")
 	ErrInboxAlreadyExists  = errors.New("inbox notification already exists")
 	ErrInboxNotFound       = errors.New("inbox notification not found")
 )
@@ -159,16 +160,34 @@ type ThreadRecord struct {
 }
 
 type CommentRecord struct {
-	Type      string          `json:"type"`
-	ThreadID  string          `json:"threadId"`
-	RoomID    string          `json:"roomId"`
-	ID        string          `json:"id"`
-	UserID    string          `json:"userId"`
-	CreatedAt time.Time       `json:"createdAt"`
-	EditedAt  *time.Time      `json:"editedAt,omitempty"`
-	DeletedAt *time.Time      `json:"deletedAt,omitempty"`
-	Body      json.RawMessage `json:"body"`
-	Metadata  json.RawMessage `json:"metadata"`
+	Type      string            `json:"type"`
+	ThreadID  string            `json:"threadId"`
+	RoomID    string            `json:"roomId"`
+	ID        string            `json:"id"`
+	UserID    string            `json:"userId"`
+	CreatedAt time.Time         `json:"createdAt"`
+	EditedAt  *time.Time        `json:"editedAt,omitempty"`
+	DeletedAt *time.Time        `json:"deletedAt,omitempty"`
+	Body      json.RawMessage   `json:"body"`
+	Metadata  json.RawMessage   `json:"metadata"`
+	Mentions  []string          `json:"mentions,omitempty"`
+	Reactions []CommentReaction `json:"reactions,omitempty"`
+}
+
+type CommentReaction struct {
+	Emoji  string `json:"emoji"`
+	UserID string `json:"userId"`
+}
+
+type CommentUpdate struct {
+	Body         json.RawMessage
+	BodySet      bool
+	Metadata     json.RawMessage
+	MetadataSet  bool
+	Mentions     []string
+	MentionsSet  bool
+	Reactions    []CommentReaction
+	ReactionsSet bool
 }
 
 type InboxNotificationRecord struct {
@@ -256,6 +275,7 @@ type Store interface {
 	CreateThread(ctx context.Context, room string, thread ThreadRecord) (ThreadRecord, error)
 	ListThreads(ctx context.Context, room string) ([]ThreadRecord, error)
 	AddComment(ctx context.Context, room string, threadID string, comment CommentRecord) (ThreadRecord, error)
+	UpdateComment(ctx context.Context, room string, threadID string, commentID string, update CommentUpdate) (ThreadRecord, error)
 	CreateInboxNotification(ctx context.Context, notification InboxNotificationRecord) (InboxNotificationRecord, error)
 	ListInboxNotifications(ctx context.Context, userID string, filter InboxNotificationListFilter) (InboxNotificationList, error)
 	GetInboxNotification(ctx context.Context, userID string, notificationID string) (InboxNotificationRecord, error)
@@ -759,6 +779,71 @@ func (s *RedisStore) AddComment(ctx context.Context, room string, threadID strin
 		})
 		return err
 	}, key)
+	if err != nil {
+		return ThreadRecord{}, err
+	}
+	return s.loadThreadRecord(ctx, room, threadID)
+}
+
+func (s *RedisStore) UpdateComment(ctx context.Context, room string, threadID string, commentID string, update CommentUpdate) (ThreadRecord, error) {
+	key := roomThreadKey(room, threadID)
+	commentsKey := roomThreadCommentsKey(room, threadID)
+	now := time.Now().UTC()
+
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		exists, err := tx.Exists(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if exists == 0 {
+			return ErrThreadNotFound
+		}
+		rawComments, err := tx.LRange(ctx, commentsKey, 0, -1).Result()
+		if err != nil && err != redis.Nil {
+			return err
+		}
+		commentIndex := -1
+		var comment CommentRecord
+		for index, raw := range rawComments {
+			decoded, err := decodeCommentRecord(raw)
+			if err != nil {
+				return err
+			}
+			if decoded.ID == commentID {
+				commentIndex = index
+				comment = decoded
+				break
+			}
+		}
+		if commentIndex < 0 {
+			return ErrCommentNotFound
+		}
+		if update.BodySet {
+			comment.Body = append(json.RawMessage(nil), update.Body...)
+		}
+		if update.MetadataSet {
+			comment.Metadata = append(json.RawMessage(nil), update.Metadata...)
+		}
+		if update.MentionsSet {
+			comment.Mentions = cloneStringList(update.Mentions)
+		}
+		if update.ReactionsSet {
+			comment.Reactions = cloneCommentReactionList(update.Reactions)
+		}
+		comment.EditedAt = &now
+		comment = normalizeCommentRecord(comment)
+
+		rawComment, err := encodeCommentRecord(comment)
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, key, "updated_at", now.Format(time.RFC3339Nano))
+			pipe.LSet(ctx, commentsKey, int64(commentIndex), rawComment)
+			return nil
+		})
+		return err
+	}, key, commentsKey)
 	if err != nil {
 		return ThreadRecord{}, err
 	}
@@ -1559,6 +1644,8 @@ func normalizeCommentRecord(record CommentRecord) CommentRecord {
 	}
 	record.Body = append(json.RawMessage(nil), record.Body...)
 	record.Metadata = append(json.RawMessage(nil), record.Metadata...)
+	record.Mentions = normalizeStringList(record.Mentions)
+	record.Reactions = normalizeCommentReactionList(record.Reactions)
 	return record
 }
 
@@ -1673,6 +1760,62 @@ func cloneCommentList(input []CommentRecord) []CommentRecord {
 		out = append(out, normalizeCommentRecord(comment))
 	}
 	return out
+}
+
+func normalizeStringList(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(input))
+	out := make([]string, 0, len(input))
+	for _, value := range input {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func cloneStringList(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	return append([]string(nil), input...)
+}
+
+func normalizeCommentReactionList(input []CommentReaction) []CommentReaction {
+	if len(input) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(input))
+	out := make([]CommentReaction, 0, len(input))
+	for _, reaction := range input {
+		reaction.Emoji = strings.TrimSpace(reaction.Emoji)
+		reaction.UserID = strings.TrimSpace(reaction.UserID)
+		if reaction.Emoji == "" || reaction.UserID == "" {
+			continue
+		}
+		key := reaction.Emoji + "\x00" + reaction.UserID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, reaction)
+	}
+	return out
+}
+
+func cloneCommentReactionList(input []CommentReaction) []CommentReaction {
+	if len(input) == 0 {
+		return nil
+	}
+	return append([]CommentReaction(nil), input...)
 }
 
 func ApplyJSONPatch(document json.RawMessage, operations []JSONPatchOperation) (json.RawMessage, error) {

@@ -975,6 +975,11 @@ func TestRedisThreadLifecycle(t *testing.T) {
 				UserID:   "user-1",
 				Body:     json.RawMessage(`{"content":[{"type":"paragraph"}]}`),
 				Metadata: json.RawMessage(`{"source":"test"}`),
+				Mentions: []string{"user-2", "user-2"},
+				Reactions: []CommentReaction{
+					{Emoji: "+1", UserID: "user-2"},
+					{Emoji: "+1", UserID: "user-2"},
+				},
 			},
 		},
 	})
@@ -986,6 +991,9 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	}
 	if len(created.Comments) != 1 || created.Comments[0].ThreadID != "thread-1" || created.Comments[0].RoomID != "tenant-a:room-1" {
 		t.Fatalf("unexpected created thread comments: %+v", created.Comments)
+	}
+	if len(created.Comments[0].Mentions) != 1 || created.Comments[0].Mentions[0] != "user-2" || len(created.Comments[0].Reactions) != 1 {
+		t.Fatalf("expected normalized initial mentions/reactions, got %+v", created.Comments[0])
 	}
 	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-1"}); !errors.Is(err, ErrThreadAlreadyExists) {
 		t.Fatalf("expected thread conflict, got %v", err)
@@ -1012,11 +1020,56 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if len(updated.Comments) != 2 || updated.Comments[1].ID != "comment-2" || string(updated.Comments[1].Metadata) != `{}` {
 		t.Fatalf("unexpected updated thread comments: %+v", updated.Comments)
 	}
+	patched, err := store.UpdateComment(ctx, "tenant-a:room-1", "thread-1", "comment-1", CommentUpdate{
+		Body:        json.RawMessage(`{"content":[{"type":"paragraph","text":"edited"}]}`),
+		BodySet:     true,
+		Metadata:    json.RawMessage(`{"status":"resolved"}`),
+		MetadataSet: true,
+		Mentions:    []string{"user-3", "user-3"},
+		MentionsSet: true,
+		Reactions: []CommentReaction{
+			{Emoji: "+1", UserID: "user-3"},
+			{Emoji: "+1", UserID: "user-3"},
+		},
+		ReactionsSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update comment: %v", err)
+	}
+	if len(patched.Comments) != 2 {
+		t.Fatalf("unexpected patched thread comments: %+v", patched.Comments)
+	}
+	comment := patched.Comments[0]
+	if string(comment.Body) != `{"content":[{"type":"paragraph","text":"edited"}]}` || string(comment.Metadata) != `{"status":"resolved"}` || comment.EditedAt == nil {
+		t.Fatalf("unexpected patched comment body/metadata/edit time: %+v", comment)
+	}
+	if len(comment.Mentions) != 1 || comment.Mentions[0] != "user-3" || len(comment.Reactions) != 1 || comment.Reactions[0].UserID != "user-3" {
+		t.Fatalf("expected normalized patched mentions/reactions, got %+v", comment)
+	}
+	cleared, err := store.UpdateComment(ctx, "tenant-a:room-1", "thread-1", "comment-1", CommentUpdate{
+		MentionsSet:  true,
+		ReactionsSet: true,
+	})
+	if err != nil {
+		t.Fatalf("clear comment mentions/reactions: %v", err)
+	}
+	if len(cleared.Comments[0].Mentions) != 0 || len(cleared.Comments[0].Reactions) != 0 {
+		t.Fatalf("expected cleared mentions/reactions, got %+v", cleared.Comments[0])
+	}
 	if _, err := store.AddComment(ctx, "tenant-a:room-1", "missing-thread", CommentRecord{ID: "comment-3", UserID: "user-3", Body: json.RawMessage(`{}`)}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected missing thread, got %v", err)
 	}
 	if _, err := store.AddComment(ctx, "tenant-a:room-1", "thread-1", CommentRecord{ID: "comment-invalid", UserID: "user-3", Body: json.RawMessage(`{`)}); err == nil {
 		t.Fatalf("expected invalid added comment to fail")
+	}
+	if _, err := store.UpdateComment(ctx, "tenant-a:room-1", "missing-thread", "comment-1", CommentUpdate{MetadataSet: true, Metadata: json.RawMessage(`{}`)}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected missing update thread, got %v", err)
+	}
+	if _, err := store.UpdateComment(ctx, "tenant-a:room-1", "thread-1", "missing-comment", CommentUpdate{MetadataSet: true, Metadata: json.RawMessage(`{}`)}); !errors.Is(err, ErrCommentNotFound) {
+		t.Fatalf("expected missing update comment, got %v", err)
+	}
+	if _, err := store.UpdateComment(ctx, "tenant-a:room-1", "thread-1", "comment-1", CommentUpdate{BodySet: true, Body: json.RawMessage(`{`)}); err == nil {
+		t.Fatalf("expected invalid updated comment to fail")
 	}
 
 	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-0"}); err != nil {

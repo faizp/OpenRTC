@@ -376,6 +376,13 @@ export interface OpenRTCAdminComment {
   deletedAt?: string;
   body?: unknown;
   metadata?: unknown;
+  mentions?: string[];
+  reactions?: OpenRTCAdminCommentReaction[];
+}
+
+export interface OpenRTCAdminCommentReaction {
+  emoji: string;
+  userId: string;
 }
 
 export interface OpenRTCAdminThreadInput {
@@ -389,6 +396,15 @@ export interface OpenRTCAdminCommentInput {
   userId: string;
   body: unknown;
   metadata?: unknown;
+  mentions?: string[];
+  reactions?: OpenRTCAdminCommentReaction[];
+}
+
+export interface OpenRTCAdminCommentUpdate {
+  body?: unknown;
+  metadata?: unknown;
+  mentions?: string[];
+  reactions?: OpenRTCAdminCommentReaction[];
 }
 
 export interface OpenRTCAdminInboxNotification {
@@ -1933,6 +1949,18 @@ export class OpenRTCAdminClient {
     return this.request<OpenRTCAdminThread>(
       `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}/comments`,
       { method: "POST", body: comment, okStatuses: [201] },
+    );
+  }
+
+  updateComment(
+    room: string,
+    threadId: string,
+    commentId: string,
+    update: OpenRTCAdminCommentUpdate,
+  ): Promise<OpenRTCAdminThread> {
+    return this.request<OpenRTCAdminThread>(
+      `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: "PATCH", body: update },
     );
   }
 

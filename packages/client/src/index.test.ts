@@ -990,6 +990,18 @@ const adminClient = new OpenRTCAdminClient({
         JSON.stringify({ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [{ id: "comment-2" }], resolved: false }),
       );
     }
+    if (input.endsWith("/comments/comment-1") && init?.method === "PATCH") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          type: "thread",
+          id: "thread-1",
+          roomId: "tenant-a:room-1",
+          comments: [{ id: "comment-1", mentions: ["user-2"], reactions: [{ emoji: "+1", userId: "user-2" }] }],
+          resolved: false,
+        }),
+      );
+    }
     if (input.endsWith("/inbox-notifications/trigger")) {
       return fakeResponse(201, JSON.stringify({ id: "in_1", userId: "user-1", kind: "$custom", notifiedAt: "now" }));
     }
@@ -1040,15 +1052,37 @@ const activeUsers = await adminClient.activeUsers("tenant-a:room-1");
 assert.deepEqual(activeUsers.data, [{ type: "user", connection_id: "conn-1", id: "user-1" }]);
 
 const thread = await adminClient.createThread("tenant-a:room-1", {
-  comment: { userId: "user-1", body: { type: "text", text: "hello" } },
+  comment: { userId: "user-1", body: { type: "text", text: "hello" }, mentions: ["user-2"] },
 });
 assert.equal(thread.id, "thread-1");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
+  comment: { userId: "user-1", body: { type: "text", text: "hello" }, mentions: ["user-2"] },
+});
 
 const updatedThread = await adminClient.addComment("tenant-a:room-1", "thread-1", {
   userId: "user-2",
   body: { type: "text", text: "reply" },
+  reactions: [{ emoji: "+1", userId: "user-1" }],
 });
 assert.deepEqual(updatedThread.comments, [{ id: "comment-2" }]);
+
+const patchedThread = await adminClient.updateComment("tenant-a:room-1", "thread-1", "comment-1", {
+  body: { type: "text", text: "edited" },
+  metadata: { status: "resolved" },
+  mentions: ["user-2"],
+  reactions: [{ emoji: "+1", userId: "user-2" }],
+});
+const patchedComment = patchedThread.comments[0];
+assert.ok(patchedComment);
+assert.deepEqual(patchedComment.reactions, [{ emoji: "+1", userId: "user-2" }]);
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1");
+assert.equal(adminCalls.at(-1)?.init?.method, "PATCH");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
+  body: { type: "text", text: "edited" },
+  metadata: { status: "resolved" },
+  mentions: ["user-2"],
+  reactions: [{ emoji: "+1", userId: "user-2" }],
+});
 
 const notification = await adminClient.triggerInboxNotification({
   userId: "user-1",
