@@ -8,6 +8,8 @@ import {
   yjsWebSocketURL,
   type YJSWebSocket,
   type AwarenessChange,
+  type OpenRTCYjsOfflineStore,
+  type OpenRTCYjsOfflineUpdateMeta,
 } from "./index.ts";
 import type { PresencePeer, PresenceState } from "@openrtc/client";
 
@@ -115,6 +117,22 @@ class FakePresenceClient {
   }
 }
 
+class FakeOfflineStore implements OpenRTCYjsOfflineStore {
+  readonly appended: Array<{ update: Uint8Array; meta: OpenRTCYjsOfflineUpdateMeta }> = [];
+  loads = 0;
+
+  constructor(private readonly updates: Uint8Array[] = []) {}
+
+  async load(): Promise<Uint8Array[]> {
+    this.loads++;
+    return this.updates.map((update) => update.slice());
+  }
+
+  async append(update: Uint8Array, meta: OpenRTCYjsOfflineUpdateMeta): Promise<void> {
+    this.appended.push({ update: update.slice(), meta });
+  }
+}
+
 assert.equal(
   yjsWebSocketURL("http://localhost:8080/ws", "tenant-a:doc", "token-1"),
   "ws://localhost:8080/yjs/tenant-a%3Adoc?token=token-1",
@@ -141,11 +159,12 @@ const providerB = new OpenRTCYjsProvider({
   stateVectorSync: false,
 });
 
+const socketStart = FakeYjsSocket.instances.length;
 const connectA = providerA.connect();
 const connectB = providerB.connect();
-await Promise.resolve();
-const socketA = FakeYjsSocket.instances[0];
-const socketB = FakeYjsSocket.instances[1];
+await waitForSocketCount(socketStart + 2);
+const socketA = FakeYjsSocket.instances[socketStart];
+const socketB = FakeYjsSocket.instances[socketStart + 1];
 assert.ok(socketA);
 assert.ok(socketB);
 socketA.peer = socketB;
@@ -195,11 +214,12 @@ let diffSyncEvent: { kind: string; bytes: number; stateVectorHash: string } | un
 stateVectorProviderB.on("synced", (event) => {
   diffSyncEvent = event;
 });
+const stateVectorSocketStart = FakeYjsSocket.instances.length;
 const stateVectorConnectA = stateVectorProviderA.connect();
 const stateVectorConnectB = stateVectorProviderB.connect();
-await Promise.resolve();
-const stateVectorSocketA = FakeYjsSocket.instances.at(-2);
-const stateVectorSocketB = FakeYjsSocket.instances.at(-1);
+await waitForSocketCount(stateVectorSocketStart + 2);
+const stateVectorSocketA = FakeYjsSocket.instances[stateVectorSocketStart];
+const stateVectorSocketB = FakeYjsSocket.instances[stateVectorSocketStart + 1];
 assert.ok(stateVectorSocketA);
 assert.ok(stateVectorSocketB);
 stateVectorSocketA.peer = stateVectorSocketB;
@@ -221,6 +241,51 @@ assert.equal(stateVectorProviderB.getSyncState().diffsReceived, 1);
 assert.equal(stateVectorProviderA.getSyncState().sentBytes > 0, true);
 stateVectorProviderA.destroy();
 stateVectorProviderB.destroy();
+
+const cachedDoc = new Y.Doc();
+cachedDoc.getText("body").insert(0, "cached");
+const offlineStore = new FakeOfflineStore([Y.encodeStateAsUpdate(cachedDoc)]);
+const offlineDoc = new Y.Doc();
+const offlineProvider = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:offline-doc",
+  token: "token-offline",
+  doc: offlineDoc,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSync: false,
+  offlineStore,
+});
+const offlineSocketStart = FakeYjsSocket.instances.length;
+const offlineConnect = offlineProvider.connect();
+await waitForSocketCount(offlineSocketStart + 1);
+const offlineSocket = FakeYjsSocket.instances.at(-1);
+assert.ok(offlineSocket);
+offlineSocket.open();
+await offlineConnect;
+assert.equal(offlineStore.loads, 1);
+assert.equal(offlineDoc.getText("body").toString(), "cached");
+assert.equal(offlineProvider.getSyncState().offlineLoaded, true);
+assert.equal(offlineProvider.getSyncState().offlineUpdatesLoaded, 1);
+assert.equal(offlineProvider.getSyncState().offlineBytesLoaded > 0, true);
+
+offlineDoc.getText("body").insert(6, " local");
+await tick();
+assert.equal(offlineStore.appended.at(-1)?.meta.source, "local");
+assert.equal(offlineStore.appended.at(-1)?.meta.kind, "update");
+assert.equal(offlineStore.appended.at(-1)?.meta.room, "tenant-a:offline-doc");
+assert.equal(offlineSocket.sent.at(-1)?.[0], 1);
+
+const remoteOfflineDoc = new Y.Doc();
+remoteOfflineDoc.getText("remote").insert(0, "remote");
+const remoteOfflineUpdate = Y.encodeStateAsUpdate(remoteOfflineDoc);
+offlineSocket.receive(frame(1, remoteOfflineUpdate));
+await tick();
+assert.equal(offlineStore.appended.at(-1)?.meta.source, "remote");
+assert.equal(offlineStore.appended.at(-1)?.meta.kind, "update");
+assert.equal(offlineProvider.getSyncState().offlineUpdatesStored, 2);
+assert.equal(offlineProvider.getSyncState().offlineBytesStored > 0, true);
+offlineProvider.destroy();
 
 const awarenessA = new OpenRTCAwareness(new Y.Doc());
 const awarenessB = new OpenRTCAwareness(new Y.Doc());
@@ -276,6 +341,23 @@ function toUint8(data: ArrayBufferLike | ArrayBufferView): Uint8Array {
   return new Uint8Array(data).slice();
 }
 
+function frame(kind: number, update: Uint8Array): Uint8Array {
+  const data = new Uint8Array(1 + update.byteLength);
+  data[0] = kind;
+  data.set(update, 1);
+  return data;
+}
+
 async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitForSocketCount(count: number): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (FakeYjsSocket.instances.length >= count) {
+      return;
+    }
+    await tick();
+  }
+  assert.fail(`timed out waiting for ${count} fake Yjs sockets`);
 }

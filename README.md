@@ -8,7 +8,7 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 - `packages/client/`: TypeScript WebSocket client for rooms, events, and presence.
 - `packages/react/`: React hooks for room state, presence, and broadcast events.
 - `packages/rich-text/`: Yjs binding helpers plus presence adapters for Tiptap, Lexical, and BlockNote selection/cursor state.
-- `packages/yjs/`: Yjs provider for binary update/snapshot sync, state-vector diff sync, sync diagnostics, and an awareness bridge over OpenRTC presence.
+- `packages/yjs/`: Yjs provider for binary update/snapshot sync, state-vector diff sync, optional IndexedDB offline caching, sync diagnostics, and an awareness bridge over OpenRTC presence.
 - `packages/yjs-compactor/`: Trusted Yjs update compactor for Redis-backed document retention.
 - `reference-app/`: production-style reference app (M5).
 - `docs/`: protocol, contracts, config, release, and engineering docs.
@@ -129,7 +129,10 @@ reserved envelope JSON. Collaborative text remains owned by the Yjs provider.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
-for reconnect diagnostics.
+for reconnect diagnostics. For browser offline starts, pass
+`offlineStore: createIndexedDBYjsStore({ room: "tenant-a:canvas-1" })`; cached
+Yjs updates are replayed before the websocket opens, and local/remote updates
+are appended to the cache without changing server durability semantics.
 
 The React package exposes the same lifecycle through `useEnterRoom`,
 `usePresence`, `useOthers`, `useOthersMapped`, `useOthersConnectionIds`,

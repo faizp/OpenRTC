@@ -18,6 +18,7 @@ export interface OpenRTCYjsProviderOptions {
   token: string | (() => string | Promise<string>);
   doc: Y.Doc;
   WebSocket?: YJSWebSocketConstructor;
+  offlineStore?: OpenRTCYjsOfflineStore;
   snapshotIntervalMs?: number;
   stateVectorSync?: boolean;
   stateVectorSyncDelayMs?: number;
@@ -30,6 +31,27 @@ export interface OpenRTCYjsProviderOptions {
 export type YjsConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
 export type YjsSyncStatus = "idle" | "connecting" | "syncing" | "synced" | "closed" | "error";
 export type YjsSyncedFrameKind = "update" | "snapshot" | "state-vector-diff";
+export type YjsOfflineUpdateSource = "local" | "remote";
+
+export interface OpenRTCYjsOfflineUpdateMeta {
+  room: string;
+  source: YjsOfflineUpdateSource;
+  kind: YjsSyncedFrameKind;
+  timestamp: number;
+}
+
+export interface OpenRTCYjsOfflineStore {
+  load(): Promise<Uint8Array[]>;
+  append(update: Uint8Array, meta: OpenRTCYjsOfflineUpdateMeta): Promise<void>;
+  clear?(): Promise<void>;
+}
+
+export interface IndexedDBYjsStoreOptions {
+  room: string;
+  name?: string;
+  storeName?: string;
+  indexedDB?: IDBFactory;
+}
 
 export interface OpenRTCYjsSyncState {
   status: YjsSyncStatus;
@@ -41,6 +63,11 @@ export interface OpenRTCYjsSyncState {
   updatesReceived: number;
   snapshotsReceived: number;
   diffsReceived: number;
+  offlineLoaded: boolean;
+  offlineUpdatesLoaded: number;
+  offlineBytesLoaded: number;
+  offlineUpdatesStored: number;
+  offlineBytesStored: number;
 }
 
 export interface OpenRTCYjsProviderEventMap {
@@ -58,6 +85,8 @@ const FRAME_SNAPSHOT = 2;
 const FRAME_STATE_VECTOR = 3;
 const FRAME_STATE_VECTOR_DIFF = 4;
 const DEFAULT_STATE_VECTOR_SYNC_DELAY_MS = 25;
+const DEFAULT_INDEXEDDB_NAME = "openrtc-yjs";
+const DEFAULT_INDEXEDDB_STORE = "updates";
 export const OPENRTC_AWARENESS_PRESENCE_KEY = "__openrtc_yjs_awareness";
 
 export class OpenRTCYjsProvider {
@@ -68,6 +97,7 @@ export class OpenRTCYjsProvider {
   private readonly url: string;
   private readonly token: OpenRTCYjsProviderOptions["token"];
   private readonly WebSocketCtor: YJSWebSocketConstructor;
+  private readonly offlineStore: OpenRTCYjsOfflineStore | undefined;
   private readonly snapshotIntervalMs: number | undefined;
   private readonly stateVectorSync: boolean;
   private readonly stateVectorSyncDelayMs: number;
@@ -85,6 +115,12 @@ export class OpenRTCYjsProvider {
   private updatesReceived = 0;
   private snapshotsReceived = 0;
   private diffsReceived = 0;
+  private offlineLoaded = false;
+  private offlineLoadPromise: Promise<void> | undefined;
+  private offlineUpdatesLoaded = 0;
+  private offlineBytesLoaded = 0;
+  private offlineUpdatesStored = 0;
+  private offlineBytesStored = 0;
   private handlers = new Map<keyof OpenRTCYjsProviderEventMap, Set<Handler<OpenRTCYjsProviderEventMap[keyof OpenRTCYjsProviderEventMap]>>>();
 
   constructor(options: OpenRTCYjsProviderOptions) {
@@ -92,6 +128,7 @@ export class OpenRTCYjsProvider {
     this.room = options.room;
     this.token = options.token;
     this.doc = options.doc;
+    this.offlineStore = options.offlineStore;
     this.snapshotIntervalMs = options.snapshotIntervalMs;
     this.stateVectorSync = options.stateVectorSync ?? true;
     this.stateVectorSyncDelayMs = options.stateVectorSyncDelayMs ?? DEFAULT_STATE_VECTOR_SYNC_DELAY_MS;
@@ -131,6 +168,7 @@ export class OpenRTCYjsProvider {
     }
     this.setStatus("connecting");
     this.setSyncStatus("connecting");
+    await this.loadOfflineUpdates();
 
     const token = await this.resolveToken();
     const socket = new this.WebSocketCtor(yjsWebSocketURL(this.url, this.room, token));
@@ -230,6 +268,7 @@ export class OpenRTCYjsProvider {
     if (origin === this) {
       return;
     }
+    this.persistOfflineUpdate(update, "local", "update");
     this.sendFrame(FRAME_UPDATE, update);
   };
 
@@ -248,6 +287,7 @@ export class OpenRTCYjsProvider {
       return;
     }
     Y.applyUpdate(this.doc, payload, this);
+    this.persistOfflineUpdate(payload, "remote", syncedKind(kind));
     this.recordRemoteSyncFrame(kind, payload);
   }
 
@@ -352,11 +392,64 @@ export class OpenRTCYjsProvider {
       updatesReceived: this.updatesReceived,
       snapshotsReceived: this.snapshotsReceived,
       diffsReceived: this.diffsReceived,
+      offlineLoaded: this.offlineLoaded,
+      offlineUpdatesLoaded: this.offlineUpdatesLoaded,
+      offlineBytesLoaded: this.offlineBytesLoaded,
+      offlineUpdatesStored: this.offlineUpdatesStored,
+      offlineBytesStored: this.offlineBytesStored,
     };
   }
 
   private stateVectorHash(): string {
     return hashBytes(Y.encodeStateVector(this.doc));
+  }
+
+  private async loadOfflineUpdates(): Promise<void> {
+    if (!this.offlineStore || this.offlineLoaded) {
+      return;
+    }
+    if (!this.offlineLoadPromise) {
+      this.offlineLoadPromise = this.loadOfflineUpdatesOnce();
+    }
+    await this.offlineLoadPromise;
+  }
+
+  private async loadOfflineUpdatesOnce(): Promise<void> {
+    try {
+      const updates = await this.offlineStore?.load();
+      for (const update of updates ?? []) {
+        Y.applyUpdate(this.doc, update, this);
+        this.offlineUpdatesLoaded++;
+        this.offlineBytesLoaded += update.byteLength;
+      }
+      this.offlineLoaded = true;
+      this.emitSyncStatus();
+    } catch (error) {
+      this.offlineLoadPromise = undefined;
+      this.emit("error", error instanceof Error ? error : new Error("Yjs offline store load failed"));
+    }
+  }
+
+  private persistOfflineUpdate(update: Uint8Array, source: YjsOfflineUpdateSource, kind: YjsSyncedFrameKind): void {
+    if (!this.offlineStore) {
+      return;
+    }
+    const copy = update.slice();
+    void this.offlineStore
+      .append(copy, {
+        room: this.room,
+        source,
+        kind,
+        timestamp: Date.now(),
+      })
+      .then(() => {
+        this.offlineUpdatesStored++;
+        this.offlineBytesStored += copy.byteLength;
+        this.emitSyncStatus();
+      })
+      .catch((error: unknown) => {
+        this.emit("error", error instanceof Error ? error : new Error("Yjs offline store append failed"));
+      });
   }
 
   private emit<K extends keyof OpenRTCYjsProviderEventMap>(type: K, event: OpenRTCYjsProviderEventMap[K]): void {
@@ -367,6 +460,106 @@ export class OpenRTCYjsProvider {
     for (const handler of handlers) {
       handler(event);
     }
+  }
+}
+
+interface IndexedDBYjsUpdateRecord {
+  id?: number;
+  room: string;
+  update: ArrayBuffer;
+  timestamp: number;
+  source: YjsOfflineUpdateSource;
+  kind: YjsSyncedFrameKind;
+}
+
+export function createIndexedDBYjsStore(options: IndexedDBYjsStoreOptions): OpenRTCYjsOfflineStore {
+  const dbFactory = options.indexedDB ?? globalThis.indexedDB;
+  if (!dbFactory) {
+    throw new Error("IndexedDB is not available in this environment");
+  }
+  const name = options.name ?? DEFAULT_INDEXEDDB_NAME;
+  const storeName = options.storeName ?? DEFAULT_INDEXEDDB_STORE;
+  return new IndexedDBYjsStore(dbFactory, name, storeName, options.room);
+}
+
+class IndexedDBYjsStore implements OpenRTCYjsOfflineStore {
+  constructor(
+    private readonly dbFactory: IDBFactory,
+    private readonly name: string,
+    private readonly storeName: string,
+    private readonly room: string,
+  ) {}
+
+  async load(): Promise<Uint8Array[]> {
+    const db = await this.open();
+    try {
+      const transaction = db.transaction(this.storeName, "readonly");
+      const done = idbTransactionDone(transaction);
+      const store = transaction.objectStore(this.storeName);
+      const records = await idbRequest<IndexedDBYjsUpdateRecord[]>(store.index("room").getAll(this.room));
+      await done;
+      return records
+        .sort((left, right) => (left.id ?? 0) - (right.id ?? 0))
+        .map((record) => new Uint8Array(record.update).slice());
+    } finally {
+      db.close();
+    }
+  }
+
+  async append(update: Uint8Array, meta: OpenRTCYjsOfflineUpdateMeta): Promise<void> {
+    const db = await this.open();
+    try {
+      const transaction = db.transaction(this.storeName, "readwrite");
+      const done = idbTransactionDone(transaction);
+      transaction.objectStore(this.storeName).add({
+        room: this.room,
+        update: copyToArrayBuffer(update),
+        timestamp: meta.timestamp,
+        source: meta.source,
+        kind: meta.kind,
+      } satisfies IndexedDBYjsUpdateRecord);
+      await done;
+    } finally {
+      db.close();
+    }
+  }
+
+  async clear(): Promise<void> {
+    const db = await this.open();
+    try {
+      const transaction = db.transaction(this.storeName, "readwrite");
+      const done = idbTransactionDone(transaction);
+      const index = transaction.objectStore(this.storeName).index("room");
+      index.openCursor(this.room).onsuccess = (event): void => {
+        const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+        if (!cursor) {
+          return;
+        }
+        cursor.delete();
+        cursor.continue();
+      };
+      await done;
+    } finally {
+      db.close();
+    }
+  }
+
+  private open(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = this.dbFactory.open(this.name, 1);
+      request.onupgradeneeded = (): void => {
+        const db = request.result;
+        const store = db.objectStoreNames.contains(this.storeName)
+          ? request.transaction!.objectStore(this.storeName)
+          : db.createObjectStore(this.storeName, { keyPath: "id", autoIncrement: true });
+        if (!store.indexNames.contains("room")) {
+          store.createIndex("room", "room", { unique: false });
+        }
+      };
+      request.onsuccess = (): void => resolve(request.result);
+      request.onerror = (): void => reject(request.error ?? new Error("Failed to open OpenRTC Yjs IndexedDB store"));
+      request.onblocked = (): void => reject(new Error("OpenRTC Yjs IndexedDB store upgrade was blocked"));
+    });
   }
 }
 
@@ -656,6 +849,27 @@ async function toUint8Array(data: unknown): Promise<Uint8Array> {
 
 function isBlobLike(value: unknown): value is { arrayBuffer(): Promise<ArrayBuffer> } {
   return typeof value === "object" && value !== null && "arrayBuffer" in value;
+}
+
+function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = (): void => resolve(request.result);
+    request.onerror = (): void => reject(request.error ?? new Error("IndexedDB request failed"));
+  });
+}
+
+function idbTransactionDone(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = (): void => resolve();
+    transaction.onabort = (): void => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
+    transaction.onerror = (): void => reject(transaction.error ?? new Error("IndexedDB transaction failed"));
+  });
+}
+
+function copyToArrayBuffer(update: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(update.byteLength);
+  copy.set(update);
+  return copy.buffer;
 }
 
 function syncedKind(kind: number): YjsSyncedFrameKind {
