@@ -1282,6 +1282,39 @@ func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	}
 }
 
+func TestRuntimeCloseClosesActiveSockets(t *testing.T) {
+	service := newRuntimeUnitService(t)
+
+	conn := runtimeTestConn(service, "conn-close", &auth.Claims{Tenant: "tenant-a"}, 2)
+	yjsConn := &yjsConn{
+		id:   "yjs-close",
+		room: "tenant-a:doc-1",
+		send: make(chan []byte, 1),
+		done: make(chan struct{}),
+	}
+	registerRuntimeYJSConn(service, yjsConn)
+
+	if err := service.Close(); err != nil {
+		t.Fatalf("close runtime service: %v", err)
+	}
+	if !conn.closed {
+		t.Fatalf("expected JSON websocket connection to be closed")
+	}
+	if !yjsConn.closed {
+		t.Fatalf("expected Yjs websocket connection to be closed")
+	}
+	select {
+	case <-conn.done:
+	default:
+		t.Fatalf("expected JSON websocket done channel to be closed")
+	}
+	select {
+	case <-yjsConn.done:
+	default:
+		t.Fatalf("expected Yjs websocket done channel to be closed")
+	}
+}
+
 func TestRuntimeYJSStoreErrors(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()

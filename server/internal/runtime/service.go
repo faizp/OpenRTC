@@ -244,10 +244,31 @@ func (s *Service) DevConnectionsSnapshot() DevConnectionsSnapshot {
 
 func (s *Service) Close() error {
 	s.cancel()
+	s.closeActiveSockets()
 	if s.store != nil {
 		return s.store.Close()
 	}
 	return nil
+}
+
+func (s *Service) closeActiveSockets() {
+	s.mu.RLock()
+	conns := make([]*clientConn, 0, len(s.conns))
+	for _, conn := range s.conns {
+		conns = append(conns, conn)
+	}
+	yjsConns := make([]*yjsConn, 0, len(s.yjsConns))
+	for _, conn := range s.yjsConns {
+		yjsConns = append(yjsConns, conn)
+	}
+	s.mu.RUnlock()
+
+	for _, conn := range conns {
+		conn.close(websocket.CloseGoingAway, "runtime closing")
+	}
+	for _, conn := range yjsConns {
+		conn.close(websocket.CloseGoingAway, "runtime closing")
+	}
 }
 
 func (s *Service) Handler() http.Handler {
@@ -1364,6 +1385,9 @@ func (c *clientConn) close(code int, reason string) {
 	}
 	c.closed = true
 	close(c.done)
+	if c.ws == nil {
+		return
+	}
 	c.writeMu.Lock()
 	_ = c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(writeWait))
 	c.writeMu.Unlock()
@@ -1378,6 +1402,9 @@ func (c *yjsConn) close(code int, reason string) {
 	}
 	c.closed = true
 	close(c.done)
+	if c.ws == nil {
+		return
+	}
 	c.writeMu.Lock()
 	_ = c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(writeWait))
 	c.writeMu.Unlock()

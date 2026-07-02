@@ -1534,6 +1534,12 @@
                     <td>Binary connect, update send, replay, snapshot rejection</td>
                   </tr>
                   <tr>
+                    <td>Local crash/reconnect drill</td>
+                    <td><span class="badge ok">implemented</span></td>
+                    <td class="mono">openrtc dev /dev/crash/runtime, /dev/sockets</td>
+                    <td>Restart runtime, reconnect, verify socket and presence</td>
+                  </tr>
+                  <tr>
                     <td>CRDT conflict resolution</td>
                     <td><span class="badge info">Yjs-owned</span></td>
                     <td class="mono">@openrtc/yjs</td>
@@ -1921,6 +1927,7 @@
               <button type="button" onclick="runAction('ops-output', checkHealth)">Health</button>
               <button type="button" onclick="runAction('probe-log', loadStats)">Stats</button>
               <button type="button" onclick="runAction('ops-output', loadMetrics)">Metrics</button>
+              <button type="button" onclick="runAction('ops-output', loadDevSockets)">Dev sockets</button>
             </div>
           </div>
           <div class="grid two">
@@ -1931,6 +1938,19 @@
             <div class="grid">
               <h3>Health and Metrics</h3>
               <div class="output"><pre id="ops-output"></pre></div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="panel-header">
+              <div>
+                <h3>Local Dev Failure Drill</h3>
+                <p>Requires openrtc dev. Restarts local services and verifies runtime reconnect behavior.</p>
+              </div>
+              <div class="button-row">
+                <button type="button" class="primary" onclick="runAction('ops-output', runRuntimeReconnectDrill)">Runtime reconnect drill</button>
+                <button type="button" onclick="runAction('ops-output', restartDevRuntime)">Restart runtime</button>
+                <button type="button" onclick="runAction('ops-output', restartDevAdmin)">Restart admin</button>
+              </div>
             </div>
           </div>
         </section>
@@ -3200,6 +3220,71 @@
       byId("ops-output").textContent = chunks.join("\n\n");
     }
 
+    async function loadDevSockets() {
+      const snapshot = await readDevSockets(currentRoom(), "ops-output");
+      setOutput("ops-output", snapshot);
+      return snapshot;
+    }
+
+    async function restartDevRuntime() {
+      const result = await devJSON("/dev/crash/runtime", { method: "POST" }, "ops-output");
+      await waitForHTTPReady("/runtime/readyz", 8000, "runtime readiness after restart");
+      await checkHealth();
+      setOutput("ops-output", {
+        restart: result.body,
+        health: "runtime ready",
+      });
+      return result;
+    }
+
+    async function restartDevAdmin() {
+      const result = await devJSON("/dev/crash/admin", { method: "POST" }, "ops-output");
+      await waitForHTTPReady("/admin/readyz", 8000, "admin readiness after restart");
+      await checkHealth();
+      setOutput("ops-output", {
+        restart: result.body,
+        health: "admin ready",
+      });
+      return result;
+    }
+
+    async function runRuntimeReconnectDrill() {
+      activateTab("ops");
+      await ensureConfig();
+      await ensureClientToken();
+      log("ops-output", { room: currentRoom() }, "warn", "reconnect drill started");
+
+      await connectAndJoin();
+      setClientPresence();
+      await waitUntil(() => state.connId && state.presence.has(state.connId), 5000, "presence echo before runtime restart");
+      const beforeConnID = state.connId;
+      const beforeSockets = await readDevSockets(currentRoom(), "ops-output");
+
+      await devJSON("/dev/crash/runtime", { method: "POST" }, "ops-output");
+      await waitUntil(() => !state.ws || state.ws.readyState === WebSocket.CLOSED, 5000, "primary socket close after runtime restart");
+      await waitForHTTPReady("/runtime/readyz", 8000, "runtime readiness after restart");
+
+      await connectAndJoin();
+      await waitUntil(() => state.connId && state.connId !== beforeConnID, 5000, "new runtime connection ID");
+      setClientPresence();
+      await waitUntil(() => state.connId && state.presence.has(state.connId), 5000, "presence echo after runtime reconnect");
+      const afterSockets = await readDevSockets(currentRoom(), "ops-output");
+      const summary = {
+        room: currentRoom(),
+        beforeConnID,
+        afterConnID: state.connId,
+        beforeActiveSockets: beforeSockets.active_sockets || 0,
+        afterActiveSockets: afterSockets.active_sockets || 0,
+        afterConnections: (afterSockets.connections || []).map((conn) => ({
+          connection_id: conn.connection_id,
+          rooms: conn.rooms,
+        })),
+      };
+      setOutput("ops-output", summary);
+      log("ops-output", summary, "ok", "reconnect drill passed");
+      return summary;
+    }
+
     async function runSmokeProbe() {
       activateTab("overview");
       const stamp = Date.now();
@@ -3268,6 +3353,7 @@
         await waitUntil(() => state.counters.events > eventsBeforeAdmin, 5000, "admin publish fan-out");
         await setAdminPresence();
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/active_users", {}, "probe-log");
+        await readDevSockets(currentRoom(), "probe-log", { allowUnavailable: true });
 
         const yjsFramesBefore = state.yjsFrames.length;
         await connectYjs();
@@ -3283,6 +3369,58 @@
         log("probe-log", error.message, "err", "probe failed");
         throw error;
       }
+    }
+
+    async function devJSON(path, options = {}, logID = "ops-output", extra = {}) {
+      await ensureConfig();
+      const method = options.method || "GET";
+      const headers = {};
+      const init = { method, headers };
+      if (options.body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(options.body);
+      }
+      const response = await fetch(path, init);
+      const text = await response.text();
+      const body = parseResponseBody(text);
+      const allowed = extra.allowStatuses || [];
+      const ok = response.ok || allowed.includes(response.status);
+      log(logID, { method, path, status: response.status, body }, ok ? "ok" : "err", "dev");
+      if (!ok) {
+        const message = body && body.message ? body.message : response.status + " " + response.statusText;
+        throw new Error(method + " " + path + ": " + message + " (requires openrtc dev)");
+      }
+      return { status: response.status, body };
+    }
+
+    async function readDevSockets(room = "", logID = "ops-output", options = {}) {
+      const path = "/dev/sockets" + (room ? "?room=" + encodeURIComponent(room) : "");
+      const extra = options.allowUnavailable ? { allowStatuses: [404, 503] } : {};
+      const result = await devJSON(path, {}, logID, extra);
+      if (result.status === 404 || result.status === 503) {
+        return {
+          unavailable: true,
+          status: result.status,
+          message: "Dev socket inspection requires openrtc dev",
+        };
+      }
+      return result.body;
+    }
+
+    async function waitForHTTPReady(path, timeoutMs, label) {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        try {
+          const response = await fetch(path, { cache: "no-store" });
+          if (response.ok) {
+            return;
+          }
+        } catch {
+          // Keep polling while the local process restarts.
+        }
+        await delay(100);
+      }
+      throw new Error("Timed out waiting for " + label);
     }
 
     async function adminJSON(path, options = {}, logID = "probe-log", extra = {}) {

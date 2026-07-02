@@ -52,6 +52,7 @@ The dev server starts:
 - Same-origin runtime proxy at `http://127.0.0.1:3000/runtime`
 - Active-user reads at `http://127.0.0.1:3000/dev/connections?room=demo:room-1`
 - Local runtime socket reads at `http://127.0.0.1:3000/dev/sockets`
+- Ops reconnect drill that restarts the local runtime and verifies reconnect plus presence echo
 
 The older reference server entrypoint still works from this directory:
 
