@@ -405,16 +405,24 @@ assert.equal(
   }),
 );
 assert.equal(room.getStorageStatus(), "synchronizing");
+assert.deepEqual(room.getStorageSnapshot(), { title: "Published", version: 2 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Published", version: 2 },
+  source: "optimistic",
+  kind: "set",
+  opId: "op-set-1",
+});
 roomSocket.receive({
   t: "STORAGE_ACK",
   id: "storage-set-6",
   room: "tenant-a:room-api",
-  payload: { kind: "set", op_id: "op-set-1", document: { title: "Published", version: 2 } },
+  payload: { kind: "set", op_id: "op-set-1", document: { title: "Published", version: 20 } },
 });
-assert.deepEqual(await setStorage, { title: "Published", version: 2 });
+assert.deepEqual(await setStorage, { title: "Published", version: 20 });
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
-  document: { title: "Published", version: 2 },
+  document: { title: "Published", version: 20 },
   source: "ack",
   kind: "set",
   opId: "op-set-1",
@@ -431,13 +439,22 @@ assert.equal(
     meta: { op_id: "op-patch-1" },
   }),
 );
+assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 20 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Patched", version: 20 },
+  source: "optimistic",
+  kind: "patch",
+  opId: "op-patch-1",
+  operations: [{ op: "replace", path: "/title", value: "Patched" }],
+});
 roomSocket.receive({
   t: "STORAGE_ACK",
   id: "storage-patch-7",
   room: "tenant-a:room-api",
-  payload: { kind: "patch", op_id: "op-patch-1", document: { title: "Patched", version: 2 } },
+  payload: { kind: "patch", op_id: "op-patch-1", document: { title: "Patched", version: 20 } },
 });
-assert.deepEqual(await patchStorage, { title: "Patched", version: 2 });
+assert.deepEqual(await patchStorage, { title: "Patched", version: 20 });
 
 roomSocket.receive({
   t: "STORAGE_UPDATE",
@@ -461,6 +478,26 @@ assert.deepEqual(storageEvents.at(-1), {
   operations: [{ op: "replace", path: "/version", value: 3 }],
 });
 
+const failedPatch = room.patchStorage([{ op: "replace", path: "/version", value: 4 }], { opId: "op-fail-1" });
+assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 4 });
+roomSocket.receive({
+  t: "ERROR",
+  id: "storage-patch-8",
+  payload: {
+    code: "PATCH_FAILED",
+    message: "patch failed",
+    request_id: "storage-patch-8",
+  },
+});
+await assert.rejects(failedPatch, /patch failed/);
+assert.equal(room.getStorageStatus(), "error");
+assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Patched", version: 3 },
+  source: "rollback",
+});
+
 offOthers();
 offMyPresence();
 offEvents();
@@ -475,7 +512,7 @@ const offRoomReset = roomClient.on("room", (state) => {
 leave();
 assert.equal(
   roomSocket.sent.at(-1),
-  JSON.stringify({ t: "LEAVE", id: "leave-8", room: "tenant-a:room-api" }),
+  JSON.stringify({ t: "LEAVE", id: "leave-9", room: "tenant-a:room-api" }),
 );
 assert.equal(sawClosedRoomReset, true);
 roomSocket.close();

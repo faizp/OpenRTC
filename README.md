@@ -112,8 +112,10 @@ focused again. Room handles emit `lost`, `restored`, and `failed` through the
 after a hard failure. Room storage uses the runtime `STORAGE_GET`,
 `STORAGE_SET`, and `STORAGE_PATCH` protocol, keeps the latest authoritative
 snapshot in memory, emits `storage` / `storage-status` updates, and requests a
-fresh snapshot when an active room reconnects. Collaborative text remains owned
-by the Yjs provider.
+fresh snapshot when an active room reconnects. `setStorage` and loaded
+`patchStorage` calls apply optimistic local updates, then replace local state
+with the authoritative server ack or roll back on failure. Collaborative text
+remains owned by the Yjs provider.
 
 The React package exposes the same lifecycle through `useEnterRoom`,
 `usePresence`, `useOthers`, `useOthersMapped`, `useOthersConnectionIds`,

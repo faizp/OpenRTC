@@ -186,7 +186,7 @@ export interface JSONPatchOperation {
 
 export type OpenRTCStorageStatus = "not-loaded" | "loading" | "synchronizing" | "synchronized" | "error";
 export type OpenRTCStorageMutationKind = "set" | "patch";
-export type OpenRTCStorageEventSource = "snapshot" | "ack" | "remote";
+export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "remote" | "rollback";
 
 export interface OpenRTCStorageMutationOptions {
   opId?: string;
@@ -194,7 +194,7 @@ export interface OpenRTCStorageMutationOptions {
 
 export interface OpenRTCStorageEvent<TDocument = unknown> {
   room: string;
-  document: TDocument;
+  document: TDocument | undefined;
   source: OpenRTCStorageEventSource;
   kind?: OpenRTCStorageMutationKind;
   opId?: string;
@@ -409,6 +409,8 @@ interface PendingStorageGet {
 
 interface PendingStorageMutation extends PendingStorageGet {
   room: string;
+  hadPreviousDocument: boolean;
+  previousDocument?: unknown;
 }
 
 interface ActiveRoomEntry {
@@ -1179,17 +1181,41 @@ export class OpenRTCClient {
     options: OpenRTCStorageMutationOptions,
   ): Promise<TDocument> {
     const id = this.nextID(kind === "set" ? "storage-set" : "storage-patch");
+    const opId = options.opId;
+    const operations = kind === "patch" ? asJSONPatchOperations(payload) : undefined;
+    if (kind === "patch" && !operations) {
+      return Promise.reject(new Error("Storage patch must be a valid JSON Patch operation array"));
+    }
+    const hadPreviousDocument = this.storageByRoom.has(room);
+    const previousDocument = hadPreviousDocument ? cloneStorageDocument(this.storageByRoom.get(room)) : undefined;
+    let optimisticDocument: unknown | undefined;
+    let hasOptimisticDocument = false;
+
+    try {
+      if (kind === "set") {
+        optimisticDocument = cloneStorageDocument(payload);
+        hasOptimisticDocument = true;
+      } else if (hadPreviousDocument) {
+        optimisticDocument = applyJSONPatchOptimistic(previousDocument, operations ?? []);
+        hasOptimisticDocument = true;
+      }
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+
     const message: Record<string, unknown> = {
       t: kind === "set" ? "STORAGE_SET" : "STORAGE_PATCH",
       id,
       room,
-      payload,
-      ...(options.opId ? { meta: { op_id: options.opId } } : {}),
+      payload: kind === "patch" ? operations : payload,
+      ...(opId ? { meta: { op_id: opId } } : {}),
     };
 
     return new Promise<TDocument>((resolve, reject) => {
       this.pendingStorageMutations.set(id, {
         room,
+        hadPreviousDocument,
+        ...(hadPreviousDocument ? { previousDocument } : {}),
         resolve: (document) => {
           resolve(document as TDocument);
         },
@@ -1197,12 +1223,26 @@ export class OpenRTCClient {
       });
       this.storageRequestedRooms.add(room);
       this.setStorageStatus(room, "synchronizing");
+      if (hasOptimisticDocument) {
+        this.applyStorageMessage(room, optimisticDocument, {
+          source: "optimistic",
+          kind,
+          ...(opId ? { opId } : {}),
+          ...(kind === "patch" && operations ? { operations } : {}),
+        });
+      }
       try {
         this.send(message);
       } catch (error) {
+        const pending = this.pendingStorageMutations.get(id);
         this.pendingStorageMutations.delete(id);
-        this.setStorageStatus(room, "error");
-        reject(error instanceof Error ? error : new Error(String(error)));
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        if (pending) {
+          this.rollbackStorageMutation(pending);
+        } else {
+          this.setStorageStatus(room, "error");
+        }
+        reject(normalized);
       }
     });
   }
@@ -1519,7 +1559,11 @@ export class OpenRTCClient {
     options: Omit<OpenRTCStorageEvent, "room" | "document">,
   ): void {
     this.storageByRoom.set(room, document);
-    this.setStorageStatus(room, "synchronized");
+    if (options.source === "rollback") {
+      this.setStorageStatus(room, "error");
+    } else if (options.source !== "optimistic") {
+      this.setStorageStatus(room, "synchronized");
+    }
     this.emit("storage", {
       room,
       document,
@@ -1559,8 +1603,8 @@ export class OpenRTCClient {
     const mutation = this.pendingStorageMutations.get(requestId);
     if (mutation) {
       this.pendingStorageMutations.delete(requestId);
+      this.rollbackStorageMutation(mutation);
       mutation.reject(error);
-      this.setStorageStatus(mutation.room, "error");
     }
   }
 
@@ -1583,10 +1627,24 @@ export class OpenRTCClient {
     this.pendingStorageGets.clear();
 
     for (const pending of this.pendingStorageMutations.values()) {
+      this.rollbackStorageMutation(pending);
       pending.reject(error);
-      this.setStorageStatus(pending.room, "error");
     }
     this.pendingStorageMutations.clear();
+  }
+
+  private rollbackStorageMutation(mutation: PendingStorageMutation): void {
+    if (mutation.hadPreviousDocument) {
+      this.applyStorageMessage(mutation.room, cloneStorageDocument(mutation.previousDocument), { source: "rollback" });
+      return;
+    }
+    this.storageByRoom.delete(mutation.room);
+    this.setStorageStatus(mutation.room, "error");
+    this.emit("storage", {
+      room: mutation.room,
+      document: undefined,
+      source: "rollback",
+    });
   }
 
   private getOrCreatePresence(room: string): Map<string, PresenceState> {
@@ -2286,6 +2344,168 @@ function isJSONPatchOperationType(value: unknown): value is JSONPatchOperationTy
     value === "copy" ||
     value === "test"
   );
+}
+
+function applyJSONPatchOptimistic(document: unknown, operations: JSONPatchOperation[]): unknown {
+  let next = cloneStorageDocument(document);
+  for (const operation of operations) {
+    switch (operation.op) {
+      case "add":
+        assertPatchValue(operation);
+        next = setPatchValue(next, operation.path, operation.value, "add");
+        break;
+      case "replace":
+        assertPatchValue(operation);
+        next = setPatchValue(next, operation.path, operation.value, "replace");
+        break;
+      case "remove":
+        next = removePatchValue(next, operation.path).document;
+        break;
+      case "test":
+        assertPatchValue(operation);
+        if (!jsonEqual(getPatchValue(next, operation.path), operation.value)) {
+          throw new Error(`Storage patch test failed at ${operation.path || "/"}`);
+        }
+        break;
+      case "copy":
+        assertPatchFrom(operation);
+        next = setPatchValue(next, operation.path, cloneStorageDocument(getPatchValue(next, operation.from)), "add");
+        break;
+      case "move": {
+        assertPatchFrom(operation);
+        const value = cloneStorageDocument(getPatchValue(next, operation.from));
+        next = removePatchValue(next, operation.from).document;
+        next = setPatchValue(next, operation.path, value, "add");
+        break;
+      }
+    }
+  }
+  return next;
+}
+
+function cloneStorageDocument<T>(value: T): T {
+  if (value === undefined || value === null || typeof value !== "object") {
+    return value;
+  }
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function assertPatchValue(operation: JSONPatchOperation): void {
+  if (!("value" in operation)) {
+    throw new Error(`Storage patch ${operation.op} operation requires value`);
+  }
+}
+
+function assertPatchFrom(operation: JSONPatchOperation): asserts operation is JSONPatchOperation & { from: string } {
+  if (typeof operation.from !== "string") {
+    throw new Error(`Storage patch ${operation.op} operation requires from`);
+  }
+}
+
+function getPatchValue(document: unknown, path: string): unknown {
+  const parts = parseJSONPointer(path);
+  let current = document;
+  for (const part of parts) {
+    if (Array.isArray(current)) {
+      current = current[parsePatchArrayIndex(part, current.length, false)];
+      continue;
+    }
+    if (isObject(current) && Object.prototype.hasOwnProperty.call(current, part)) {
+      current = current[part];
+      continue;
+    }
+    throw new Error(`Storage patch path does not exist: ${path || "/"}`);
+  }
+  return current;
+}
+
+function setPatchValue(document: unknown, path: string, value: unknown, mode: "add" | "replace"): unknown {
+  const parts = parseJSONPointer(path);
+  const nextValue = cloneStorageDocument(value);
+  if (parts.length === 0) {
+    return nextValue;
+  }
+  const { container, key } = getPatchParent(document, parts);
+  if (Array.isArray(container)) {
+    const index = key === "-" && mode === "add" ? container.length : parsePatchArrayIndex(key, container.length, mode === "add");
+    if (mode === "add") {
+      container.splice(index, 0, nextValue);
+    } else {
+      container[index] = nextValue;
+    }
+    return document;
+  }
+  if (mode === "replace" && !Object.prototype.hasOwnProperty.call(container, key)) {
+    throw new Error(`Storage patch path does not exist: ${path}`);
+  }
+  container[key] = nextValue;
+  return document;
+}
+
+function removePatchValue(document: unknown, path: string): { document: unknown; value: unknown } {
+  const parts = parseJSONPointer(path);
+  if (parts.length === 0) {
+    throw new Error("Removing the storage root is not supported");
+  }
+  const { container, key } = getPatchParent(document, parts);
+  if (Array.isArray(container)) {
+    const index = parsePatchArrayIndex(key, container.length, false);
+    const [value] = container.splice(index, 1);
+    return { document, value };
+  }
+  if (!Object.prototype.hasOwnProperty.call(container, key)) {
+    throw new Error(`Storage patch path does not exist: ${path}`);
+  }
+  const value = container[key];
+  delete container[key];
+  return { document, value };
+}
+
+function getPatchParent(document: unknown, parts: string[]): { container: Record<string, unknown> | unknown[]; key: string } {
+  let current = document;
+  for (const part of parts.slice(0, -1)) {
+    current = getPatchValue(current, `/${escapeJSONPointer(part)}`);
+  }
+  if (!isObject(current) && !Array.isArray(current)) {
+    throw new Error(`Storage patch parent is not a container: /${parts.slice(0, -1).map(escapeJSONPointer).join("/")}`);
+  }
+  return { container: current as Record<string, unknown> | unknown[], key: parts[parts.length - 1] ?? "" };
+}
+
+function parseJSONPointer(path: string): string[] {
+  if (path === "") {
+    return [];
+  }
+  if (!path.startsWith("/")) {
+    throw new Error(`Storage patch path must be a JSON Pointer: ${path}`);
+  }
+  return path
+    .slice(1)
+    .split("/")
+    .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+}
+
+function escapeJSONPointer(part: string): string {
+  return part.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+function parsePatchArrayIndex(part: string, length: number, allowEnd: boolean): number {
+  if (!/^(0|[1-9]\d*)$/.test(part)) {
+    throw new Error(`Storage patch array index is invalid: ${part}`);
+  }
+  const index = Number(part);
+  const max = allowEnd ? length : length - 1;
+  if (index < 0 || index > max) {
+    throw new Error(`Storage patch array index is out of bounds: ${part}`);
+  }
+  return index;
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function normalizeRoomEvent(event: RoomBroadcastInput, payload: unknown): { event: string; payload: unknown } {
