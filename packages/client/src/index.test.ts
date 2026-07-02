@@ -8,6 +8,14 @@ import {
   getPresenceCursor,
   getPresenceUser,
   isOpenRTCCursor,
+  isLiveList,
+  isLiveMap,
+  isLiveObject,
+  isLiveStorageNode,
+  liveList,
+  liveMap,
+  liveObject,
+  liveObjectPatch,
   type OpenRTCDiagnosticEvent,
   type OpenRTCStorageEvent,
   type OpenRTCWebSocket,
@@ -498,6 +506,64 @@ assert.deepEqual(storageEvents.at(-1), {
   source: "rollback",
 });
 
+const typedItems = liveList(["a"]);
+const typedProps = liveMap({ visible: true });
+const typedRoot = liveObject({ title: "Typed Draft", items: typedItems, props: typedProps });
+assert.equal(isLiveList(typedItems), true);
+assert.equal(isLiveMap(typedProps), true);
+assert.equal(isLiveObject(typedRoot), true);
+assert.equal(isLiveStorageNode(typedRoot, "LiveObject"), true);
+assert.deepEqual(liveObjectPatch({ "a/b": 1 }, { basePath: "/data/props/data" }), [
+  { op: "add", path: "/data/props/data/a~1b", value: 1 },
+]);
+
+const typedSet = room.setLiveStorage(
+  { title: "Typed Draft", items: typedItems, props: typedProps },
+  { opId: "typed-set-1" },
+);
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_SET",
+    id: "storage-set-9",
+    room: "tenant-a:room-api",
+    payload: typedRoot,
+    meta: { op_id: "typed-set-1" },
+  }),
+);
+assert.deepEqual(room.getStorageSnapshot(), typedRoot);
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-set-9",
+  room: "tenant-a:room-api",
+  payload: { kind: "set", op_id: "typed-set-1", document: typedRoot },
+});
+assert.deepEqual(await typedSet, typedRoot);
+
+const typedUpdate = room.updateLiveStorage<{ title: string; items: unknown; props: unknown }>(
+  { title: "Typed Published" },
+  { opId: "typed-update-1" },
+);
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_PATCH",
+    id: "storage-patch-10",
+    room: "tenant-a:room-api",
+    payload: [{ op: "add", path: "/data/title", value: "Typed Published" }],
+    meta: { op_id: "typed-update-1" },
+  }),
+);
+const typedPublished = liveObject({ title: "Typed Published", items: typedItems, props: typedProps });
+assert.deepEqual(room.getStorageSnapshot(), typedPublished);
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-patch-10",
+  room: "tenant-a:room-api",
+  payload: { kind: "patch", op_id: "typed-update-1", document: typedPublished },
+});
+assert.deepEqual(await typedUpdate, typedPublished);
+
 offOthers();
 offMyPresence();
 offEvents();
@@ -512,7 +578,7 @@ const offRoomReset = roomClient.on("room", (state) => {
 leave();
 assert.equal(
   roomSocket.sent.at(-1),
-  JSON.stringify({ t: "LEAVE", id: "leave-9", room: "tenant-a:room-api" }),
+  JSON.stringify({ t: "LEAVE", id: "leave-11", room: "tenant-a:room-api" }),
 );
 assert.equal(sawClosedRoomReset, true);
 roomSocket.close();

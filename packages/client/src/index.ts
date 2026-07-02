@@ -184,6 +184,20 @@ export interface JSONPatchOperation {
   value?: unknown;
 }
 
+export type OpenRTCLiveStorageType = "LiveObject" | "LiveList" | "LiveMap";
+
+export interface OpenRTCLiveStorageNode<TType extends OpenRTCLiveStorageType, TData> {
+  liveblocksType: TType;
+  data: TData;
+}
+
+export type OpenRTCLiveObject<TData extends Record<string, unknown> = Record<string, unknown>> =
+  OpenRTCLiveStorageNode<"LiveObject", TData>;
+export type OpenRTCLiveList<TItem = unknown> = OpenRTCLiveStorageNode<"LiveList", TItem[]>;
+export type OpenRTCLiveMap<TData extends Record<string, unknown> = Record<string, unknown>> =
+  OpenRTCLiveStorageNode<"LiveMap", TData>;
+export type OpenRTCLiveStorageNodeValue = OpenRTCLiveObject | OpenRTCLiveList | OpenRTCLiveMap;
+
 export type OpenRTCStorageStatus = "not-loaded" | "loading" | "synchronizing" | "synchronized" | "error";
 export type OpenRTCStorageMutationKind = "set" | "patch";
 export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "remote" | "rollback";
@@ -227,6 +241,14 @@ export interface OpenRTCRoom {
     document: TDocument,
     options?: OpenRTCStorageMutationOptions,
   ): Promise<TDocument>;
+  setLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    data: TData | OpenRTCLiveObject<TData>,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<OpenRTCLiveObject<TData>>;
+  updateLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    patch: Partial<TData>,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<OpenRTCLiveObject<TData>>;
   patchStorage<TDocument = unknown>(
     operations: JSONPatchOperation[],
     options?: OpenRTCStorageMutationOptions,
@@ -759,6 +781,22 @@ export class OpenRTCClient {
     options: OpenRTCStorageMutationOptions = {},
   ): Promise<TDocument> {
     return this.mutateStorage<TDocument>("set", room, document, options);
+  }
+
+  setLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    room: string,
+    data: TData | OpenRTCLiveObject<TData>,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<OpenRTCLiveObject<TData>> {
+    return this.setStorage<OpenRTCLiveObject<TData>>(room, normalizeLiveObjectRoot(data), options);
+  }
+
+  updateLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    room: string,
+    patch: Partial<TData>,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<OpenRTCLiveObject<TData>> {
+    return this.patchStorage<OpenRTCLiveObject<TData>>(room, liveObjectPatch(patch), options);
   }
 
   patchStorage<TDocument = unknown>(
@@ -2071,6 +2109,20 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
     return this.client.setStorage<TDocument>(this.id, document, options);
   }
 
+  setLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    data: TData | OpenRTCLiveObject<TData>,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<OpenRTCLiveObject<TData>> {
+    return this.client.setLiveStorage<TData>(this.id, data, options);
+  }
+
+  updateLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    patch: Partial<TData>,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<OpenRTCLiveObject<TData>> {
+    return this.client.updateLiveStorage<TData>(this.id, patch, options);
+  }
+
   patchStorage<TDocument = unknown>(
     operations: JSONPatchOperation[],
     options: OpenRTCStorageMutationOptions = {},
@@ -2192,6 +2244,80 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
   }
 }
 
+export function liveObject<TData extends Record<string, unknown> = Record<string, unknown>>(
+  data: TData = {} as TData,
+): OpenRTCLiveObject<TData> {
+  assertLiveRecordData(data, "LiveObject");
+  return {
+    liveblocksType: "LiveObject",
+    data: cloneStorageDocument(data),
+  };
+}
+
+export function liveList<TItem = unknown>(data: TItem[] = []): OpenRTCLiveList<TItem> {
+  if (!Array.isArray(data)) {
+    throw new Error("LiveList data must be an array");
+  }
+  return {
+    liveblocksType: "LiveList",
+    data: cloneStorageDocument(data),
+  };
+}
+
+export function liveMap<TData extends Record<string, unknown> = Record<string, unknown>>(
+  data: TData = {} as TData,
+): OpenRTCLiveMap<TData> {
+  assertLiveRecordData(data, "LiveMap");
+  return {
+    liveblocksType: "LiveMap",
+    data: cloneStorageDocument(data),
+  };
+}
+
+export function isLiveObject<TData extends Record<string, unknown> = Record<string, unknown>>(
+  value: unknown,
+): value is OpenRTCLiveObject<TData> {
+  return isLiveStorageNode(value, "LiveObject") && isRecordObject(value.data);
+}
+
+export function isLiveList<TItem = unknown>(value: unknown): value is OpenRTCLiveList<TItem> {
+  return isLiveStorageNode(value, "LiveList") && Array.isArray(value.data);
+}
+
+export function isLiveMap<TData extends Record<string, unknown> = Record<string, unknown>>(
+  value: unknown,
+): value is OpenRTCLiveMap<TData> {
+  return isLiveStorageNode(value, "LiveMap") && isRecordObject(value.data);
+}
+
+export function isLiveStorageNode(value: unknown, type?: OpenRTCLiveStorageType): value is OpenRTCLiveStorageNodeValue {
+  if (!isRecordObject(value)) {
+    return false;
+  }
+  const liveblocksType = value["liveblocksType"];
+  if (liveblocksType !== "LiveObject" && liveblocksType !== "LiveList" && liveblocksType !== "LiveMap") {
+    return false;
+  }
+  return type === undefined || liveblocksType === type;
+}
+
+export function liveObjectPatch<TData extends Record<string, unknown>>(
+  patch: Partial<TData>,
+  options: { basePath?: string } = {},
+): JSONPatchOperation[] {
+  assertLiveRecordData(patch, "LiveObject patch");
+  const entries = Object.entries(patch);
+  if (entries.length === 0) {
+    throw new Error("LiveObject patch must contain at least one field");
+  }
+  const basePath = options.basePath ?? "/data";
+  return entries.map(([key, value]) => ({
+    op: "add",
+    path: joinJSONPointer(basePath, key),
+    value,
+  }));
+}
+
 export function isOpenRTCCursor(value: unknown): value is OpenRTCCursor {
   if (!isObject(value)) {
     return false;
@@ -2266,6 +2392,10 @@ function readMessageData(event: unknown): unknown {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isRecordObject(value: unknown): value is Record<string, unknown> {
+  return isObject(value) && !Array.isArray(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -2393,6 +2523,21 @@ function cloneStorageDocument<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function normalizeLiveObjectRoot<TData extends Record<string, unknown>>(
+  data: TData | OpenRTCLiveObject<TData>,
+): OpenRTCLiveObject<TData> {
+  if (isLiveObject<TData>(data)) {
+    return liveObject(data.data);
+  }
+  return liveObject(data);
+}
+
+function assertLiveRecordData(value: unknown, typeName: string): asserts value is Record<string, unknown> {
+  if (!isRecordObject(value)) {
+    throw new Error(`${typeName} data must be a JSON object`);
+  }
+}
+
 function assertPatchValue(operation: JSONPatchOperation): void {
   if (!("value" in operation)) {
     throw new Error(`Storage patch ${operation.op} operation requires value`);
@@ -2490,6 +2635,14 @@ function parseJSONPointer(path: string): string[] {
 
 function escapeJSONPointer(part: string): string {
   return part.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+function joinJSONPointer(basePath: string, part: string): string {
+  const normalizedBase = basePath === "" || basePath === "/" ? "" : basePath.replace(/\/+$/, "");
+  if (normalizedBase && !normalizedBase.startsWith("/")) {
+    throw new Error(`JSON Pointer base path must start with /: ${basePath}`);
+  }
+  return `${normalizedBase}/${escapeJSONPointer(part)}`;
 }
 
 function parsePatchArrayIndex(part: string, length: number, allowEnd: boolean): number {

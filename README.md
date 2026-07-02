@@ -58,7 +58,7 @@ room handle for app integrations that need ephemeral presence, live cursors,
 debuggable broadcast events, and realtime room storage.
 
 ```ts
-import { OpenRTCClient } from "@openrtc/client";
+import { OpenRTCClient, liveList, liveMap, liveObject } from "@openrtc/client";
 
 const client = new OpenRTCClient({
   url: "https://openrtc.example.com/ws",
@@ -96,6 +96,14 @@ await room.patchStorage([{ op: "replace", path: "/title", value: "Review" }], {
   opId: "title-edit-1",
 });
 
+const typedRoot = liveObject({
+  title: "Typed Draft",
+  items: liveList(["intro"]),
+  props: liveMap({ visible: true }),
+});
+await room.setLiveStorage(typedRoot, { opId: "typed-init-1" });
+await room.updateLiveStorage({ title: "Typed Review" }, { opId: "typed-title-1" });
+
 unsubscribe();
 unsubscribeLostConnection();
 leave();
@@ -114,8 +122,10 @@ after a hard failure. Room storage uses the runtime `STORAGE_GET`,
 snapshot in memory, emits `storage` / `storage-status` updates, and requests a
 fresh snapshot when an active room reconnects. `setStorage` and loaded
 `patchStorage` calls apply optimistic local updates, then replace local state
-with the authoritative server ack or roll back on failure. Collaborative text
-remains owned by the Yjs provider.
+with the authoritative server ack or roll back on failure. Typed storage helpers
+build Liveblocks-style `LiveObject`, `LiveList`, and `LiveMap` envelopes and
+`updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
+reserved envelope JSON. Collaborative text remains owned by the Yjs provider.
 
 The React package exposes the same lifecycle through `useEnterRoom`,
 `usePresence`, `useOthers`, `useOthersMapped`, `useOthersConnectionIds`,
