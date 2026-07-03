@@ -1928,6 +1928,7 @@
               <button type="button" onclick="runAction('probe-log', loadStats)">Stats</button>
               <button type="button" onclick="runAction('ops-output', loadMetrics)">Metrics</button>
               <button type="button" onclick="runAction('ops-output', loadDevSockets)">Dev sockets</button>
+              <button type="button" onclick="runAction('ops-output', loadDevEvents)">Dev events</button>
             </div>
           </div>
           <div class="grid two">
@@ -3226,6 +3227,12 @@
       return snapshot;
     }
 
+    async function loadDevEvents() {
+      const snapshot = await readDevEvents(currentRoom(), "ops-output");
+      setOutput("ops-output", snapshot);
+      return snapshot;
+    }
+
     async function restartDevRuntime() {
       const result = await devJSON("/dev/crash/runtime", { method: "POST" }, "ops-output");
       await waitForHTTPReady("/runtime/readyz", 8000, "runtime readiness after restart");
@@ -3402,6 +3409,24 @@
           unavailable: true,
           status: result.status,
           message: "Dev socket inspection requires openrtc dev",
+        };
+      }
+      return result.body;
+    }
+
+    async function readDevEvents(room = "", logID = "ops-output", options = {}) {
+      const query = new URLSearchParams();
+      if (room) query.set("room", room);
+      if (options.afterSequence !== undefined) query.set("after_seq", String(options.afterSequence));
+      if (options.limit !== undefined) query.set("limit", String(options.limit));
+      const path = "/dev/events" + (query.toString() ? "?" + query.toString() : "");
+      const extra = options.allowUnavailable ? { allowStatuses: [404, 503] } : {};
+      const result = await devJSON(path, {}, logID, extra);
+      if (result.status === 404 || result.status === 503) {
+        return {
+          unavailable: true,
+          status: result.status,
+          message: "Dev event log inspection requires openrtc dev",
         };
       }
       return result.body;

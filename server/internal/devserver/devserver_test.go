@@ -264,6 +264,66 @@ func TestHandleStorageReportsMissingDurableSnapshot(t *testing.T) {
 	}
 }
 
+func TestHandleEventsReportsPublishedEventLog(t *testing.T) {
+	handler := handleEvents(&fakeDevStorageStore{
+		events: []cluster.PublishedEvent{
+			{Room: "tenant-a:room-1", Event: "before", Payload: json.RawMessage(`{"n":1}`), Sequence: 1, OriginNode: "node-a"},
+			{Room: "tenant-a:room-1", Event: "after", Payload: json.RawMessage(`{"n":2}`), Sequence: 2, OriginNode: "node-a"},
+			{Room: "tenant-a:room-2", Event: "other-room", Payload: json.RawMessage(`{"n":3}`), Sequence: 3, OriginNode: "node-a"},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/events?room=tenant-a:room-1&after_seq=1&limit=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devEventsSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode events response: %v", err)
+	}
+	if body.Room != "tenant-a:room-1" || body.AfterSequence != 1 || body.Limit != 1 {
+		t.Fatalf("unexpected event snapshot metadata: %+v", body)
+	}
+	if len(body.Events) != 1 || body.Events[0].Event != "after" || body.Events[0].Sequence != 2 {
+		t.Fatalf("unexpected events: %+v", body.Events)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/events", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing room 400, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/events?room=tenant-a:room-1&after_seq=-1", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid after_seq 400, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/events?room=tenant-a:room-1&limit=1001", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid limit 400, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/events?room=tenant-a:room-1", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleEventsReportsStoreErrors(t *testing.T) {
+	handler := handleEvents(&fakeDevStorageStore{eventsErr: context.Canceled})
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/events?room=tenant-a:room-1", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected store failure 500, got %d", rec.Code)
+	}
+}
+
 func TestFilterSocketSnapshotByRoom(t *testing.T) {
 	snapshot := runtimeapp.DevConnectionsSnapshot{
 		NodeID:          "node-a",
@@ -332,8 +392,10 @@ func stringSliceClaim(value any) []string {
 }
 
 type fakeDevStorageStore struct {
-	document json.RawMessage
-	err      error
+	document  json.RawMessage
+	err       error
+	events    []cluster.PublishedEvent
+	eventsErr error
 }
 
 func (s *fakeDevStorageStore) GetStorage(context.Context, string) (json.RawMessage, error) {
@@ -344,6 +406,23 @@ func (s *fakeDevStorageStore) GetStorage(context.Context, string) (json.RawMessa
 		return nil, cluster.ErrStorageNotFound
 	}
 	return append(json.RawMessage(nil), s.document...), nil
+}
+
+func (s *fakeDevStorageStore) ListPublishedEvents(_ context.Context, room string, afterSequence uint64, limit int) (cluster.PublishedEventList, error) {
+	if s.eventsErr != nil {
+		return cluster.PublishedEventList{}, s.eventsErr
+	}
+	events := make([]cluster.PublishedEvent, 0, len(s.events))
+	for _, event := range s.events {
+		if event.Room != room || event.Sequence <= afterSequence {
+			continue
+		}
+		events = append(events, event)
+		if limit > 0 && len(events) >= limit {
+			break
+		}
+	}
+	return cluster.PublishedEventList{Events: events}, nil
 }
 
 func hasAudience(value any, audience string) bool {

@@ -38,6 +38,8 @@ const (
 	adminAudience    = "openrtc-admin"
 	localPublicKey   = "pk_localdev"
 	defaultSeedRooms = "demo:room-1,demo:canvas-1"
+	devEventsLimit   = 100
+	devEventsMax     = 1000
 )
 
 var privateKey *rsa.PrivateKey
@@ -67,6 +69,10 @@ type storageGetter interface {
 	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
 }
 
+type publishedEventLister interface {
+	ListPublishedEvents(ctx context.Context, room string, afterSequence uint64, limit int) (cluster.PublishedEventList, error)
+}
+
 type devStorageSnapshot struct {
 	Room    string                         `json:"room"`
 	Durable devStorageDocumentSnapshot     `json:"durable"`
@@ -76,6 +82,13 @@ type devStorageSnapshot struct {
 type devStorageDocumentSnapshot struct {
 	Found    bool            `json:"found"`
 	Document json.RawMessage `json:"document,omitempty"`
+}
+
+type devEventsSnapshot struct {
+	Room          string                   `json:"room"`
+	AfterSequence uint64                   `json:"after_seq"`
+	Limit         int                      `json:"limit"`
+	Events        []cluster.PublishedEvent `json:"events"`
 }
 
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -218,6 +231,7 @@ func run(ctx context.Context, opts options) error {
 	mux.HandleFunc("/dev/connections", handleConnections(store))
 	mux.HandleFunc("/dev/sockets", handleSockets(currentRuntimeService))
 	mux.HandleFunc("/dev/storage", handleStorage(store, currentRuntimeService))
+	mux.HandleFunc("/dev/events", handleEvents(store))
 	mux.HandleFunc("/dev/crash/runtime", handleRestart(runtimeSvc))
 	mux.HandleFunc("/dev/crash/admin", handleRestart(adminSvc))
 	mux.Handle("/admin/", reverseProxy("/admin", fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort)))
@@ -515,6 +529,46 @@ func handleStorage(store storageGetter, currentRuntimeService func() *runtimeapp
 	}
 }
 
+func handleEvents(store publishedEventLister) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		room := strings.TrimSpace(r.URL.Query().Get("room"))
+		if room == "" {
+			http.Error(w, "room query parameter is required", http.StatusBadRequest)
+			return
+		}
+		afterSequence, err := parseOptionalUint(r.URL.Query().Get("after_seq"))
+		if err != nil {
+			http.Error(w, "after_seq must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		limit, err := parseOptionalLimit(r.URL.Query().Get("limit"), devEventsLimit, devEventsMax)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("limit must be an integer between 1 and %d", devEventsMax), http.StatusBadRequest)
+			return
+		}
+		list, err := store.ListPublishedEvents(r.Context(), room, afterSequence, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		events := list.Events
+		if events == nil {
+			events = []cluster.PublishedEvent{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(devEventsSnapshot{
+			Room:          room,
+			AfterSequence: afterSequence,
+			Limit:         limit,
+			Events:        events,
+		})
+	}
+}
+
 func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room string) runtimeapp.DevConnectionsSnapshot {
 	filtered := runtimeapp.DevConnectionsSnapshot{
 		NodeID:         snapshot.NodeID,
@@ -625,6 +679,26 @@ func envInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return parsed
+}
+
+func parseOptionalUint(raw string) (uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(raw, 10, 64)
+}
+
+func parseOptionalLimit(raw string, defaultValue int, maxValue int) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 1 || parsed > maxValue {
+		return 0, fmt.Errorf("invalid limit")
+	}
+	return parsed, nil
 }
 
 func csvList(raw string) []string {
