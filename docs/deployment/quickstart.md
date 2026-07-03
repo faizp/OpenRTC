@@ -10,11 +10,13 @@
 
 For local SDK and reference-app integration work, `openrtc dev` starts a local
 issuer, runtime, admin API, seeded rooms, same-origin proxies, and the browser
-dev console with Redis-backed state.
+dev console. It uses embedded Redis-compatible state by default.
 
 ```bash
-docker run -d --name openrtc-redis -p 6379:6379 redis:7-alpine
 go run ./server/cmd/openrtc dev
+
+# Optional external Redis:
+go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 ```
 
 Open `http://127.0.0.1:3000`. Use

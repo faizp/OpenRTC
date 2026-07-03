@@ -32,21 +32,22 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 
 `openrtc dev` starts a full local stack for integration work: a local JWKS
 issuer, the runtime, the admin API, the reference UI, seeded rooms, and same
-origin proxies.
+origin proxies. It uses an embedded Redis-compatible store by default, so no
+external service is required.
 
 ```bash
-# Start Redis if one is not already running.
-docker run -d --name openrtc-redis -p 6379:6379 redis:7-alpine
-
 # Start the integrated dev server from the repo root.
 go run ./server/cmd/openrtc dev
+
+# Optional: use external Redis instead of the embedded local store.
+go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 ```
 
 Then open `http://127.0.0.1:3000`. The dev server exposes:
 
 - `http://127.0.0.1:3000/jwks` for local token verification.
 - `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous client JWTs plus the local config and default room.
-- `http://127.0.0.1:3000/dev/status` for Redis, runtime/admin, seeded-room, and endpoint readiness.
+- `http://127.0.0.1:3000/dev/status` for storage backend, Redis protocol health, runtime/admin, seeded-room, and endpoint readiness.
 - `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
 - `http://127.0.0.1:8090` for the admin API.
 - `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.

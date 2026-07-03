@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/openrtc/openrtc/server/internal/admin"
@@ -40,6 +41,8 @@ const (
 	defaultSeedRooms = "demo:room-1,demo:canvas-1"
 	devEventsLimit   = 100
 	devEventsMax     = 1000
+	devStorageMemory = "memory"
+	devStorageRedis  = "redis"
 )
 
 var privateKey *rsa.PrivateKey
@@ -50,8 +53,15 @@ type options struct {
 	runtimePort int
 	adminPort   int
 	redisURL    string
+	storage     string
 	staticDir   string
 	seedRooms   []string
+}
+
+type devStoreHandle struct {
+	store    cluster.Store
+	redisURL string
+	closeFn  func() error
 }
 
 type managedService struct {
@@ -117,12 +127,13 @@ type devClientConfigSnapshot struct {
 }
 
 type devStatusSnapshot struct {
-	Status    string                  `json:"status"`
-	Redis     devDependencyStatus     `json:"redis"`
-	Runtime   devManagedServiceStatus `json:"runtime"`
-	Admin     devManagedServiceStatus `json:"admin"`
-	SeedRooms []devSeedRoomStatus     `json:"seed_rooms"`
-	Endpoints devEndpointSnapshot     `json:"endpoints"`
+	Status         string                  `json:"status"`
+	StorageBackend string                  `json:"storage_backend"`
+	Redis          devDependencyStatus     `json:"redis"`
+	Runtime        devManagedServiceStatus `json:"runtime"`
+	Admin          devManagedServiceStatus `json:"admin"`
+	SeedRooms      []devSeedRoomStatus     `json:"seed_rooms"`
+	Endpoints      devEndpointSnapshot     `json:"endpoints"`
 }
 
 type devDependencyStatus struct {
@@ -187,6 +198,7 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func parseOptions(args []string, output io.Writer) (options, error) {
 	var rawSeedRooms string
+	var rawStorage string
 	opts := options{}
 	flags := flag.NewFlagSet("openrtc dev", flag.ContinueOnError)
 	flags.SetOutput(output)
@@ -195,6 +207,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.IntVar(&opts.runtimePort, "runtime-port", envInt("OPENRTC_DEV_RUNTIME_PORT", 8080), "runtime port")
 	flags.IntVar(&opts.adminPort, "admin-port", envInt("OPENRTC_DEV_ADMIN_PORT", 8090), "admin API port")
 	flags.StringVar(&opts.redisURL, "redis-url", envOr("OPENRTC_DEV_REDIS_URL", envOr("REDIS_URL", "redis://localhost:6379/0")), "Redis URL for local durable state")
+	flags.StringVar(&rawStorage, "storage", envOr("OPENRTC_DEV_STORAGE", ""), "local storage backend: memory or redis")
 	flags.StringVar(&opts.staticDir, "static-dir", envOr("OPENRTC_DEV_STATIC_DIR", ""), "static UI directory")
 	flags.StringVar(&rawSeedRooms, "seed-rooms", envOr("OPENRTC_DEV_SEED_ROOMS", defaultSeedRooms), "comma-separated rooms to seed")
 	if err := flags.Parse(args); err != nil {
@@ -204,6 +217,16 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 		return options{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
 
+	redisURLFlagSet := false
+	flags.Visit(func(item *flag.Flag) {
+		if item.Name == "redis-url" {
+			redisURLFlagSet = true
+		}
+	})
+	opts.storage = normalizeStorageBackend(rawStorage, redisURLFlagSet || envSet("OPENRTC_DEV_REDIS_URL") || envSet("REDIS_URL"))
+	if opts.storage == "" {
+		return options{}, fmt.Errorf("storage must be memory or redis")
+	}
 	opts.seedRooms = csvList(rawSeedRooms)
 	if opts.staticDir == "" {
 		opts.staticDir = findStaticDir()
@@ -221,14 +244,12 @@ func run(ctx context.Context, opts options) error {
 	appURL := fmt.Sprintf("http://%s:%d", opts.host, opts.appPort)
 	jwksURL := appURL + "/jwks"
 
-	store, err := cluster.NewRedisStore(opts.redisURL, "room:")
+	devStore, err := startDevStore(ctx, opts)
 	if err != nil {
-		return fmt.Errorf("connect redis: %w", err)
+		return err
 	}
-	defer store.Close()
-	if err := store.Healthy(ctx); err != nil {
-		return fmt.Errorf("redis is required for openrtc dev at %s: %w", opts.redisURL, err)
-	}
+	defer devStore.close()
+	store := devStore.store
 	if err := seedRooms(ctx, store, opts.seedRooms); err != nil {
 		return fmt.Errorf("seed rooms: %w", err)
 	}
@@ -251,7 +272,7 @@ func run(ctx context.Context, opts options) error {
 		addr:   fmt.Sprintf("%s:%d", opts.host, opts.runtimePort),
 		logger: log.New(os.Stdout, "openrtc-dev runtime ", log.LstdFlags),
 		startFn: func() (http.Handler, func() error, error) {
-			cfg, err := devConfig("openrtc-dev-runtime", opts.host, opts.runtimePort, "/ws", appURL, opts.redisURL, jwksURL)
+			cfg, err := devConfig("openrtc-dev-runtime", opts.host, opts.runtimePort, "/ws", appURL, devStore.redisURL, jwksURL)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -272,7 +293,7 @@ func run(ctx context.Context, opts options) error {
 		addr:   fmt.Sprintf("%s:%d", opts.host, opts.adminPort),
 		logger: log.New(os.Stdout, "openrtc-dev admin ", log.LstdFlags),
 		startFn: func() (http.Handler, func() error, error) {
-			cfg, err := devConfig("openrtc-dev-admin", opts.host, opts.adminPort, "/ws", appURL, opts.redisURL, jwksURL)
+			cfg, err := devConfig("openrtc-dev-admin", opts.host, opts.adminPort, "/ws", appURL, devStore.redisURL, jwksURL)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -336,6 +357,10 @@ func run(ctx context.Context, opts options) error {
 	log.Printf("Runtime WS:      ws://%s:%d/ws", opts.host, opts.runtimePort)
 	log.Printf("Runtime Yjs:     ws://%s:%d/yjs/{room}", opts.host, opts.runtimePort)
 	log.Printf("Admin API:       http://%s:%d", opts.host, opts.adminPort)
+	log.Printf("Storage backend: %s", opts.storage)
+	if opts.storage == devStorageMemory {
+		log.Printf("Embedded Redis:  %s", devStore.redisURL)
+	}
 	log.Printf("Local public key: %s", localPublicKey)
 	log.Printf("Seed rooms:      %s", strings.Join(opts.seedRooms, ","))
 	log.Printf("Dev sockets:     http://%s:%d/dev/sockets", opts.host, opts.appPort)
@@ -394,6 +419,60 @@ func (s *managedService) running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.server != nil
+}
+
+func startDevStore(ctx context.Context, opts options) (*devStoreHandle, error) {
+	switch opts.storage {
+	case devStorageMemory:
+		embedded, err := miniredis.Run()
+		if err != nil {
+			return nil, fmt.Errorf("start embedded Redis: %w", err)
+		}
+		redisURL := "redis://" + embedded.Addr()
+		store, err := cluster.NewRedisStore(redisURL, "room:")
+		if err != nil {
+			embedded.Close()
+			return nil, fmt.Errorf("connect embedded Redis: %w", err)
+		}
+		handle := &devStoreHandle{
+			store:    store,
+			redisURL: redisURL,
+			closeFn: func() error {
+				err := store.Close()
+				embedded.Close()
+				return err
+			},
+		}
+		if err := store.Healthy(ctx); err != nil {
+			_ = handle.close()
+			return nil, fmt.Errorf("embedded Redis is not healthy: %w", err)
+		}
+		return handle, nil
+	case devStorageRedis:
+		store, err := cluster.NewRedisStore(opts.redisURL, "room:")
+		if err != nil {
+			return nil, fmt.Errorf("connect redis: %w", err)
+		}
+		handle := &devStoreHandle{
+			store:    store,
+			redisURL: opts.redisURL,
+			closeFn:  store.Close,
+		}
+		if err := store.Healthy(ctx); err != nil {
+			_ = handle.close()
+			return nil, fmt.Errorf("redis is required for openrtc dev at %s: %w", opts.redisURL, err)
+		}
+		return handle, nil
+	default:
+		return nil, fmt.Errorf("storage must be memory or redis")
+	}
+}
+
+func (s *devStoreHandle) close() error {
+	if s == nil || s.closeFn == nil {
+		return nil
+	}
+	return s.closeFn()
 }
 
 func devConfig(nodeID string, host string, port int, wsPath string, allowedOrigin string, redisURL string, jwksURL string) (config.RuntimeConfig, error) {
@@ -612,12 +691,13 @@ func handleStatus(opts options, store devStatusStore, runtimeSvc *managedService
 		}
 
 		snapshot := devStatusSnapshot{
-			Status:    "ok",
-			Redis:     devDependencyStatus{Healthy: true},
-			Runtime:   managedServiceStatus(runtimeSvc, devHTTPURL(opts.host, opts.runtimePort, "")),
-			Admin:     managedServiceStatus(adminSvc, devHTTPURL(opts.host, opts.adminPort, "")),
-			SeedRooms: seedRoomStatuses(r.Context(), store, opts.seedRooms),
-			Endpoints: devEndpoints(opts),
+			Status:         "ok",
+			StorageBackend: opts.storage,
+			Redis:          devDependencyStatus{Healthy: true},
+			Runtime:        managedServiceStatus(runtimeSvc, devHTTPURL(opts.host, opts.runtimePort, "")),
+			Admin:          managedServiceStatus(adminSvc, devHTTPURL(opts.host, opts.adminPort, "")),
+			SeedRooms:      seedRoomStatuses(r.Context(), store, opts.seedRooms),
+			Endpoints:      devEndpoints(opts),
 		}
 		if err := store.Healthy(r.Context()); err != nil {
 			snapshot.Redis.Healthy = false
@@ -936,6 +1016,10 @@ func envOr(key string, defaultValue string) string {
 	return defaultValue
 }
 
+func envSet(key string) bool {
+	return strings.TrimSpace(os.Getenv(key)) != ""
+}
+
 func envInt(key string, defaultValue int) int {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
@@ -966,6 +1050,24 @@ func parseOptionalLimit(raw string, defaultValue int, maxValue int) (int, error)
 		return 0, fmt.Errorf("invalid limit")
 	}
 	return parsed, nil
+}
+
+func normalizeStorageBackend(raw string, redisConfigured bool) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		if redisConfigured {
+			return devStorageRedis
+		}
+		return devStorageMemory
+	}
+	switch raw {
+	case devStorageMemory, "mem", "embedded":
+		return devStorageMemory
+	case devStorageRedis:
+		return devStorageRedis
+	default:
+		return ""
+	}
 }
 
 func csvList(raw string) []string {

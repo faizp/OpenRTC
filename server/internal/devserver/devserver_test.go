@@ -50,6 +50,48 @@ func TestMainRejectsUnexpectedArgs(t *testing.T) {
 	}
 }
 
+func TestParseOptionsDefaultsToMemoryStorage(t *testing.T) {
+	clearDevStorageEnv(t)
+	var output bytes.Buffer
+
+	opts, err := parseOptions(nil, &output)
+
+	if err != nil {
+		t.Fatalf("parse options: %v", err)
+	}
+	if opts.storage != devStorageMemory {
+		t.Fatalf("expected memory storage by default, got %q", opts.storage)
+	}
+}
+
+func TestParseOptionsUsesRedisStorageWhenConfigured(t *testing.T) {
+	clearDevStorageEnv(t)
+	var output bytes.Buffer
+
+	opts, err := parseOptions([]string{"--redis-url", "redis://redis.local:6379/2"}, &output)
+
+	if err != nil {
+		t.Fatalf("parse options: %v", err)
+	}
+	if opts.storage != devStorageRedis {
+		t.Fatalf("expected redis storage when redis-url is set, got %q", opts.storage)
+	}
+	if opts.redisURL != "redis://redis.local:6379/2" {
+		t.Fatalf("unexpected redis URL: %q", opts.redisURL)
+	}
+}
+
+func TestParseOptionsRejectsUnknownStorage(t *testing.T) {
+	clearDevStorageEnv(t)
+	var output bytes.Buffer
+
+	_, err := parseOptions([]string{"--storage", "sqlite"}, &output)
+
+	if err == nil || !strings.Contains(err.Error(), "storage must be memory or redis") {
+		t.Fatalf("expected storage validation error, got %v", err)
+	}
+}
+
 func TestHandleTokenAllowsLocalDevAnonymousAuth(t *testing.T) {
 	privateKey = testPrivateKey(t)
 	req := httptest.NewRequest(http.MethodGet, "/dev/token?pubkey=pk_localdev&tenant=acme&groups=editors,reviewers", nil)
@@ -220,6 +262,27 @@ func TestDevConfigBuildsClusterRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestStartDevStoreUsesEmbeddedRedis(t *testing.T) {
+	handle, err := startDevStore(context.Background(), options{storage: devStorageMemory})
+	if err != nil {
+		t.Fatalf("start dev store: %v", err)
+	}
+	defer handle.close()
+
+	if !strings.HasPrefix(handle.redisURL, "redis://") || handle.redisURL == "redis://localhost:6379/0" {
+		t.Fatalf("expected embedded redis URL, got %q", handle.redisURL)
+	}
+	if err := handle.store.Healthy(context.Background()); err != nil {
+		t.Fatalf("expected embedded redis to be healthy: %v", err)
+	}
+	if err := seedRooms(context.Background(), handle.store, []string{"demo:room-1"}); err != nil {
+		t.Fatalf("seed rooms: %v", err)
+	}
+	if _, err := handle.store.GetStorage(context.Background(), "demo:room-1"); err != nil {
+		t.Fatalf("expected seeded storage from embedded redis: %v", err)
+	}
+}
+
 func TestSeedRoomsCreatesRoomsAndDefaultStorage(t *testing.T) {
 	store := newFakeSeedStore()
 
@@ -280,6 +343,7 @@ func TestHandleStatusReportsHealthyDevStack(t *testing.T) {
 		appPort:     3000,
 		runtimePort: 8080,
 		adminPort:   8090,
+		storage:     devStorageMemory,
 		seedRooms:   []string{"demo:room-1"},
 	}
 	handler := handleStatus(opts, store, runningManagedService("runtime"), runningManagedService("admin"))
@@ -294,7 +358,7 @@ func TestHandleStatusReportsHealthyDevStack(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode status response: %v", err)
 	}
-	if body.Status != "ok" || !body.Redis.Healthy || !body.Runtime.Running || !body.Admin.Running {
+	if body.Status != "ok" || body.StorageBackend != devStorageMemory || !body.Redis.Healthy || !body.Runtime.Running || !body.Admin.Running {
 		t.Fatalf("unexpected healthy status: %+v", body)
 	}
 	if len(body.SeedRooms) != 1 || body.SeedRooms[0].Room != "demo:room-1" || !body.SeedRooms[0].Exists || !body.SeedRooms[0].StorageFound {
@@ -633,6 +697,13 @@ func (s *fakeSeedStore) SetStorage(_ context.Context, room string, document json
 
 func runningManagedService(name string) *managedService {
 	return &managedService{name: name, server: &http.Server{}}
+}
+
+func clearDevStorageEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("OPENRTC_DEV_STORAGE", "")
+	t.Setenv("OPENRTC_DEV_REDIS_URL", "")
+	t.Setenv("REDIS_URL", "")
 }
 
 type fakeDevStorageStore struct {

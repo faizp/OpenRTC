@@ -23,14 +23,14 @@ semantics and editor bindings live in the `@openrtc/yjs` and
 
 ## Running locally
 
-Prerequisites: Go 1.18+ and Redis.
+Prerequisite: Go 1.18+.
 
 ```bash
-# Start Redis if one is not already running.
-docker run -d --name openrtc-redis -p 6379:6379 redis:7-alpine
-
 # Start the integrated dev server from the repo root.
 go run ./server/cmd/openrtc dev
+
+# Optional: use external Redis instead of the embedded local store.
+go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 ```
 
 Then open:
@@ -68,7 +68,7 @@ go run ./cmd/server
 1. Click `Probe all` to issue local tokens and hit the main admin surfaces.
 2. Open `Realtime`, click `Connect + join`, then send events or presence.
 3. Open another browser tab with the same room to watch fan-out and presence.
-4. Use `Rooms`, `Storage`, `Threads`, and `Notifications` to inspect durable
-   Redis-backed state.
+4. Use `Rooms`, `Storage`, `Threads`, and `Notifications` to inspect local
+   dev state.
 5. Use `Yjs` to connect to the binary endpoint, send an update frame, reconnect,
    and verify replay.
