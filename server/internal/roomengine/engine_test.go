@@ -612,28 +612,43 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	}
 
 	update := []byte("update-1")
-	event := engine.StoreYJSEvent(cluster.YJSEvent{
+	event, err := engine.StoreYJSEvent(cluster.YJSEvent{
 		Room:   "room-a",
 		Kind:   cluster.YJSEventUpdate,
 		Update: update,
 	})
+	if err != nil {
+		t.Fatalf("store yjs update: %v", err)
+	}
 	if event.Sequence != 1 {
 		t.Fatalf("expected first sequence to be 1, got %d", event.Sequence)
 	}
 	update[0] = 'X'
-	second := engine.StoreYJSEvent(cluster.YJSEvent{
+	second, err := engine.StoreYJSEvent(cluster.YJSEvent{
 		Room:   "room-a",
 		Kind:   cluster.YJSEventSubdocUpdate,
 		Update: []byte("update-2"),
 	})
+	if err != nil {
+		t.Fatalf("store yjs subdoc update: %v", err)
+	}
 	if second.Sequence != 2 {
 		t.Fatalf("expected second sequence to be 2, got %d", second.Sequence)
 	}
-	engine.StoreYJSEvent(cluster.YJSEvent{
+	if _, err := engine.StoreYJSEvent(cluster.YJSEvent{
 		Room:   "room-a",
 		Kind:   cluster.YJSEventSnapshot,
 		Update: []byte("snapshot-1"),
-	})
+	}); err != nil {
+		t.Fatalf("store yjs snapshot: %v", err)
+	}
+	if _, err := engine.StoreYJSEvent(cluster.YJSEvent{
+		Room:   "room-a",
+		Kind:   cluster.YJSEventStateVectorDiff,
+		Update: []byte("transient"),
+	}); !errors.Is(err, ErrYJSPersistenceKind) {
+		t.Fatalf("expected transient yjs event persistence error, got %v", err)
+	}
 
 	doc := engine.LoadYJSDocument("room-a")
 	if string(doc.Snapshot) != "snapshot-1" {
@@ -714,6 +729,54 @@ func TestNewYJSEventPlan(t *testing.T) {
 	for _, kind := range []cluster.YJSEventKind{cluster.YJSEventSnapshot, cluster.YJSEventKind(99)} {
 		if _, ok := NewYJSEventPlan("room-a", kind, []byte("update"), YJSEventOptions{}); ok {
 			t.Fatalf("expected invalid yjs event plan for kind %d", kind)
+		}
+	}
+}
+
+func TestNewYJSPersistencePlan(t *testing.T) {
+	cases := []struct {
+		name string
+		kind cluster.YJSEventKind
+		mode string
+	}{
+		{name: "update", kind: cluster.YJSEventUpdate, mode: YJSPersistenceAppendUpdate},
+		{name: "subdoc update", kind: cluster.YJSEventSubdocUpdate, mode: YJSPersistenceAppendUpdate},
+		{name: "snapshot", kind: cluster.YJSEventSnapshot, mode: YJSPersistenceStoreSnapshot},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			update := []byte("persist")
+			plan, err := NewYJSPersistencePlan(cluster.YJSEvent{
+				Room:         "room-a",
+				Kind:         tc.kind,
+				Update:       update,
+				OriginNode:   "node-a",
+				OriginConnID: "conn-1",
+			})
+			if err != nil {
+				t.Fatalf("new yjs persistence plan: %v", err)
+			}
+			if plan.Mode != tc.mode {
+				t.Fatalf("unexpected persistence mode: %q", plan.Mode)
+			}
+			update[0] = 'X'
+			if string(plan.Event.Update) != "persist" {
+				t.Fatalf("persistence plan event update should be copied, got %q", plan.Event.Update)
+			}
+			sequenced := plan.WithSequence(42)
+			if sequenced.Sequence != 42 || string(sequenced.Update) != "persist" {
+				t.Fatalf("unexpected sequenced event: %+v", sequenced)
+			}
+			sequenced.Update[0] = 'X'
+			if string(plan.Event.Update) != "persist" {
+				t.Fatalf("sequenced event should be copied, got %q", plan.Event.Update)
+			}
+		})
+	}
+
+	for _, kind := range []cluster.YJSEventKind{cluster.YJSEventStateVectorRequest, cluster.YJSEventStateVectorDiff, cluster.YJSEventSubdocStateVector, cluster.YJSEventSubdocDiff} {
+		if _, err := NewYJSPersistencePlan(cluster.YJSEvent{Room: "room-a", Kind: kind, Update: []byte("transient")}); !errors.Is(err, ErrYJSPersistenceKind) {
+			t.Fatalf("expected persistence kind error for kind %d, got %v", kind, err)
 		}
 	}
 }

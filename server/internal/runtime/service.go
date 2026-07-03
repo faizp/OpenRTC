@@ -984,16 +984,20 @@ func (s *Service) loadYJSDocument(room string) (cluster.YJSDocument, error) {
 }
 
 func (s *Service) storeYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error) {
+	plan, err := roomengine.NewYJSPersistencePlan(event)
+	if err != nil {
+		return cluster.YJSEvent{}, err
+	}
 	if s.store != nil {
-		if event.Kind == cluster.YJSEventSnapshot {
-			return event, s.store.StoreYJSSnapshot(s.ctx, event.Room, event.Update)
+		if plan.Mode == roomengine.YJSPersistenceStoreSnapshot {
+			return plan.Event, s.store.StoreYJSSnapshot(s.ctx, plan.Event.Room, plan.Event.Update)
 		}
-		sequence, err := s.store.AppendYJSUpdate(s.ctx, event.Room, event.Kind, event.Update)
-		event.Sequence = sequence
+		sequence, err := s.store.AppendYJSUpdate(s.ctx, plan.Event.Room, plan.Event.Kind, plan.Event.Update)
+		event = plan.WithSequence(sequence)
 		return event, err
 	}
 
-	return s.roomEngine().StoreYJSEvent(event), nil
+	return s.roomEngine().StoreYJSPersistence(plan), nil
 }
 
 func (s *Service) broadcastYJSEvent(event cluster.YJSEvent) error {

@@ -13,6 +13,7 @@ import (
 var (
 	ErrRoomLimitExceeded   = errors.New("room limit exceeded")
 	ErrStorageMutationKind = errors.New("invalid storage mutation kind")
+	ErrYJSPersistenceKind  = errors.New("invalid yjs persistence kind")
 )
 
 const (
@@ -21,6 +22,9 @@ const (
 
 	MembershipMutationJoin  = "join"
 	MembershipMutationLeave = "leave"
+
+	YJSPersistenceAppendUpdate  = "append_update"
+	YJSPersistenceStoreSnapshot = "store_snapshot"
 )
 
 type Engine struct {
@@ -156,6 +160,11 @@ type YJSEventPlan struct {
 	Event           cluster.YJSEvent
 	RequiresPublish bool
 	Durable         bool
+}
+
+type YJSPersistencePlan struct {
+	Event cluster.YJSEvent
+	Mode  string
 }
 
 type PresenceFanout struct {
@@ -478,6 +487,23 @@ func NewYJSEventPlan(room string, kind cluster.YJSEventKind, update []byte, opti
 		RequiresPublish: yjsEventRequiresPublish(kind),
 		Durable:         durableYJSEventKind(kind),
 	}, true
+}
+
+func NewYJSPersistencePlan(event cluster.YJSEvent) (YJSPersistencePlan, error) {
+	mode, ok := yjsPersistenceMode(event.Kind)
+	if !ok {
+		return YJSPersistencePlan{}, ErrYJSPersistenceKind
+	}
+	return YJSPersistencePlan{
+		Event: cloneYJSEvent(event),
+		Mode:  mode,
+	}, nil
+}
+
+func (plan YJSPersistencePlan) WithSequence(sequence int64) cluster.YJSEvent {
+	event := cloneYJSEvent(plan.Event)
+	event.Sequence = sequence
+	return event
 }
 
 func (e *Engine) Snapshot(room string) Snapshot {
@@ -832,16 +858,25 @@ func (e *Engine) LoadYJSDocument(room string) cluster.YJSDocument {
 	return out
 }
 
-func (e *Engine) StoreYJSEvent(event cluster.YJSEvent) cluster.YJSEvent {
+func (e *Engine) StoreYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error) {
+	plan, err := NewYJSPersistencePlan(event)
+	if err != nil {
+		return cluster.YJSEvent{}, err
+	}
+	return e.StoreYJSPersistence(plan), nil
+}
+
+func (e *Engine) StoreYJSPersistence(plan YJSPersistencePlan) cluster.YJSEvent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	event := cloneYJSEvent(plan.Event)
 	doc := e.yjsDocs[event.Room]
 	if doc == nil {
 		doc = &memoryYJSDocument{}
 		e.yjsDocs[event.Room] = doc
 	}
-	if event.Kind == cluster.YJSEventSnapshot {
+	if plan.Mode == YJSPersistenceStoreSnapshot {
 		doc.Snapshot = append([]byte(nil), event.Update...)
 		return event
 	}
@@ -984,6 +1019,17 @@ func yjsEventRequiresPublish(kind cluster.YJSEventKind) bool {
 
 func durableYJSEventKind(kind cluster.YJSEventKind) bool {
 	return kind == cluster.YJSEventUpdate || kind == cluster.YJSEventSubdocUpdate
+}
+
+func yjsPersistenceMode(kind cluster.YJSEventKind) (string, bool) {
+	switch kind {
+	case cluster.YJSEventSnapshot:
+		return YJSPersistenceStoreSnapshot, true
+	case cluster.YJSEventUpdate, cluster.YJSEventSubdocUpdate:
+		return YJSPersistenceAppendUpdate, true
+	default:
+		return "", false
+	}
 }
 
 func newStorageMutation(kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) StorageMutation {
