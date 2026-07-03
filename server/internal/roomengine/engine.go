@@ -257,6 +257,7 @@ type StorageMutation struct {
 type StorageFanout struct {
 	Room          string
 	Update        StorageMutation
+	Sequence      uint64
 	TargetConnIDs []string
 }
 
@@ -1322,6 +1323,7 @@ func (e *Engine) RecordStorageEvent(event cluster.PublishedEvent, maxBytes int) 
 		return StorageMutationPlan{}, err
 	}
 	plan.Event.Sequence = event.Sequence
+	plan.Fanout.Sequence = event.Sequence
 	return plan, nil
 }
 
@@ -1345,6 +1347,16 @@ func (e *Engine) StorageMutationPlan(room string, update StorageMutation, option
 		Fanout:   e.StorageFanout(room, update, options.ExcludeSenderConnID),
 		Event:    event,
 	}, nil
+}
+
+func (plan StorageMutationPlan) WithEvent(event cluster.PublishedEvent) StorageMutationPlan {
+	next := StorageMutationPlan{
+		Mutation: cloneStorageMutation(plan.Mutation),
+		Fanout:   cloneStorageFanout(plan.Fanout),
+		Event:    clonePublishedEvent(event),
+	}
+	next.Fanout.Sequence = event.Sequence
+	return next
 }
 
 func (e *Engine) StorageFanout(room string, update StorageMutation, excludeConnID string) StorageFanout {
@@ -1451,6 +1463,15 @@ func cloneStorageMutation(update StorageMutation) StorageMutation {
 		OriginConnID: update.OriginConnID,
 		Operations:   cloneStorageOperations(update.Operations),
 		Document:     append(json.RawMessage(nil), update.Document...),
+	}
+}
+
+func cloneStorageFanout(fanout StorageFanout) StorageFanout {
+	return StorageFanout{
+		Room:          fanout.Room,
+		Update:        cloneStorageMutation(fanout.Update),
+		Sequence:      fanout.Sequence,
+		TargetConnIDs: append([]string(nil), fanout.TargetConnIDs...),
 	}
 }
 

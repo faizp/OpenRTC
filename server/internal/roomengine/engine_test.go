@@ -1346,6 +1346,20 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if !reflect.DeepEqual(patchPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
 		t.Fatalf("unexpected patch plan fanout: %+v", patchPlan.Fanout)
 	}
+	sequencedPlan := patchPlan.WithEvent(cluster.PublishedEvent{
+		Room:       "room-a",
+		Event:      cluster.EventStorageUpdate,
+		Payload:    patchPlan.Event.Payload,
+		Sequence:   7,
+		OriginNode: "node-a",
+	})
+	if sequencedPlan.Event.Sequence != 7 || sequencedPlan.Fanout.Sequence != 7 {
+		t.Fatalf("expected sequenced storage plan, got event=%+v fanout=%+v", sequencedPlan.Event, sequencedPlan.Fanout)
+	}
+	sequencedPlan.Fanout.Update.Document[0] = '['
+	if string(patchPlan.Fanout.Update.Document) == string(sequencedPlan.Fanout.Update.Document) {
+		t.Fatalf("sequenced storage plan should copy fanout mutation")
+	}
 
 	remoteEvent, err := NewStorageEvent("room-a", StorageMutation{
 		Kind:         StorageMutationPatch,
@@ -1372,6 +1386,9 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	}
 	if remotePlan.Mutation.Kind != StorageMutationPatch || remotePlan.Mutation.OpID != "op-remote" || remotePlan.Event.Sequence != 42 {
 		t.Fatalf("unexpected remote plan mutation/event: %+v event=%+v", remotePlan.Mutation, remotePlan.Event)
+	}
+	if remotePlan.Fanout.Sequence != 42 {
+		t.Fatalf("expected remote storage fanout sequence, got %+v", remotePlan.Fanout)
 	}
 	loaded, err := engine.GetStorage("room-a")
 	if err != nil {

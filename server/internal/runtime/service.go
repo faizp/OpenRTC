@@ -708,11 +708,12 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 	if err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
+	plan, err = s.publishStoragePlan(plan)
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
 	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
-	}
-	if err := s.publishStoragePlan(plan); err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
 	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document))
 }
@@ -737,11 +738,12 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	if err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
+	plan, err = s.publishStoragePlan(plan)
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
+	}
 	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
-	}
-	if err := s.publishStoragePlan(plan); err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
 	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document))
 }
@@ -935,15 +937,23 @@ func (s *Service) broadcastStorageFanout(fanout roomengine.StorageFanout) error 
 	s.mu.RUnlock()
 
 	for _, target := range targets {
-		if err := target.enqueue(outboundMessage{
-			T:       "STORAGE_UPDATE",
-			Room:    fanout.Room,
-			Payload: fanout.Update,
-		}); err != nil {
+		if err := target.enqueue(storageUpdateOutboundMessage(fanout)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func storageUpdateOutboundMessage(fanout roomengine.StorageFanout) outboundMessage {
+	message := outboundMessage{
+		T:       "STORAGE_UPDATE",
+		Room:    fanout.Room,
+		Payload: fanout.Update,
+	}
+	if fanout.Sequence > 0 {
+		message.Meta = map[string]any{"seq": fanout.Sequence}
+	}
+	return message
 }
 
 func (s *Service) handleClusterYJSEvent(event cluster.YJSEvent) {
@@ -1097,12 +1107,15 @@ func (s *Service) applyStoragePatchMutationPlan(room string, operations []cluste
 	return s.roomEngine().ApplyStoragePatchMutationPlan(room, operations, mutationOptions, eventOptions)
 }
 
-func (s *Service) publishStoragePlan(plan roomengine.StorageMutationPlan) error {
+func (s *Service) publishStoragePlan(plan roomengine.StorageMutationPlan) (roomengine.StorageMutationPlan, error) {
 	if s.store == nil {
-		return nil
+		return plan, nil
 	}
-	_, err := s.store.PublishEvent(s.ctx, plan.Event)
-	return err
+	event, err := s.store.PublishEvent(s.ctx, plan.Event)
+	if err != nil {
+		return roomengine.StorageMutationPlan{}, err
+	}
+	return plan.WithEvent(event), nil
 }
 
 func (s *Service) registerConn(conn *clientConn) {

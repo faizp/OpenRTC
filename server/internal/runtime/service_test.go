@@ -1772,6 +1772,9 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	service.store = store
 	claims := &auth.Claims{Tenant: "tenant-a", Scope: "storage:tenant-a:*"}
 	sender := runtimeTestConn(service, "conn-storage-store", claims, 4)
+	receiver := runtimeTestConn(service, "conn-storage-store-receiver", claims, 4)
+	joinRuntimeRoom(t, service, sender, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
 
 	if err := service.handleStoragePatch(sender, protocol.Message{
 		ID:          "storage-patch-store",
@@ -1780,6 +1783,11 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 		StorageMeta: &protocol.StorageMeta{OpID: "op-store"},
 	}); err != nil {
 		t.Fatalf("store backed storage patch: %v", err)
+	}
+	if got := readRuntimeOutbound(t, receiver); got.T != "STORAGE_UPDATE" || got.Room != "tenant-a:room-1" {
+		t.Fatalf("unexpected store backed storage update: %+v", got)
+	} else if meta, ok := got.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected sequenced storage update metadata, got %#v", got.Meta)
 	}
 	if got := readRuntimeOutbound(t, sender); got.T != "STORAGE_ACK" || got.ID != "storage-patch-store" {
 		t.Fatalf("unexpected store backed storage ack: %+v", got)
@@ -1798,8 +1806,22 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 		t.Fatalf("unexpected room engine storage after store-backed patch: %s", stored)
 	}
 
-	receiver := runtimeTestConn(service, "conn-storage-cluster", claims, 4)
-	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+	store.publishEventErr = errors.New("publish failed")
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-patch-publish-failed",
+		Room:    "tenant-a:room-1",
+		Payload: json.RawMessage(`[{"op":"replace","path":"/title","value":"Unpublished"}]`),
+	}); err != nil {
+		t.Fatalf("publish-failed storage patch should enqueue error, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, sender); got.T != "ERROR" || got.ID != "storage-patch-publish-failed" {
+		t.Fatalf("unexpected publish-failed storage response: %+v", got)
+	}
+	assertRuntimeNoOutbound(t, receiver)
+	store.publishEventErr = nil
+
+	clusterReceiver := runtimeTestConn(service, "conn-storage-cluster", claims, 4)
+	joinRuntimeRoom(t, service, clusterReceiver, "tenant-a:room-1")
 	remoteMutation := roomengine.StorageMutation{
 		Kind:         roomengine.StorageMutationSet,
 		OpID:         "op-remote",
@@ -1816,10 +1838,13 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 		Payload:             remotePayload,
 		ExcludeSenderConnID: sender.id,
 		OriginNode:          "node-b",
+		Sequence:            42,
 	}
 	service.handleClusterEvent(clusterEvent)
-	if got := readRuntimeOutbound(t, receiver); got.T != "STORAGE_UPDATE" {
+	if got := readRuntimeOutbound(t, clusterReceiver); got.T != "STORAGE_UPDATE" {
 		t.Fatalf("expected storage update from cluster event, got %+v", got)
+	} else if meta, ok := got.Meta.(map[string]any); !ok || meta["seq"] != uint64(42) {
+		t.Fatalf("expected sequenced cluster storage update metadata, got %#v", got.Meta)
 	}
 	stored, err = service.roomEngine().GetStorage("tenant-a:room-1")
 	if err != nil {
@@ -2353,6 +2378,15 @@ func readRuntimeOutbound(t *testing.T, conn *clientConn) outboundMessage {
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for outbound runtime message")
 		return outboundMessage{}
+	}
+}
+
+func assertRuntimeNoOutbound(t *testing.T, conn *clientConn) {
+	t.Helper()
+	select {
+	case message := <-conn.send:
+		t.Fatalf("unexpected outbound runtime message: %+v", message)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
