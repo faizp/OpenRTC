@@ -586,7 +586,9 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		return err
 	}
 
-	if !joinResult.AlreadyJoined {
+	joinPlan := roomengine.NewJoinPlan(joinResult, joinPlanOptions(conn.id, message.JoinMeta))
+
+	if !joinPlan.AlreadyJoined() {
 		s.mu.Lock()
 		s.stats.JoinsTotal++
 		s.syncStatsLocked()
@@ -594,15 +596,15 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 
 		s.metrics.JoinsTotal.Inc()
 	}
-	if err := s.applyRoomMembershipMutation(joinResult.MembershipMutation); err != nil {
+	if err := s.applyRoomMembershipMutation(joinPlan.MembershipMutation()); err != nil {
 		return err
 	}
 
-	roomSnapshot, err := s.snapshotJoinedRoom(message.Room, message.JoinMeta, joinResult)
+	roomSnapshot, err := s.snapshotJoinedRoom(message.Room, joinPlan)
 	if err != nil {
 		return err
 	}
-	replayEvents, err := s.replayablePublishedEvents(message.Room, joinReplayPlan(conn.id, message.JoinMeta))
+	replayEvents, err := s.replayablePublishedEvents(message.Room, joinPlan)
 	if err != nil {
 		return err
 	}
@@ -816,11 +818,12 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
 }
 
-func (s *Service) replayablePublishedEvents(room string, plan roomengine.JoinReplayPlan) ([]cluster.PublishedEvent, error) {
-	if s.store == nil || !plan.Enabled() {
+func (s *Service) replayablePublishedEvents(room string, plan roomengine.JoinPlan) ([]cluster.PublishedEvent, error) {
+	afterSequence, maxEvents, ok := plan.ReplayLogRequest()
+	if s.store == nil || !ok {
 		return nil, nil
 	}
-	list, err := s.store.ListPublishedEvents(s.ctx, room, plan.AfterSequence, plan.MaxEvents)
+	list, err := s.store.ListPublishedEvents(s.ctx, room, afterSequence, maxEvents)
 	if err != nil {
 		return nil, err
 	}
@@ -1091,23 +1094,29 @@ func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) (roomen
 	return roomengine.PageSnapshot(s.roomEngine().Snapshot(room), snapshotPageOptions(joinMeta)), nil
 }
 
-func (s *Service) snapshotJoinedRoom(room string, joinMeta *protocol.JoinMeta, joinResult roomengine.JoinResult) (roomengine.SnapshotPage, error) {
+func (s *Service) snapshotJoinedRoom(room string, plan roomengine.JoinPlan) (roomengine.SnapshotPage, error) {
 	if s.store != nil {
-		return s.snapshotStoreRoom(room, joinMeta)
+		return s.snapshotStoreRoomWithPlan(room, plan)
 	}
 
-	return joinResult.PageSnapshot(snapshotPageOptions(joinMeta)), nil
+	return plan.LocalSnapshotPage(), nil
 }
 
 func (s *Service) snapshotStoreRoom(room string, joinMeta *protocol.JoinMeta) (roomengine.SnapshotPage, error) {
+	return s.snapshotStoreRoomWithPlan(room, roomengine.NewJoinPlan(roomengine.JoinResult{}, roomengine.JoinPlanOptions{
+		SnapshotPage: snapshotPageOptions(joinMeta),
+	}))
+}
+
+func (s *Service) snapshotStoreRoomWithPlan(room string, plan roomengine.JoinPlan) (roomengine.SnapshotPage, error) {
 	snapshot, err := s.store.SnapshotRoom(s.ctx, room)
 	if err != nil {
 		return roomengine.SnapshotPage{}, err
 	}
-	return roomengine.PageSnapshot(roomengine.Snapshot{
+	return plan.SnapshotPage(roomengine.Snapshot{
 		Members:  snapshot.Members,
 		Presence: snapshot.Presence,
-	}, snapshotPageOptions(joinMeta)), nil
+	}), nil
 }
 
 func snapshotPageOptions(joinMeta *protocol.JoinMeta) roomengine.SnapshotPageOptions {
@@ -1126,17 +1135,20 @@ func snapshotPageOptions(joinMeta *protocol.JoinMeta) roomengine.SnapshotPageOpt
 	}
 }
 
-func joinReplayPlan(connID string, joinMeta *protocol.JoinMeta) roomengine.JoinReplayPlan {
+func joinPlanOptions(connID string, joinMeta *protocol.JoinMeta) roomengine.JoinPlanOptions {
 	var afterSequence uint64
 	if joinMeta != nil {
 		afterSequence = joinMeta.AfterSequence
 	}
-	return roomengine.NewJoinReplayPlan(roomengine.JoinReplayOptions{
-		AfterSequence:      afterSequence,
-		MaxEvents:          eventCatchupMaxEvents,
-		ExcludeConnID:      connID,
-		ExcludedEventNames: joinReplayExcludedEventNames,
-	})
+	return roomengine.JoinPlanOptions{
+		SnapshotPage: snapshotPageOptions(joinMeta),
+		Replay: roomengine.JoinReplayOptions{
+			AfterSequence:      afterSequence,
+			MaxEvents:          eventCatchupMaxEvents,
+			ExcludeConnID:      connID,
+			ExcludedEventNames: joinReplayExcludedEventNames,
+		},
+	}
 }
 
 func (s *Service) getStorage(room string) (json.RawMessage, error) {

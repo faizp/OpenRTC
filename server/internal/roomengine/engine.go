@@ -48,6 +48,17 @@ type JoinResult struct {
 	MembershipMutation *MembershipMutation
 }
 
+type JoinPlanOptions struct {
+	SnapshotPage SnapshotPageOptions
+	Replay       JoinReplayOptions
+}
+
+type JoinPlan struct {
+	result          JoinResult
+	snapshotOptions SnapshotPageOptions
+	replayPlan      JoinReplayPlan
+}
+
 type LeaveResult struct {
 	Left               bool
 	PresenceFanout     *PresenceFanout
@@ -319,6 +330,45 @@ func (e *Engine) Snapshot(room string) Snapshot {
 
 func (result JoinResult) PageSnapshot(options SnapshotPageOptions) SnapshotPage {
 	return PageSnapshot(result.Snapshot, options)
+}
+
+func NewJoinPlan(result JoinResult, options JoinPlanOptions) JoinPlan {
+	return JoinPlan{
+		result:          result,
+		snapshotOptions: options.SnapshotPage,
+		replayPlan:      NewJoinReplayPlan(options.Replay),
+	}
+}
+
+func (plan JoinPlan) AlreadyJoined() bool {
+	return plan.result.AlreadyJoined
+}
+
+func (plan JoinPlan) MembershipMutation() *MembershipMutation {
+	if plan.result.MembershipMutation == nil {
+		return nil
+	}
+	mutation := *plan.result.MembershipMutation
+	return &mutation
+}
+
+func (plan JoinPlan) LocalSnapshotPage() SnapshotPage {
+	return plan.SnapshotPage(plan.result.Snapshot)
+}
+
+func (plan JoinPlan) SnapshotPage(snapshot Snapshot) SnapshotPage {
+	return PageSnapshot(snapshot, plan.snapshotOptions)
+}
+
+func (plan JoinPlan) ReplayLogRequest() (uint64, int, bool) {
+	if !plan.replayPlan.Enabled() {
+		return 0, 0, false
+	}
+	return plan.replayPlan.AfterSequence, plan.replayPlan.MaxEvents, true
+}
+
+func (plan JoinPlan) ReplayEvents(events []cluster.PublishedEvent) []cluster.PublishedEvent {
+	return plan.replayPlan.ReplayEvents(events)
 }
 
 func NewJoinReplayPlan(options JoinReplayOptions) JoinReplayPlan {

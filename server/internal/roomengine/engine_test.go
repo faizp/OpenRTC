@@ -206,6 +206,66 @@ func TestJoinReplayPlanDisabledWithoutSequence(t *testing.T) {
 	}
 }
 
+func TestJoinPlanCombinesJoinSnapshotAndReplayContracts(t *testing.T) {
+	result := JoinResult{
+		Snapshot: Snapshot{
+			Members: []string{"conn-2", "conn-1"},
+			Presence: map[string]json.RawMessage{
+				"conn-1": json.RawMessage(`{"cursor":{"x":1}}`),
+			},
+		},
+		MembershipMutation: &MembershipMutation{Kind: MembershipMutationJoin, ConnID: "conn-1", Room: "room-a"},
+	}
+	plan := NewJoinPlan(result, JoinPlanOptions{
+		SnapshotPage: SnapshotPageOptions{Limit: 1},
+		Replay: JoinReplayOptions{
+			AfterSequence:      8,
+			MaxEvents:          20,
+			ExcludeConnID:      "conn-1",
+			ExcludedEventNames: []string{"internal"},
+		},
+	})
+
+	if plan.AlreadyJoined() {
+		t.Fatalf("plan should expose join duplicate state")
+	}
+	mutation := plan.MembershipMutation()
+	if mutation == nil || *mutation != (MembershipMutation{Kind: MembershipMutationJoin, ConnID: "conn-1", Room: "room-a"}) {
+		t.Fatalf("unexpected membership mutation: %+v", mutation)
+	}
+	mutation.ConnID = "changed"
+	if again := plan.MembershipMutation(); again == nil || again.ConnID != "conn-1" {
+		t.Fatalf("membership mutation should be copied, got %+v", again)
+	}
+
+	page := plan.LocalSnapshotPage()
+	if !reflect.DeepEqual(page.Members, []string{"conn-1"}) || page.NextCursor != "conn-1" {
+		t.Fatalf("unexpected local snapshot page: %#v next=%q", page.Members, page.NextCursor)
+	}
+	storePage := plan.SnapshotPage(Snapshot{
+		Members: []string{"store-2", "store-1"},
+		Presence: map[string]json.RawMessage{
+			"store-1": json.RawMessage(`{"store":true}`),
+		},
+	})
+	if !reflect.DeepEqual(storePage.Members, []string{"store-1"}) || storePage.NextCursor != "store-1" {
+		t.Fatalf("unexpected store snapshot page: %#v next=%q", storePage.Members, storePage.NextCursor)
+	}
+
+	afterSequence, maxEvents, ok := plan.ReplayLogRequest()
+	if !ok || afterSequence != 8 || maxEvents != 20 {
+		t.Fatalf("unexpected replay request after=%d max=%d ok=%v", afterSequence, maxEvents, ok)
+	}
+	events := plan.ReplayEvents([]cluster.PublishedEvent{
+		{Room: "room-a", Event: "doc.update", Payload: json.RawMessage(`{"ok":true}`), Sequence: 9},
+		{Room: "room-a", Event: "internal", Payload: json.RawMessage(`{"skip":true}`), Sequence: 10},
+		{Room: "room-a", Event: "self", Payload: json.RawMessage(`{"skip":true}`), Sequence: 11, ExcludeSenderConnID: "conn-1"},
+	})
+	if len(events) != 1 || events[0].Event != "doc.update" {
+		t.Fatalf("unexpected replay events: %#v", events)
+	}
+}
+
 func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-1", "room-a", 0)
