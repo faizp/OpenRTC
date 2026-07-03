@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -172,6 +173,56 @@ func TestDevConfigBuildsClusterRuntimeConfig(t *testing.T) {
 	}
 	if cfg.Tenant.EnforcePrefix {
 		t.Fatalf("expected tenant prefix enforcement disabled for local dev")
+	}
+}
+
+func TestSeedRoomsCreatesRoomsAndDefaultStorage(t *testing.T) {
+	store := newFakeSeedStore()
+
+	if err := seedRooms(context.Background(), store, []string{"demo:room-1", "", "demo:room-2"}); err != nil {
+		t.Fatalf("seed rooms: %v", err)
+	}
+	if len(store.rooms) != 2 {
+		t.Fatalf("expected two seeded rooms, got %+v", store.rooms)
+	}
+	for _, room := range []string{"demo:room-1", "demo:room-2"} {
+		document := store.storage[room]
+		if len(document) == 0 {
+			t.Fatalf("expected seeded storage for %s", room)
+		}
+		if err := cluster.ValidateStorageDocument(document); err != nil {
+			t.Fatalf("seeded storage should be valid for %s: %v", room, err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(document, &decoded); err != nil {
+			t.Fatalf("decode seeded storage: %v", err)
+		}
+		data, ok := decoded["data"].(map[string]any)
+		if !ok || data["room"] != room {
+			t.Fatalf("expected seeded room data for %s, got %+v", room, decoded)
+		}
+	}
+}
+
+func TestSeedRoomsPreservesExistingStorage(t *testing.T) {
+	store := newFakeSeedStore()
+	store.rooms["demo:room-1"] = cluster.RoomRecord{ID: "demo:room-1"}
+	store.storage["demo:room-1"] = json.RawMessage(`{"title":"Existing"}`)
+
+	if err := seedRooms(context.Background(), store, []string{"demo:room-1"}); err != nil {
+		t.Fatalf("seed rooms: %v", err)
+	}
+	if string(store.storage["demo:room-1"]) != `{"title":"Existing"}` {
+		t.Fatalf("expected existing storage to be preserved, got %s", store.storage["demo:room-1"])
+	}
+}
+
+func TestSeedRoomsReportsStorageErrors(t *testing.T) {
+	store := newFakeSeedStore()
+	store.getStorageErr = context.Canceled
+
+	if err := seedRooms(context.Background(), store, []string{"demo:room-1"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected storage error, got %v", err)
 	}
 }
 
@@ -389,6 +440,57 @@ func stringSliceClaim(value any) []string {
 		}
 	}
 	return out
+}
+
+type fakeSeedStore struct {
+	rooms         map[string]cluster.RoomRecord
+	storage       map[string]json.RawMessage
+	createRoomErr error
+	getStorageErr error
+	setStorageErr error
+}
+
+func newFakeSeedStore() *fakeSeedStore {
+	return &fakeSeedStore{
+		rooms:   make(map[string]cluster.RoomRecord),
+		storage: make(map[string]json.RawMessage),
+	}
+}
+
+func (s *fakeSeedStore) CreateRoom(_ context.Context, room cluster.RoomRecord) (cluster.RoomRecord, error) {
+	if s.createRoomErr != nil {
+		return cluster.RoomRecord{}, s.createRoomErr
+	}
+	if _, ok := s.rooms[room.ID]; ok {
+		return cluster.RoomRecord{}, cluster.ErrRoomAlreadyExists
+	}
+	s.rooms[room.ID] = room
+	return room, nil
+}
+
+func (s *fakeSeedStore) GetStorage(_ context.Context, room string) (json.RawMessage, error) {
+	if s.getStorageErr != nil {
+		return nil, s.getStorageErr
+	}
+	if s.storage == nil {
+		return nil, cluster.ErrStorageNotFound
+	}
+	document, ok := s.storage[room]
+	if ok {
+		return append(json.RawMessage(nil), document...), nil
+	}
+	return nil, cluster.ErrStorageNotFound
+}
+
+func (s *fakeSeedStore) SetStorage(_ context.Context, room string, document json.RawMessage) (json.RawMessage, error) {
+	if s.setStorageErr != nil {
+		return nil, s.setStorageErr
+	}
+	if s.storage == nil {
+		s.storage = make(map[string]json.RawMessage)
+	}
+	s.storage[room] = append(json.RawMessage(nil), document...)
+	return document, nil
 }
 
 type fakeDevStorageStore struct {

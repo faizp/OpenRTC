@@ -65,6 +65,12 @@ type managedService struct {
 	closeFn func() error
 }
 
+type seedStore interface {
+	CreateRoom(ctx context.Context, room cluster.RoomRecord) (cluster.RoomRecord, error)
+	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
+	SetStorage(ctx context.Context, room string, document json.RawMessage) (json.RawMessage, error)
+}
+
 type storageGetter interface {
 	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
 }
@@ -337,7 +343,7 @@ func devConfig(nodeID string, host string, port int, wsPath string, allowedOrigi
 	})
 }
 
-func seedRooms(ctx context.Context, store cluster.Store, rooms []string) error {
+func seedRooms(ctx context.Context, store seedStore, rooms []string) error {
 	for _, room := range rooms {
 		if room == "" {
 			continue
@@ -348,13 +354,53 @@ func seedRooms(ctx context.Context, store cluster.Store, rooms []string) error {
 			DefaultAccesses: []string{cluster.PermissionRoomWrite},
 		})
 		if errors.Is(err, cluster.ErrRoomAlreadyExists) {
-			continue
+			err = nil
 		}
 		if err != nil {
 			return err
 		}
+		if err := seedRoomStorage(ctx, store, room); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func seedRoomStorage(ctx context.Context, store seedStore, room string) error {
+	if _, err := store.GetStorage(ctx, room); err == nil {
+		return nil
+	} else if !errors.Is(err, cluster.ErrStorageNotFound) {
+		return err
+	}
+	_, err := store.SetStorage(ctx, room, defaultSeedStorage(room))
+	return err
+}
+
+func defaultSeedStorage(room string) json.RawMessage {
+	document := map[string]any{
+		"liveblocksType": "LiveObject",
+		"data": map[string]any{
+			"title": "OpenRTC dev room",
+			"room":  room,
+			"items": map[string]any{
+				"liveblocksType": "LiveList",
+				"data": []any{
+					map[string]any{"id": "intro", "text": "Seeded typed storage"},
+				},
+			},
+			"props": map[string]any{
+				"liveblocksType": "LiveMap",
+				"data": map[string]any{
+					"dev": true,
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		return json.RawMessage(`{"liveblocksType":"LiveObject","data":{}}`)
+	}
+	return raw
 }
 
 func handleJWKS(w http.ResponseWriter, _ *http.Request) {
