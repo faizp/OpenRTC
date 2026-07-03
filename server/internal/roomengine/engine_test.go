@@ -19,6 +19,9 @@ func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
 	if result.AlreadyJoined {
 		t.Fatalf("first join should not be duplicate")
 	}
+	if result.MembershipMutation == nil || *result.MembershipMutation != (MembershipMutation{Kind: MembershipMutationJoin, ConnID: "conn-1", Room: "room-a"}) {
+		t.Fatalf("unexpected first join membership mutation: %+v", result.MembershipMutation)
+	}
 	if !reflect.DeepEqual(result.Snapshot.Members, []string{"conn-1"}) {
 		t.Fatalf("unexpected first join snapshot members: %#v", result.Snapshot.Members)
 	}
@@ -28,6 +31,9 @@ func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
 	}
 	if !result.AlreadyJoined {
 		t.Fatalf("expected duplicate join")
+	}
+	if result.MembershipMutation != nil {
+		t.Fatalf("duplicate join should not produce membership mutation: %+v", result.MembershipMutation)
 	}
 	if !reflect.DeepEqual(result.Snapshot.Members, []string{"conn-1"}) {
 		t.Fatalf("unexpected duplicate join snapshot members: %#v", result.Snapshot.Members)
@@ -49,9 +55,15 @@ func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
 	if !left.Left {
 		t.Fatalf("expected leave to report left")
 	}
+	if left.MembershipMutation == nil || *left.MembershipMutation != (MembershipMutation{Kind: MembershipMutationLeave, ConnID: "conn-1", Room: "room-a"}) {
+		t.Fatalf("unexpected leave membership mutation: %+v", left.MembershipMutation)
+	}
 	left = engine.Leave("conn-1", "room-a")
 	if left.Left {
 		t.Fatalf("duplicate leave should not report left")
+	}
+	if left.MembershipMutation != nil {
+		t.Fatalf("duplicate leave should not produce membership mutation: %+v", left.MembershipMutation)
 	}
 	if got := engine.JoinedRooms("conn-1"); !reflect.DeepEqual(got, []string{"room-b"}) {
 		t.Fatalf("unexpected joined rooms after leave: %#v", got)

@@ -953,6 +953,63 @@ func TestRuntimeHandleJoinLocalBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeAppliesRoomMembershipMutationIntents(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	store := &fakeRuntimeStore{
+		snapshot: cluster.Snapshot{
+			Members:  []string{"conn-1"},
+			Presence: map[string]json.RawMessage{},
+		},
+	}
+	service.store = store
+	conn := runtimeTestConn(service, "conn-1", &auth.Claims{
+		Tenant: "tenant-a",
+		Join:   []string{"tenant-a:*"},
+	}, 4)
+
+	if err := service.handleJoin(conn, protocol.Message{ID: "join-1", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("join room: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.ID != "join-1" {
+		t.Fatalf("unexpected join response: %+v", got)
+	}
+	if !reflect.DeepEqual(store.joinedRooms, []roomengine.MembershipMutation{{Kind: roomengine.MembershipMutationJoin, ConnID: "conn-1", Room: "tenant-a:room-1"}}) {
+		t.Fatalf("unexpected join membership writes: %#v", store.joinedRooms)
+	}
+
+	if err := service.handleJoin(conn, protocol.Message{ID: "join-dup", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("duplicate join: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.ID != "join-dup" {
+		t.Fatalf("unexpected duplicate join response: %+v", got)
+	}
+	if len(store.joinedRooms) != 1 {
+		t.Fatalf("duplicate join should not write membership again: %#v", store.joinedRooms)
+	}
+
+	if err := service.handleLeave(conn, protocol.Message{ID: "leave-1", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("leave room: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "LEFT" || got.ID != "leave-1" {
+		t.Fatalf("unexpected leave response: %+v", got)
+	}
+	if !reflect.DeepEqual(store.leftRooms, []roomengine.MembershipMutation{{Kind: roomengine.MembershipMutationLeave, ConnID: "conn-1", Room: "tenant-a:room-1"}}) {
+		t.Fatalf("unexpected leave membership writes: %#v", store.leftRooms)
+	}
+
+	if err := service.handleLeave(conn, protocol.Message{ID: "leave-dup", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("duplicate leave: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "LEFT" || got.ID != "leave-dup" {
+		t.Fatalf("unexpected duplicate leave response: %+v", got)
+	}
+	if len(store.leftRooms) != 1 {
+		t.Fatalf("duplicate leave should not write membership again: %#v", store.leftRooms)
+	}
+}
+
 func TestRuntimeJoinReplaysPublishedEventsAfterSequence(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()
@@ -2345,6 +2402,8 @@ type fakeRuntimeStore struct {
 	listPublishedEventsErr error
 	publishPresenceErr     error
 	publishedPresence      []cluster.PresenceEvent
+	joinedRooms            []roomengine.MembershipMutation
+	leftRooms              []roomengine.MembershipMutation
 	joinErr                error
 	leaveErr               error
 	setPresenceErr         error
@@ -2445,11 +2504,17 @@ func (s *fakeRuntimeStore) TouchConnection(_ context.Context, connID string, met
 	return nil
 }
 
-func (s *fakeRuntimeStore) JoinRoom(context.Context, string, string) error {
+func (s *fakeRuntimeStore) JoinRoom(_ context.Context, connID string, room string) error {
+	if s.joinErr == nil {
+		s.joinedRooms = append(s.joinedRooms, roomengine.MembershipMutation{Kind: roomengine.MembershipMutationJoin, ConnID: connID, Room: room})
+	}
 	return s.joinErr
 }
 
-func (s *fakeRuntimeStore) LeaveRoom(context.Context, string, string) error {
+func (s *fakeRuntimeStore) LeaveRoom(_ context.Context, connID string, room string) error {
+	if s.leaveErr == nil {
+		s.leftRooms = append(s.leftRooms, roomengine.MembershipMutation{Kind: roomengine.MembershipMutationLeave, ConnID: connID, Room: room})
+	}
 	return s.leaveErr
 }
 

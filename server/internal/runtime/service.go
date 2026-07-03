@@ -585,11 +585,9 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		s.mu.Unlock()
 
 		s.metrics.JoinsTotal.Inc()
-		if s.store != nil {
-			if err := s.store.JoinRoom(s.ctx, conn.id, message.Room); err != nil {
-				return err
-			}
-		}
+	}
+	if err := s.applyRoomMembershipMutation(joinResult.MembershipMutation); err != nil {
+		return err
 	}
 
 	roomMembers, roomPresence, nextCursor, err := s.snapshotJoinedRoom(message.Room, message.JoinMeta, joinResult.Snapshot)
@@ -628,10 +626,8 @@ func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error 
 	if leaveResult.Left {
 		s.metrics.LeavesTotal.Inc()
 	}
-	if leaveResult.Left && s.store != nil {
-		if err := s.store.LeaveRoom(s.ctx, conn.id, message.Room); err != nil {
-			return err
-		}
+	if err := s.applyRoomMembershipMutation(leaveResult.MembershipMutation); err != nil {
+		return err
 	}
 	if leaveResult.Left {
 		fanout := leaveResult.PresenceFanout
@@ -649,6 +645,20 @@ func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error 
 	}
 
 	return conn.enqueue(outboundMessage{T: "LEFT", ID: message.ID, Room: message.Room})
+}
+
+func (s *Service) applyRoomMembershipMutation(mutation *roomengine.MembershipMutation) error {
+	if mutation == nil || s.store == nil {
+		return nil
+	}
+	switch mutation.Kind {
+	case roomengine.MembershipMutationJoin:
+		return s.store.JoinRoom(s.ctx, mutation.ConnID, mutation.Room)
+	case roomengine.MembershipMutationLeave:
+		return s.store.LeaveRoom(s.ctx, mutation.ConnID, mutation.Room)
+	default:
+		return errors.New("invalid room membership mutation kind")
+	}
 }
 
 func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {

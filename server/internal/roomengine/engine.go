@@ -18,6 +18,9 @@ var (
 const (
 	StorageMutationSet   = "set"
 	StorageMutationPatch = "patch"
+
+	MembershipMutationJoin  = "join"
+	MembershipMutationLeave = "leave"
 )
 
 type Engine struct {
@@ -40,18 +43,26 @@ type memoryYJSDocument struct {
 }
 
 type JoinResult struct {
-	AlreadyJoined bool
-	Snapshot      Snapshot
+	AlreadyJoined      bool
+	Snapshot           Snapshot
+	MembershipMutation *MembershipMutation
 }
 
 type LeaveResult struct {
-	Left           bool
-	PresenceFanout *PresenceFanout
+	Left               bool
+	PresenceFanout     *PresenceFanout
+	MembershipMutation *MembershipMutation
 }
 
 type Snapshot struct {
 	Members  []string
 	Presence map[string]json.RawMessage
+}
+
+type MembershipMutation struct {
+	Kind   string
+	ConnID string
+	Room   string
 }
 
 type SnapshotPageOptions struct {
@@ -138,7 +149,10 @@ func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, er
 		e.rooms[room] = members
 	}
 	members[connID] = struct{}{}
-	return JoinResult{Snapshot: e.snapshotLocked(room)}, nil
+	return JoinResult{
+		Snapshot:           e.snapshotLocked(room),
+		MembershipMutation: newMembershipMutation(MembershipMutationJoin, connID, room),
+	}, nil
 }
 
 func (e *Engine) Leave(connID string, room string) LeaveResult {
@@ -163,7 +177,10 @@ func (e *Engine) leave(connID string, room string, options PresenceEventOptions,
 	}
 	e.removeRoomMemberLocked(connID, room)
 	e.removePresenceLocked(connID, room)
-	result := LeaveResult{Left: true}
+	result := LeaveResult{
+		Left:               true,
+		MembershipMutation: newMembershipMutation(MembershipMutationLeave, connID, room),
+	}
 	if includeFanout {
 		fanout := PresenceFanout{
 			Event:         NewOfflinePresenceEvent(connID, room, options),
@@ -601,6 +618,14 @@ func newStorageMutation(kind string, document json.RawMessage, operations []clus
 		OriginConnID: options.OriginConnID,
 		Operations:   cloneStorageOperations(operations),
 		Document:     append(json.RawMessage(nil), document...),
+	}
+}
+
+func newMembershipMutation(kind string, connID string, room string) *MembershipMutation {
+	return &MembershipMutation{
+		Kind:   kind,
+		ConnID: connID,
+		Room:   room,
 	}
 }
 
