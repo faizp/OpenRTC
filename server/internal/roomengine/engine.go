@@ -361,10 +361,17 @@ func (e *Engine) RecordStorageMutation(room string, kind string, document json.R
 	if err != nil {
 		return StorageMutation{}, err
 	}
+	return NewStorageMutation(kind, stored, operations, options)
+}
+
+func NewStorageMutation(kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
+	if !validStorageMutationKind(kind) {
+		return StorageMutation{}, ErrStorageMutationKind
+	}
 	if kind == StorageMutationSet {
 		operations = nil
 	}
-	return newStorageMutation(kind, stored, operations, options), nil
+	return newStorageMutation(kind, document, operations, options), nil
 }
 
 func (e *Engine) removeRoomMemberLocked(connID string, room string) {

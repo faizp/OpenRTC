@@ -21,6 +21,10 @@ const (
 	aliveTTL = 45 * time.Second
 )
 
+const (
+	EventStorageUpdate = "$openrtc.storage.update"
+)
+
 var (
 	ErrRoomAlreadyExists   = errors.New("room already exists")
 	ErrRoomNotFound        = errors.New("room not found")

@@ -219,6 +219,9 @@ used for rooms, active users, comments, comment metadata/reaction/mention
 updates, notifications, subscription settings, ephemeral presence, and
 broadcast.
 
+Admin storage PUT and JSON Patch mutations also emit realtime `storage` client
+updates for connected room subscribers.
+
 Inbox notification create/read/delete/delete-all mutations also emit
 user-targeted realtime `notification` client events and React notification
 hooks for connected users. These deltas complement the durable inbox REST APIs;

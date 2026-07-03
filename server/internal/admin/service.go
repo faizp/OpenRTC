@@ -22,6 +22,7 @@ import (
 	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
 	"github.com/openrtc/openrtc/server/internal/observability"
 	"github.com/openrtc/openrtc/server/internal/protocol"
+	"github.com/openrtc/openrtc/server/internal/roomengine"
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
@@ -506,6 +507,10 @@ func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, roo
 		return
 	}
 	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.publishStorageMutation(r.Context(), room, roomengine.StorageMutationPatch, document, operations); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -1224,6 +1229,10 @@ func (s *Service) handleSetStorage(w http.ResponseWriter, r *http.Request, room 
 	}
 	stored, err := s.store.SetStorage(r.Context(), room, document)
 	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.publishStorageMutation(r.Context(), room, roomengine.StorageMutationSet, stored, nil); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -2014,6 +2023,26 @@ func (s *Service) publishNotificationEvent(ctx context.Context, eventName string
 	}
 	s.dispatchWebhook(ctx, eventName, payload)
 	return nil
+}
+
+func (s *Service) publishStorageMutation(ctx context.Context, room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation) error {
+	if s.store == nil {
+		return nil
+	}
+	mutation, err := roomengine.NewStorageMutation(kind, document, operations, roomengine.StorageMutationOptions{})
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(mutation)
+	if err != nil {
+		return err
+	}
+	return s.store.PublishEvent(ctx, cluster.PublishedEvent{
+		Room:       room,
+		Event:      cluster.EventStorageUpdate,
+		Payload:    raw,
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
 }
 
 func commentEventType(eventName string) string {

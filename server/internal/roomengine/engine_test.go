@@ -248,6 +248,14 @@ func TestEngineStorageMutations(t *testing.T) {
 		t.Fatalf("patch mutation operations should be defensively copied: %#v", patchMutation.Operations)
 	}
 
+	constructed, err := NewStorageMutation(StorageMutationPatch, json.RawMessage(`{"title":"Constructed"}`), patchMutation.Operations, StorageMutationOptions{OpID: "op-constructed"})
+	if err != nil {
+		t.Fatalf("new storage mutation: %v", err)
+	}
+	if constructed.Kind != StorageMutationPatch || constructed.OpID != "op-constructed" || string(constructed.Document) != `{"title":"Constructed"}` {
+		t.Fatalf("unexpected constructed mutation: %+v", constructed)
+	}
+
 	recorded, err := engine.RecordStorageMutation("room-a", StorageMutationPatch, json.RawMessage(`{
 		"liveblocksType":"LiveObject",
 		"data":{"title":"Remote"}
@@ -268,5 +276,8 @@ func TestEngineStorageMutations(t *testing.T) {
 
 	if _, err := engine.RecordStorageMutation("room-a", "unknown", json.RawMessage(`{}`), nil, StorageMutationOptions{}); !errors.Is(err, ErrStorageMutationKind) {
 		t.Fatalf("expected invalid mutation kind error, got %v", err)
+	}
+	if _, err := NewStorageMutation("unknown", json.RawMessage(`{}`), nil, StorageMutationOptions{}); !errors.Is(err, ErrStorageMutationKind) {
+		t.Fatalf("expected invalid constructor mutation kind error, got %v", err)
 	}
 }

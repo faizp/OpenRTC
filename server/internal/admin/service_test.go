@@ -25,6 +25,7 @@ import (
 	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
 	"github.com/openrtc/openrtc/server/internal/observability"
 	"github.com/openrtc/openrtc/server/internal/protocol"
+	"github.com/openrtc/openrtc/server/internal/roomengine"
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
@@ -2403,6 +2404,16 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	if string(store.setStorageInput) != `{"title":"Stored"}` {
 		t.Fatalf("unexpected stored storage input: %s", store.setStorageInput)
 	}
+	if len(store.publishedEvents) != 1 || store.publishedEvents[0].Event != cluster.EventStorageUpdate || store.publishedEvents[0].Room != "tenant-a:room-1" {
+		t.Fatalf("expected storage set publish event, got %#v", store.publishedEvents)
+	}
+	var setMutation roomengine.StorageMutation
+	if err := json.Unmarshal(store.publishedEvents[0].Payload, &setMutation); err != nil {
+		t.Fatalf("decode storage set publish payload: %v", err)
+	}
+	if setMutation.Kind != roomengine.StorageMutationSet || string(setMutation.Document) != `{"title":"Stored"}` || len(setMutation.Operations) != 0 {
+		t.Fatalf("unexpected storage set publish payload: %+v", setMutation)
+	}
 
 	patchStorageResp := performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/storage/json-patch", `[{"op":"replace","path":"/title","value":"Patched"}]`)
 	if patchStorageResp.Code != http.StatusOK || strings.TrimSpace(patchStorageResp.Body.String()) != `{"title":"Patched"}` {
@@ -2410,6 +2421,16 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	}
 	if len(store.storagePatchOperations) != 1 || store.storagePatchOperations[0].Op != "replace" {
 		t.Fatalf("unexpected storage patch operations: %+v", store.storagePatchOperations)
+	}
+	if len(store.publishedEvents) != 2 || store.publishedEvents[1].Event != cluster.EventStorageUpdate || store.publishedEvents[1].Room != "tenant-a:room-1" {
+		t.Fatalf("expected storage patch publish event, got %#v", store.publishedEvents)
+	}
+	var patchMutation roomengine.StorageMutation
+	if err := json.Unmarshal(store.publishedEvents[1].Payload, &patchMutation); err != nil {
+		t.Fatalf("decode storage patch publish payload: %v", err)
+	}
+	if patchMutation.Kind != roomengine.StorageMutationPatch || string(patchMutation.Document) != `{"title":"Patched"}` || len(patchMutation.Operations) != 1 {
+		t.Fatalf("unexpected storage patch publish payload: %+v", patchMutation)
 	}
 
 	deleteStorageResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/storage", "")

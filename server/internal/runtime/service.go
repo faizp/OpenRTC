@@ -49,7 +49,7 @@ var (
 const (
 	defaultJoinLimit            = 100
 	maxStoragePatchOperations   = 100
-	storageClusterEvent         = "$openrtc.storage.update"
+	storageClusterEvent         = cluster.EventStorageUpdate
 	notificationInboxCreated    = "openrtc.notifications.inbox.created"
 	notificationInboxRead       = "openrtc.notifications.inbox.read"
 	notificationInboxDeleted    = "openrtc.notifications.inbox.deleted"
