@@ -19,12 +19,18 @@ func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
 	if result.AlreadyJoined {
 		t.Fatalf("first join should not be duplicate")
 	}
+	if !reflect.DeepEqual(result.Snapshot.Members, []string{"conn-1"}) {
+		t.Fatalf("unexpected first join snapshot members: %#v", result.Snapshot.Members)
+	}
 	result, err = engine.Join("conn-1", "room-a", 2)
 	if err != nil {
 		t.Fatalf("duplicate join room-a: %v", err)
 	}
 	if !result.AlreadyJoined {
 		t.Fatalf("expected duplicate join")
+	}
+	if !reflect.DeepEqual(result.Snapshot.Members, []string{"conn-1"}) {
+		t.Fatalf("unexpected duplicate join snapshot members: %#v", result.Snapshot.Members)
 	}
 	if _, err := engine.Join("conn-1", "room-b", 2); err != nil {
 		t.Fatalf("join room-b: %v", err)
@@ -57,6 +63,38 @@ func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
 	}
 	if got := engine.ActiveRoomCount(); got != 0 {
 		t.Fatalf("expected no active rooms, got %d", got)
+	}
+}
+
+func TestEngineJoinResultSnapshotCopiesRoomState(t *testing.T) {
+	engine := New()
+	if _, err := engine.Join("conn-1", "room-a", 0); err != nil {
+		t.Fatalf("join conn-1: %v", err)
+	}
+	engine.SetPresence("conn-1", "room-a", json.RawMessage(`{"cursor":{"x":1}}`))
+
+	result, err := engine.Join("conn-2", "room-a", 0)
+	if err != nil {
+		t.Fatalf("join conn-2: %v", err)
+	}
+	if result.AlreadyJoined {
+		t.Fatalf("conn-2 should be a new join")
+	}
+	if !reflect.DeepEqual(result.Snapshot.Members, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("unexpected join snapshot members: %#v", result.Snapshot.Members)
+	}
+	if string(result.Snapshot.Presence["conn-1"]) != `{"cursor":{"x":1}}` {
+		t.Fatalf("unexpected join snapshot presence: %s", result.Snapshot.Presence["conn-1"])
+	}
+
+	result.Snapshot.Members[0] = "changed"
+	result.Snapshot.Presence["conn-1"][12] = '9'
+	snapshot := engine.Snapshot("room-a")
+	if !reflect.DeepEqual(snapshot.Members, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("join snapshot members should be copied, engine has %#v", snapshot.Members)
+	}
+	if string(snapshot.Presence["conn-1"]) != `{"cursor":{"x":1}}` {
+		t.Fatalf("join snapshot presence should be copied, engine has %s", snapshot.Presence["conn-1"])
 	}
 }
 

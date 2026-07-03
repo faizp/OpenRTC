@@ -41,6 +41,7 @@ type memoryYJSDocument struct {
 
 type JoinResult struct {
 	AlreadyJoined bool
+	Snapshot      Snapshot
 }
 
 type LeaveResult struct {
@@ -113,7 +114,7 @@ func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, er
 		e.connRooms[connID] = joinedRooms
 	}
 	if _, exists := joinedRooms[room]; exists {
-		return JoinResult{AlreadyJoined: true}, nil
+		return JoinResult{AlreadyJoined: true, Snapshot: e.snapshotLocked(room)}, nil
 	}
 	if roomLimit > 0 && len(joinedRooms) >= roomLimit {
 		return JoinResult{}, ErrRoomLimitExceeded
@@ -126,7 +127,7 @@ func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, er
 		e.rooms[room] = members
 	}
 	members[connID] = struct{}{}
-	return JoinResult{}, nil
+	return JoinResult{Snapshot: e.snapshotLocked(room)}, nil
 }
 
 func (e *Engine) Leave(connID string, room string) LeaveResult {
@@ -271,6 +272,10 @@ func (e *Engine) Snapshot(room string) Snapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.snapshotLocked(room)
+}
+
+func (e *Engine) snapshotLocked(room string) Snapshot {
 	members := make([]string, 0, len(e.rooms[room]))
 	for connID := range e.rooms[room] {
 		members = append(members, connID)

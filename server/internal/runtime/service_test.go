@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -919,6 +920,14 @@ func TestRuntimeHandleJoinLocalBranches(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.Room != "tenant-a:room-1" {
 		t.Fatalf("unexpected joined response: %+v", got)
+	} else {
+		payload, ok := got.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected joined payload type: %#v", got.Payload)
+		}
+		if members, ok := payload["members"].([]string); !ok || !reflect.DeepEqual(members, []string{"conn-1"}) {
+			t.Fatalf("unexpected joined members: %#v", payload["members"])
+		}
 	}
 
 	if err := service.handleJoin(conn, protocol.Message{ID: "join-dup", Room: "tenant-a:room-1"}); err != nil {

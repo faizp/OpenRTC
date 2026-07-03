@@ -592,7 +592,7 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		}
 	}
 
-	roomMembers, roomPresence, nextCursor, err := s.snapshotRoom(message.Room, message.JoinMeta)
+	roomMembers, roomPresence, nextCursor, err := s.snapshotJoinedRoom(message.Room, message.JoinMeta, joinResult.Snapshot)
 	if err != nil {
 		return err
 	}
@@ -1077,6 +1077,33 @@ func (s *Service) broadcastYJSFanout(fanout roomengine.YJSFanout) error {
 }
 
 func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
+	if s.store != nil {
+		return s.snapshotStoreRoom(room, joinMeta)
+	}
+
+	return paginateRoomSnapshot(s.roomEngine().Snapshot(room), joinMeta)
+}
+
+func (s *Service) snapshotJoinedRoom(room string, joinMeta *protocol.JoinMeta, localSnapshot roomengine.Snapshot) ([]string, map[string]json.RawMessage, string, error) {
+	if s.store != nil {
+		return s.snapshotStoreRoom(room, joinMeta)
+	}
+
+	return paginateRoomSnapshot(localSnapshot, joinMeta)
+}
+
+func (s *Service) snapshotStoreRoom(room string, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
+	snapshot, err := s.store.SnapshotRoom(s.ctx, room)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return paginateRoomSnapshot(roomengine.Snapshot{
+		Members:  snapshot.Members,
+		Presence: snapshot.Presence,
+	}, joinMeta)
+}
+
+func paginateRoomSnapshot(snapshot roomengine.Snapshot, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
 	limit := defaultJoinLimit
 	cursor := ""
 	if joinMeta != nil {
@@ -1085,17 +1112,6 @@ func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) ([]stri
 		}
 		cursor = joinMeta.Cursor
 	}
-
-	if s.store != nil {
-		snapshot, err := s.store.SnapshotRoom(s.ctx, room)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		members, presence, nextCursor := protocol.PaginateMembers(snapshot.Members, snapshot.Presence, limit, cursor)
-		return members, presence, nextCursor, nil
-	}
-
-	snapshot := s.roomEngine().Snapshot(room)
 
 	page, pagePresence, nextCursor := protocol.PaginateMembers(snapshot.Members, snapshot.Presence, limit, cursor)
 	return page, pagePresence, nextCursor, nil
