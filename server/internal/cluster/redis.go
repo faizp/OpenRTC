@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	aliveTTL = 45 * time.Second
+	aliveTTL           = 45 * time.Second
+	eventLogMaxEntries = 1000
 )
 
 const (
@@ -64,6 +65,7 @@ type PublishedEvent struct {
 	Payload             json.RawMessage `json:"payload"`
 	ExcludeSenderConnID string          `json:"exclude_sender_conn_id,omitempty"`
 	TraceID             string          `json:"trace_id,omitempty"`
+	Sequence            uint64          `json:"seq,omitempty"`
 	OriginNode          string          `json:"origin_node"`
 }
 
@@ -255,9 +257,14 @@ type yjsSnapshotRecord struct {
 	Snapshot      []byte `json:"snapshot"`
 }
 
+type PublishedEventList struct {
+	Events []PublishedEvent
+}
+
 type Store interface {
 	Healthy(ctx context.Context) error
-	PublishEvent(ctx context.Context, event PublishedEvent) error
+	PublishEvent(ctx context.Context, event PublishedEvent) (PublishedEvent, error)
+	ListPublishedEvents(ctx context.Context, room string, afterSequence uint64, limit int) (PublishedEventList, error)
 	Subscribe(ctx context.Context, handler func(PublishedEvent)) error
 	PublishPresence(ctx context.Context, event PresenceEvent) error
 	SubscribePresence(ctx context.Context, handler func(PresenceEvent)) error
@@ -327,12 +334,56 @@ func (s *RedisStore) Healthy(ctx context.Context) error {
 	return s.client.Ping(ctx).Err()
 }
 
-func (s *RedisStore) PublishEvent(ctx context.Context, event PublishedEvent) error {
+func (s *RedisStore) PublishEvent(ctx context.Context, event PublishedEvent) (PublishedEvent, error) {
+	if event.Sequence == 0 {
+		sequence, err := s.client.Incr(ctx, roomEventSequenceKey(event.Room)).Result()
+		if err != nil {
+			return PublishedEvent{}, err
+		}
+		event.Sequence = uint64(sequence)
+	}
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return PublishedEvent{}, err
 	}
-	return s.client.Publish(ctx, s.channelPrefix+event.Room, payload).Err()
+	logKey := roomEventLogKey(event.Room)
+	pipe := s.client.TxPipeline()
+	pipe.ZAdd(ctx, logKey, redis.Z{Score: float64(event.Sequence), Member: string(payload)})
+	pipe.ZRemRangeByRank(ctx, logKey, 0, -eventLogMaxEntries-1)
+	pipe.Publish(ctx, s.channelPrefix+event.Room, payload)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return PublishedEvent{}, err
+	}
+	return event, nil
+}
+
+func (s *RedisStore) ListPublishedEvents(ctx context.Context, room string, afterSequence uint64, limit int) (PublishedEventList, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > eventLogMaxEntries {
+		limit = eventLogMaxEntries
+	}
+	values, err := s.client.ZRangeByScore(ctx, roomEventLogKey(room), &redis.ZRangeBy{
+		Min:   fmt.Sprintf("(%d", afterSequence),
+		Max:   "+inf",
+		Count: int64(limit),
+	}).Result()
+	if err != nil {
+		return PublishedEventList{}, err
+	}
+	events := make([]PublishedEvent, 0, len(values))
+	for _, value := range values {
+		var event PublishedEvent
+		if err := json.Unmarshal([]byte(value), &event); err != nil {
+			continue
+		}
+		if event.Room == "" || event.Event == "" || event.Sequence == 0 {
+			continue
+		}
+		events = append(events, event)
+	}
+	return PublishedEventList{Events: events}, nil
 }
 
 func (s *RedisStore) Subscribe(ctx context.Context, handler func(PublishedEvent)) error {
@@ -2267,6 +2318,14 @@ func roomRecordScanPattern(prefix string) string {
 
 func roomStorageKey(room string) string {
 	return fmt.Sprintf("room:%s:storage", room)
+}
+
+func roomEventLogKey(room string) string {
+	return fmt.Sprintf("room:%s:events", room)
+}
+
+func roomEventSequenceKey(room string) string {
+	return fmt.Sprintf("room:%s:events:seq", room)
 }
 
 func roomThreadsKey(room string) string {

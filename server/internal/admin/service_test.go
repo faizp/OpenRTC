@@ -2404,7 +2404,7 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	if string(store.setStorageInput) != `{"title":"Stored"}` {
 		t.Fatalf("unexpected stored storage input: %s", store.setStorageInput)
 	}
-	if len(store.publishedEvents) != 1 || store.publishedEvents[0].Event != cluster.EventStorageUpdate || store.publishedEvents[0].Room != "tenant-a:room-1" {
+	if len(store.publishedEvents) != 1 || store.publishedEvents[0].Event != cluster.EventStorageUpdate || store.publishedEvents[0].Room != "tenant-a:room-1" || store.publishedEvents[0].Sequence != 1 {
 		t.Fatalf("expected storage set publish event, got %#v", store.publishedEvents)
 	}
 	var setMutation roomengine.StorageMutation
@@ -2422,7 +2422,7 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	if len(store.storagePatchOperations) != 1 || store.storagePatchOperations[0].Op != "replace" {
 		t.Fatalf("unexpected storage patch operations: %+v", store.storagePatchOperations)
 	}
-	if len(store.publishedEvents) != 2 || store.publishedEvents[1].Event != cluster.EventStorageUpdate || store.publishedEvents[1].Room != "tenant-a:room-1" {
+	if len(store.publishedEvents) != 2 || store.publishedEvents[1].Event != cluster.EventStorageUpdate || store.publishedEvents[1].Room != "tenant-a:room-1" || store.publishedEvents[1].Sequence != 2 {
 		t.Fatalf("expected storage patch publish event, got %#v", store.publishedEvents)
 	}
 	var patchMutation roomengine.StorageMutation
@@ -2796,6 +2796,7 @@ type fakeAdminStore struct {
 	healthyErr         error
 	publishErr         error
 	publishPresenceErr error
+	nextPublishSeq     uint64
 	setEphemeralErr    error
 	aggregateStatsErr  error
 	createRoomErr      error
@@ -2882,12 +2883,20 @@ func (s *fakeAdminStore) Healthy(context.Context) error {
 	return s.healthyErr
 }
 
-func (s *fakeAdminStore) PublishEvent(_ context.Context, event cluster.PublishedEvent) error {
+func (s *fakeAdminStore) PublishEvent(_ context.Context, event cluster.PublishedEvent) (cluster.PublishedEvent, error) {
 	if s.publishErr != nil {
-		return s.publishErr
+		return cluster.PublishedEvent{}, s.publishErr
+	}
+	if event.Sequence == 0 {
+		s.nextPublishSeq++
+		event.Sequence = s.nextPublishSeq
 	}
 	s.publishedEvents = append(s.publishedEvents, event)
-	return nil
+	return event, nil
+}
+
+func (s *fakeAdminStore) ListPublishedEvents(context.Context, string, uint64, int) (cluster.PublishedEventList, error) {
+	return cluster.PublishedEventList{Events: append([]cluster.PublishedEvent(nil), s.publishedEvents...)}, nil
 }
 
 func (s *fakeAdminStore) Subscribe(context.Context, func(cluster.PublishedEvent)) error {

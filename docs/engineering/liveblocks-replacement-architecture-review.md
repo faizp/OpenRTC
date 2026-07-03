@@ -60,7 +60,9 @@ Missing for parity:
 - First-class Tiptap/BlockNote/Lexical examples, docs, and published packages beyond low-level Yjs binding helpers.
 - Room-affine placement, load-shedding, and Yjs compactor retention alerts
   tuned against production traffic.
-- Resumable session protocol, delivery acks, ordered durable event logs, or offline catch-up for non-Yjs events.
+- Resumable session protocol, delivery acks, and offline catch-up for non-Yjs events.
+  Redis now assigns per-room event sequences and keeps a bounded event log as a
+  replay foundation, but no WebSocket resume/catch-up protocol consumes it yet.
 - Region/tenant placement, room-affine routing, load-shedding, and horizontal scale tests at product scale.
 - Published API coverage thresholds for Go and TypeScript.
 

@@ -22,6 +22,7 @@ import {
   liveObjectPatch,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
+  type OpenRTCEvent,
   type OpenRTCNotificationDelta,
   type OpenRTCStorageEvent,
   type OpenRTCWebSocket,
@@ -275,6 +276,10 @@ const roomClient = new OpenRTCClient({
   WebSocket: FakeWebSocket,
   autoReconnect: false,
 });
+const roomDiagnostics: OpenRTCDiagnosticEvent[] = [];
+roomClient.on("diagnostic", (event) => {
+  roomDiagnostics.push(event);
+});
 const roomConnected = roomClient.connect();
 await Promise.resolve();
 const roomSocket = FakeWebSocket.instances[0];
@@ -305,6 +310,7 @@ assert.deepEqual(
 const othersEvents: string[] = [];
 const myPresenceValues: PresenceState[] = [];
 const roomEvents: string[] = [];
+const receivedRoomEvents: OpenRTCEvent[] = [];
 const commentEvents: OpenRTCCommentEvent[] = [];
 const notificationEvents: OpenRTCNotificationDelta[] = [];
 const offOthers = room.subscribe("others", (_others, event) => {
@@ -315,6 +321,7 @@ const offMyPresence = room.subscribe("my-presence", (presence) => {
 });
 const offEvents = room.subscribe("event", (event) => {
   roomEvents.push(event.event);
+  receivedRoomEvents.push(event);
 });
 const offComments = room.subscribe("comments", (event) => {
   commentEvents.push(event);
@@ -398,9 +405,11 @@ roomSocket.receive({
   room: "tenant-a:room-api",
   event: "CANVAS_PING",
   payload: { type: "CANVAS_PING", value: 1 },
-  meta: { trace_id: "room-trace" },
+  meta: { trace_id: "room-trace", seq: 12 },
 });
 assert.deepEqual(roomEvents, ["CANVAS_PING"]);
+assert.equal(receivedRoomEvents.at(-1)?.sequence, 12);
+assert.equal(roomDiagnostics.at(-1)?.sequence, 12);
 
 roomSocket.receive({
   t: "EVENT",

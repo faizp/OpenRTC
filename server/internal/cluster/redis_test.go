@@ -111,17 +111,50 @@ func TestRedisPubSubFanoutFiltersMalformedEvents(t *testing.T) {
 	if err := store.client.Publish(ctx, "room:tenant-a:room-1", `{"room":"tenant-a:room-1"}`).Err(); err != nil {
 		t.Fatalf("publish incomplete event: %v", err)
 	}
-	if err := store.PublishEvent(ctx, PublishedEvent{
+	published, err := store.PublishEvent(ctx, PublishedEvent{
 		Room:       "tenant-a:room-1",
 		Event:      "doc.update",
 		Payload:    json.RawMessage(`{"ok":true}`),
 		OriginNode: "node-a",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("publish valid event: %v", err)
 	}
+	if published.Sequence != 1 {
+		t.Fatalf("expected first event sequence 1, got %d", published.Sequence)
+	}
 	event := receiveClusterTestValue(t, events, "published event")
-	if event.Room != "tenant-a:room-1" || event.Event != "doc.update" {
+	if event.Room != "tenant-a:room-1" || event.Event != "doc.update" || event.Sequence != 1 {
 		t.Fatalf("unexpected published event: %+v", event)
+	}
+	logged, err := store.ListPublishedEvents(ctx, "tenant-a:room-1", 0, 10)
+	if err != nil {
+		t.Fatalf("list published events: %v", err)
+	}
+	if len(logged.Events) != 1 || logged.Events[0].Sequence != 1 || logged.Events[0].Event != "doc.update" {
+		t.Fatalf("unexpected logged events: %+v", logged.Events)
+	}
+	second, err := store.PublishEvent(ctx, PublishedEvent{
+		Room:       "tenant-a:room-1",
+		Event:      "doc.second",
+		Payload:    json.RawMessage(`{"ok":true}`),
+		OriginNode: "node-a",
+	})
+	if err != nil {
+		t.Fatalf("publish second event: %v", err)
+	}
+	if second.Sequence != 2 {
+		t.Fatalf("expected second event sequence 2, got %d", second.Sequence)
+	}
+	if got := receiveClusterTestValue(t, events, "second published event"); got.Sequence != 2 || got.Event != "doc.second" {
+		t.Fatalf("unexpected second published event: %+v", got)
+	}
+	logged, err = store.ListPublishedEvents(ctx, "tenant-a:room-1", 1, 10)
+	if err != nil {
+		t.Fatalf("list published events after sequence: %v", err)
+	}
+	if len(logged.Events) != 1 || logged.Events[0].Sequence != 2 || logged.Events[0].Event != "doc.second" {
+		t.Fatalf("unexpected logged events after sequence: %+v", logged.Events)
 	}
 
 	if err := store.client.Publish(ctx, "room:presence:tenant-a:room-1", `not-json`).Err(); err != nil {
@@ -200,7 +233,7 @@ func TestRedisPublishAndYJSWriteErrors(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
-	if err := store.PublishEvent(ctx, PublishedEvent{
+	if _, err := store.PublishEvent(ctx, PublishedEvent{
 		Room:       "tenant-a:room-1",
 		Event:      "doc.update",
 		Payload:    json.RawMessage(`{`),
@@ -220,7 +253,7 @@ func TestRedisPublishAndYJSWriteErrors(t *testing.T) {
 	redisServer.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := store.PublishEvent(ctx, PublishedEvent{
+	if _, err := store.PublishEvent(ctx, PublishedEvent{
 		Room:       "tenant-a:room-1",
 		Event:      "doc.update",
 		Payload:    json.RawMessage(`{"ok":true}`),

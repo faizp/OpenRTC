@@ -674,23 +674,22 @@ func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {
 		traceID = message.EmitMeta.TraceID
 	}
 
-	if err := s.broadcastEvent(cluster.PublishedEvent{
+	event := cluster.PublishedEvent{
 		Room:       message.Room,
 		Event:      message.Event,
 		Payload:    message.Payload,
 		TraceID:    traceID,
 		OriginNode: s.cfg.NodeID,
-	}, true); err != nil {
-		return err
 	}
 	if s.store != nil {
-		return s.store.PublishEvent(s.ctx, cluster.PublishedEvent{
-			Room:       message.Room,
-			Event:      message.Event,
-			Payload:    message.Payload,
-			TraceID:    traceID,
-			OriginNode: s.cfg.NodeID,
-		})
+		published, err := s.store.PublishEvent(s.ctx, event)
+		if err != nil {
+			return err
+		}
+		event = published
+	}
+	if err := s.broadcastEvent(event, true); err != nil {
+		return err
 	}
 	return nil
 }
@@ -850,14 +849,18 @@ func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool)
 	s.mu.RUnlock()
 
 	for _, target := range targets {
+		meta := map[string]any{
+			"trace_id": event.TraceID,
+		}
+		if event.Sequence > 0 {
+			meta["seq"] = event.Sequence
+		}
 		if err := target.enqueue(outboundMessage{
 			T:       "EVENT",
 			Room:    event.Room,
 			Event:   event.Event,
 			Payload: event.Payload,
-			Meta: map[string]any{
-				"trace_id": event.TraceID,
-			},
+			Meta:    meta,
 		}); err != nil {
 			return err
 		}
@@ -1081,13 +1084,14 @@ func (s *Service) publishStorageUpdate(room string, update roomengine.StorageMut
 	if err != nil {
 		return err
 	}
-	return s.store.PublishEvent(s.ctx, cluster.PublishedEvent{
+	_, err = s.store.PublishEvent(s.ctx, cluster.PublishedEvent{
 		Room:                room,
 		Event:               storageClusterEvent,
 		Payload:             payload,
 		ExcludeSenderConnID: excludeConnID,
 		OriginNode:          s.cfg.NodeID,
 	})
+	return err
 }
 
 func (s *Service) registerConn(conn *clientConn) {

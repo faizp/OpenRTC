@@ -1466,6 +1466,46 @@ func TestRuntimeEmitPresenceAndLeaveSuccessBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeEmitUsesSequencedStoreEvent(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	store := &fakeRuntimeStore{}
+	service.store = store
+	claims := &auth.Claims{
+		Tenant:  "tenant-a",
+		Join:    []string{"tenant-a:*"},
+		Publish: []string{"tenant-a:*"},
+	}
+	sender := runtimeTestConn(service, "conn-seq-sender", claims, 4)
+	receiver := runtimeTestConn(service, "conn-seq-receiver", claims, 4)
+	joinRuntimeRoom(t, service, sender, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+
+	if err := service.handleEmit(sender, protocol.Message{
+		ID:       "emit-seq",
+		Room:     "tenant-a:room-1",
+		Event:    "doc.update",
+		Payload:  json.RawMessage(`{"ok":true}`),
+		EmitMeta: &protocol.EmitMeta{TraceID: "trace-seq"},
+	}); err != nil {
+		t.Fatalf("emit sequenced event: %v", err)
+	}
+	if len(store.publishedEvents) != 1 || store.publishedEvents[0].Sequence != 1 {
+		t.Fatalf("expected sequenced store publish, got %#v", store.publishedEvents)
+	}
+	for _, conn := range []*clientConn{sender, receiver} {
+		got := readRuntimeOutbound(t, conn)
+		if got.T != "EVENT" || got.Event != "doc.update" {
+			t.Fatalf("unexpected event for %s: %+v", conn.id, got)
+		}
+		meta, ok := got.Meta.(map[string]any)
+		if !ok || meta["trace_id"] != "trace-seq" || meta["seq"] != uint64(1) {
+			t.Fatalf("unexpected event metadata for %s: %#v", conn.id, got.Meta)
+		}
+	}
+}
+
 func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()
@@ -2229,6 +2269,7 @@ type fakeRuntimeStore struct {
 
 	publishEventErr        error
 	publishedEvents        []cluster.PublishedEvent
+	nextPublishedSequence  uint64
 	publishPresenceErr     error
 	publishedPresence      []cluster.PresenceEvent
 	joinErr                error
@@ -2264,11 +2305,20 @@ func (s *fakeRuntimeStore) Healthy(context.Context) error {
 	return s.healthyErr
 }
 
-func (s *fakeRuntimeStore) PublishEvent(_ context.Context, event cluster.PublishedEvent) error {
-	if s.publishEventErr == nil {
-		s.publishedEvents = append(s.publishedEvents, event)
+func (s *fakeRuntimeStore) PublishEvent(_ context.Context, event cluster.PublishedEvent) (cluster.PublishedEvent, error) {
+	if s.publishEventErr != nil {
+		return cluster.PublishedEvent{}, s.publishEventErr
 	}
-	return s.publishEventErr
+	if event.Sequence == 0 {
+		s.nextPublishedSequence++
+		event.Sequence = s.nextPublishedSequence
+	}
+	s.publishedEvents = append(s.publishedEvents, event)
+	return event, nil
+}
+
+func (s *fakeRuntimeStore) ListPublishedEvents(context.Context, string, uint64, int) (cluster.PublishedEventList, error) {
+	return cluster.PublishedEventList{Events: append([]cluster.PublishedEvent(nil), s.publishedEvents...)}, nil
 }
 
 func (s *fakeRuntimeStore) Subscribe(context.Context, func(cluster.PublishedEvent)) error {

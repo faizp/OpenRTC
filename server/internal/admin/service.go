@@ -312,7 +312,7 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.PublishEvent(r.Context(), cluster.PublishedEvent{
+	if _, err := s.store.PublishEvent(r.Context(), cluster.PublishedEvent{
 		Room:                request.Room,
 		Event:               request.Event,
 		Payload:             request.Payload,
@@ -1982,7 +1982,7 @@ func (s *Service) publishCommentEvent(ctx context.Context, eventName string, thr
 	if err != nil {
 		return err
 	}
-	if err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
+	if _, err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
 		Room:       thread.RoomID,
 		Event:      eventName,
 		Payload:    raw,
@@ -2013,7 +2013,7 @@ func (s *Service) publishNotificationEvent(ctx context.Context, eventName string
 	if err != nil {
 		return err
 	}
-	if err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
+	if _, err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
 		Room:       notificationEventRoom(payload.UserID),
 		Event:      eventName,
 		Payload:    raw,
@@ -2037,12 +2037,13 @@ func (s *Service) publishStorageMutation(ctx context.Context, room string, kind 
 	if err != nil {
 		return err
 	}
-	return s.store.PublishEvent(ctx, cluster.PublishedEvent{
+	_, err = s.store.PublishEvent(ctx, cluster.PublishedEvent{
 		Room:       room,
 		Event:      cluster.EventStorageUpdate,
 		Payload:    raw,
 		OriginNode: "admin:" + s.cfg.NodeID,
 	})
+	return err
 }
 
 func commentEventType(eventName string) string {

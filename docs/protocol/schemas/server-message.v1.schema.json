@@ -108,7 +108,15 @@
           "pattern": "^[a-zA-Z0-9._:-]+$"
         },
         "event": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "payload": {}
+        "payload": {},
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "trace_id": { "type": "string" },
+            "seq": { "type": "integer", "minimum": 1 }
+          }
+        }
       }
     },
     {

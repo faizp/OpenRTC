@@ -115,6 +115,7 @@ export interface OpenRTCEvent {
   event: string;
   payload: unknown;
   traceId?: string;
+  sequence?: number;
 }
 
 export const OPENRTC_COMMENT_EVENTS = {
@@ -147,6 +148,7 @@ export interface OpenRTCCommentEvent {
   thread: OpenRTCAdminThread;
   comment?: OpenRTCAdminComment;
   traceId?: string;
+  sequence?: number;
 }
 
 export interface OpenRTCNotificationDelta {
@@ -210,6 +212,7 @@ export interface OpenRTCDiagnosticEvent {
   room?: string;
   event?: string;
   traceId?: string;
+  sequence?: number;
   payloadBytes?: number;
   latencyMs?: number;
 }
@@ -1453,6 +1456,7 @@ export class OpenRTCClient {
     const eventName = optionalString(message["event"]);
     const meta = asRecord(message["meta"]);
     const traceId = optionalString(meta["trace_id"]);
+    const sequence = optionalSequence(meta["seq"]);
     const payload = asRecord(message["payload"]);
     let requestId = optionalString(message["id"]);
     if (type === "ERROR") {
@@ -1482,6 +1486,7 @@ export class OpenRTCClient {
       ...(room ? { room } : {}),
       ...(eventName ? { event: eventName } : {}),
       ...(traceId ? { traceId } : {}),
+      ...(sequence !== undefined ? { sequence } : {}),
       ...(payloadBytes !== undefined ? { payloadBytes } : {}),
       ...(latencyMs !== undefined ? { latencyMs } : {}),
     });
@@ -1583,11 +1588,13 @@ export class OpenRTCClient {
     if (type === "EVENT") {
       const meta = asRecord(message["meta"]);
       const traceId = optionalString(meta["trace_id"]);
+      const sequence = optionalSequence(meta["seq"]);
       const event: OpenRTCEvent = {
         room: asString(message["room"]),
         event: asString(message["event"]),
         payload: message["payload"],
         ...(traceId ? { traceId } : {}),
+        ...(sequence !== undefined ? { sequence } : {}),
       };
       this.emit("event", event);
       const commentEvent = asOpenRTCCommentEvent(event);
@@ -2556,6 +2563,10 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+function optionalSequence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -2621,6 +2632,7 @@ function asOpenRTCCommentEvent(event: OpenRTCEvent): OpenRTCCommentEvent | undef
     ...(commentId ? { commentId } : {}),
     ...(comment ? { comment } : {}),
     ...(event.traceId ? { traceId: event.traceId } : {}),
+    ...(event.sequence !== undefined ? { sequence: event.sequence } : {}),
   };
 }
 
