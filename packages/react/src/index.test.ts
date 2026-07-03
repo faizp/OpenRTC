@@ -12,6 +12,7 @@ import {
   useStorage,
   useStorageListener,
   useStorageMutation,
+  useStoragePendingMutations,
   useStorageSelector,
   useStorageStatus,
   useUpdateLiveStorage,
@@ -38,6 +39,7 @@ assert.equal(typeof useSetLiveStorage, "function");
 assert.equal(typeof useUpdateLiveStorage, "function");
 assert.equal(typeof useStorageMutation, "function");
 assert.equal(typeof useStorageListener, "function");
+assert.equal(typeof useStoragePendingMutations, "function");
 assert.equal(typeof useCommentListener, "function");
 assert.equal(typeof useRoomCommentEvents, "function");
 assert.equal(typeof useNotificationListener, "function");

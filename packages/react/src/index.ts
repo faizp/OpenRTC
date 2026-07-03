@@ -39,6 +39,7 @@ import {
   type OpenRTCLiveObject,
   type OpenRTCStorageEvent,
   type OpenRTCStorageMutationOptions,
+  type OpenRTCStoragePendingMutation,
   type OpenRTCStorageStatus,
   type PresencePeer,
   type PresenceState,
@@ -436,6 +437,22 @@ export function useStorageStatus(room: string): OpenRTCStorageStatus {
   }, [roomHandle]);
 
   return status;
+}
+
+export function useStoragePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
+  const roomHandle = useRoomHandle(room);
+  const [mutations, setMutations] = useState<OpenRTCStoragePendingMutation[]>(() =>
+    roomHandle.getStoragePendingMutations(),
+  );
+
+  useEffect(() => {
+    setMutations(roomHandle.getStoragePendingMutations());
+    return roomHandle.subscribe("storage-status", () => {
+      setMutations(roomHandle.getStoragePendingMutations());
+    });
+  }, [roomHandle]);
+
+  return mutations;
 }
 
 export function useSetStorage<TDocument = unknown>(

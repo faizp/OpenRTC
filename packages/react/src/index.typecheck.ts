@@ -3,6 +3,7 @@ import type {
   OpenRTCEvent,
   OpenRTCLiveObject,
   OpenRTCStorageEvent,
+  OpenRTCStoragePendingMutation,
   OpenRTCStorageStatus,
   PresencePeer,
   PresenceState,
@@ -41,6 +42,7 @@ import {
   useStorageListener,
   useStorageMutation,
   useStorageSelector,
+  useStoragePendingMutations,
   useStorageStatus,
   useUpdateLiveStorage,
 } from "./index.ts";
@@ -141,6 +143,7 @@ function StorageIntegrationTypes() {
   expectType<CanvasStorage | undefined>(useStorage<CanvasStorage>(roomId));
   expectType<string>(useStorageSelector<CanvasStorage, string>(roomId, (storage) => storage?.title ?? "Untitled"));
   expectType<OpenRTCStorageStatus>(useStorageStatus(roomId));
+  expectType<OpenRTCStoragePendingMutation[]>(useStoragePendingMutations(roomId));
 
   const setStorage = useSetStorage<CanvasStorage>(roomId);
   expectType<Promise<CanvasStorage>>(setStorage({ title: "Draft", items: [] }, { opId: "set-1" }));

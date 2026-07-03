@@ -342,11 +342,17 @@ const offNotifications = roomClient.on("notification", (event) => {
 });
 const storageEvents: OpenRTCStorageEvent[] = [];
 const storageStatuses: string[] = [];
+const storageStatusUpdates: unknown[] = [];
 const offStorage = room.subscribe("storage", (event) => {
   storageEvents.push(event);
 });
 const offStorageStatus = room.subscribe("storage-status", (status) => {
   storageStatuses.push(status);
+});
+const offStorageStatusUpdates = roomClient.on("storage-status", (event) => {
+  if (event.room === "tenant-a:room-api") {
+    storageStatusUpdates.push(event);
+  }
 });
 
 roomSocket.receive({
@@ -481,6 +487,7 @@ roomSocket.receive({
 });
 assert.deepEqual(await loadedStorage, { title: "Draft", version: 1 });
 assert.deepEqual(room.getStorageSnapshot(), { title: "Draft", version: 1 });
+assert.deepEqual(room.getStoragePendingMutations(), []);
 assert.deepEqual(storageStatuses.slice(-2), ["loading", "synchronized"]);
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
@@ -500,6 +507,15 @@ assert.equal(
   }),
 );
 assert.equal(room.getStorageStatus(), "synchronizing");
+assert.deepEqual(room.getStoragePendingMutations(), [
+  { requestId: "storage-set-6", kind: "set", opId: "op-set-1" },
+]);
+assert.deepEqual(storageStatusUpdates.at(-1), {
+  room: "tenant-a:room-api",
+  status: "synchronizing",
+  pendingMutations: 1,
+  pendingOpIds: ["op-set-1"],
+});
 assert.deepEqual(room.getStorageSnapshot(), { title: "Published", version: 2 });
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
@@ -515,6 +531,7 @@ roomSocket.receive({
   payload: { kind: "set", op_id: "op-set-1", document: { title: "Published", version: 20 } },
 });
 assert.deepEqual(await setStorage, { title: "Published", version: 20 });
+assert.deepEqual(room.getStoragePendingMutations(), []);
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
   document: { title: "Published", version: 20 },
@@ -535,6 +552,14 @@ assert.equal(
   }),
 );
 assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 20 });
+assert.deepEqual(room.getStoragePendingMutations(), [
+  {
+    requestId: "storage-patch-7",
+    kind: "patch",
+    opId: "op-patch-1",
+    operations: [{ op: "replace", path: "/title", value: "Patched" }],
+  },
+]);
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
   document: { title: "Patched", version: 20 },
@@ -757,6 +782,20 @@ assert.equal(
     meta: { op_id: "concurrent-b" },
   }),
 );
+assert.deepEqual(room.getStoragePendingMutations(), [
+  {
+    requestId: "storage-patch-13",
+    kind: "patch",
+    opId: "concurrent-a",
+    operations: [{ op: "replace", path: "/version", value: 32 }],
+  },
+  {
+    requestId: "storage-patch-14",
+    kind: "patch",
+    opId: "concurrent-b",
+    operations: [{ op: "replace", path: "/title", value: "Still Local" }],
+  },
+]);
 assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 32 });
 roomSocket.receive({
   t: "STORAGE_ACK",
@@ -766,6 +805,20 @@ roomSocket.receive({
 });
 assert.deepEqual(await concurrentPatchA, { title: "Server Fixed", version: 32 });
 assert.equal(room.getStorageStatus(), "synchronizing");
+assert.deepEqual(room.getStoragePendingMutations(), [
+  {
+    requestId: "storage-patch-14",
+    kind: "patch",
+    opId: "concurrent-b",
+    operations: [{ op: "replace", path: "/title", value: "Still Local" }],
+  },
+]);
+assert.deepEqual(storageStatusUpdates.at(-1), {
+  room: "tenant-a:room-api",
+  status: "synchronizing",
+  pendingMutations: 1,
+  pendingOpIds: ["concurrent-b"],
+});
 assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 32 });
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
@@ -783,6 +836,13 @@ roomSocket.receive({
 });
 assert.deepEqual(await concurrentPatchB, { title: "Still Local", version: 33 });
 assert.equal(room.getStorageStatus(), "synchronized");
+assert.deepEqual(room.getStoragePendingMutations(), []);
+assert.deepEqual(storageStatusUpdates.at(-1), {
+  room: "tenant-a:room-api",
+  status: "synchronized",
+  pendingMutations: 0,
+  pendingOpIds: [],
+});
 assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 33 });
 
 offOthers();
@@ -792,6 +852,7 @@ offComments();
 offNotifications();
 offStorage();
 offStorageStatus();
+offStorageStatusUpdates();
 let sawClosedRoomReset = false;
 const offRoomReset = roomClient.on("room", (state) => {
   if (state.room === "tenant-a:room-api" && state.members.length === 0 && state.others.length === 0) {

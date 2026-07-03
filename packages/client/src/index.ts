@@ -353,9 +353,18 @@ export interface OpenRTCStorageEvent<TDocument = unknown> {
   operations?: JSONPatchOperation[];
 }
 
+export interface OpenRTCStoragePendingMutation {
+  requestId: string;
+  kind: OpenRTCStorageMutationKind;
+  opId: string;
+  operations?: JSONPatchOperation[];
+}
+
 export interface OpenRTCStorageStatusUpdate {
   room: string;
   status: OpenRTCStorageStatus;
+  pendingMutations: number;
+  pendingOpIds: string[];
 }
 
 export interface OpenRTCRoom {
@@ -374,6 +383,7 @@ export interface OpenRTCRoom {
   getStorage<TDocument = unknown>(): Promise<TDocument>;
   getStorageSnapshot<TDocument = unknown>(): TDocument | undefined;
   getStorageStatus(): OpenRTCStorageStatus;
+  getStoragePendingMutations(): OpenRTCStoragePendingMutation[];
   setStorage<TDocument = unknown>(
     document: TDocument,
     options?: OpenRTCStorageMutationOptions,
@@ -1031,6 +1041,10 @@ export class OpenRTCClient {
     return this.storageStatusByRoom.get(room) ?? "not-loaded";
   }
 
+  getStoragePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
+    return this.storagePendingMutations(room);
+  }
+
   setStorage<TDocument = unknown>(
     room: string,
     document: TDocument,
@@ -1520,7 +1534,9 @@ export class OpenRTCClient {
         reject,
       });
       this.storageRequestedRooms.add(room);
-      this.setStorageStatus(room, "synchronizing");
+      if (!this.setStorageStatus(room, "synchronizing")) {
+        this.emitStorageStatus(room);
+      }
       if (hasOptimisticDocument) {
         this.applyStorageMessage(room, optimisticDocument, {
           source: "optimistic",
@@ -1996,8 +2012,9 @@ export class OpenRTCClient {
     }
     this.pendingStorageGets.clear();
 
-    for (const [id, pending] of [...this.pendingStorageMutations.entries()]) {
-      this.pendingStorageMutations.delete(id);
+    const pendingMutations = [...this.pendingStorageMutations.values()];
+    this.pendingStorageMutations.clear();
+    for (const pending of pendingMutations) {
       this.rollbackStorageMutation(pending);
       pending.reject(error);
     }
@@ -2052,17 +2069,44 @@ export class OpenRTCClient {
     this.emit("status", status);
   }
 
-  private setStorageStatus(room: string, status: OpenRTCStorageStatus): void {
+  private setStorageStatus(room: string, status: OpenRTCStorageStatus): boolean {
     const current = this.getStorageStatus(room);
     if (current === status) {
-      return;
+      return false;
     }
     if (status === "not-loaded") {
       this.storageStatusByRoom.delete(room);
     } else {
       this.storageStatusByRoom.set(room, status);
     }
-    this.emit("storage-status", { room, status });
+    this.emitStorageStatus(room);
+    return true;
+  }
+
+  private emitStorageStatus(room: string): void {
+    const pending = this.storagePendingMutations(room);
+    this.emit("storage-status", {
+      room,
+      status: this.getStorageStatus(room),
+      pendingMutations: pending.length,
+      pendingOpIds: pending.map((mutation) => mutation.opId),
+    });
+  }
+
+  private storagePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
+    const pending: OpenRTCStoragePendingMutation[] = [];
+    for (const [requestId, mutation] of this.pendingStorageMutations) {
+      if (mutation.room !== room) {
+        continue;
+      }
+      pending.push({
+        requestId,
+        kind: mutation.kind,
+        opId: mutation.opId,
+        ...(mutation.operations ? { operations: cloneStorageDocument(mutation.operations) } : {}),
+      });
+    }
+    return pending;
   }
 
   private resetRooms(options: { rooms?: Iterable<string>; preserveLocal: boolean }): void {
@@ -2449,6 +2493,10 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
 
   getStorageStatus(): OpenRTCStorageStatus {
     return this.client.getStorageStatus(this.id);
+  }
+
+  getStoragePendingMutations(): OpenRTCStoragePendingMutation[] {
+    return this.client.getStoragePendingMutations(this.id);
   }
 
   setStorage<TDocument = unknown>(

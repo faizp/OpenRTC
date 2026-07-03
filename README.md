@@ -155,10 +155,11 @@ fresh snapshot when an active room reconnects. `setStorage` and loaded
 with the authoritative server ack or roll back on failure. When a server ack or
 remote update arrives while later local mutations are still pending, the SDK
 uses the server document as the new base and replays pending optimistic
-mutations on top. Storage mutations send an `op_id` automatically when one is
-not provided, so optimistic, ack, and rollback events can be correlated. Typed
-storage helpers build Liveblocks-style `LiveObject`, `LiveList`, and `LiveMap`
-envelopes and
+mutations on top. `room.getStoragePendingMutations()` and storage-status events
+expose pending mutation count and op IDs. Storage mutations send an `op_id`
+automatically when one is not provided, so optimistic, ack, and rollback events
+can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
+`LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
 reserved envelope JSON. `liveMapPatch`, `liveListAppend`, `liveListInsert`,
 `liveListReplace`, `liveListRemove`, and `liveListMove` generate nested
@@ -186,8 +187,8 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useNotificationListener`, `useNotificationEvents`, `useDiagnostics`, `useErrorListener`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useSetStorage`, `usePatchStorage`,
-`useSetLiveStorage`, `useUpdateLiveStorage`, `useStorageMutation`, and
-`useStorageListener`. It also exports
+`useStoragePendingMutations`, `useSetLiveStorage`, `useUpdateLiveStorage`,
+`useStorageMutation`, and `useStorageListener`. It also exports
 Liveblocks-style `Cursors`, `Cursor`, and `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with
