@@ -155,8 +155,9 @@ fresh snapshot when an active room reconnects. `setStorage` and loaded
 with the authoritative server ack or roll back on failure. When a server ack or
 remote update arrives while later local mutations are still pending, the SDK
 uses the server document as the new base and replays pending optimistic
-mutations on top. `room.getStoragePendingMutations()` and storage-status events
-expose pending mutation count and op IDs. Storage mutations send an `op_id`
+mutations on top. `room.getStoragePendingMutations()` plus client
+`storage-status` events and room `storage-status` subscription updates expose
+pending mutation count and op IDs. Storage mutations send an `op_id`
 automatically when one is not provided, so optimistic, ack, and rollback events
 can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
 `LiveList`, and `LiveMap` envelopes and

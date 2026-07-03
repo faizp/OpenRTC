@@ -36,6 +36,7 @@ import {
   type OpenRTCEvent,
   type OpenRTCNotificationDelta,
   type OpenRTCStorageEvent,
+  type OpenRTCStorageStatusUpdate,
   type OpenRTCWebSocket,
   type PresenceState,
 } from "./index.ts";
@@ -342,12 +343,14 @@ const offNotifications = roomClient.on("notification", (event) => {
 });
 const storageEvents: OpenRTCStorageEvent[] = [];
 const storageStatuses: string[] = [];
+const roomStorageStatusUpdates: OpenRTCStorageStatusUpdate[] = [];
 const storageStatusUpdates: unknown[] = [];
 const offStorage = room.subscribe("storage", (event) => {
   storageEvents.push(event);
 });
-const offStorageStatus = room.subscribe("storage-status", (status) => {
+const offStorageStatus = room.subscribe("storage-status", (status, update) => {
   storageStatuses.push(status);
+  roomStorageStatusUpdates.push(update);
 });
 const offStorageStatusUpdates = roomClient.on("storage-status", (event) => {
   if (event.room === "tenant-a:room-api") {
@@ -510,6 +513,12 @@ assert.equal(room.getStorageStatus(), "synchronizing");
 assert.deepEqual(room.getStoragePendingMutations(), [
   { requestId: "storage-set-6", kind: "set", opId: "op-set-1" },
 ]);
+assert.deepEqual(roomStorageStatusUpdates.at(-1), {
+  room: "tenant-a:room-api",
+  status: "synchronizing",
+  pendingMutations: 1,
+  pendingOpIds: ["op-set-1"],
+});
 assert.deepEqual(storageStatusUpdates.at(-1), {
   room: "tenant-a:room-api",
   status: "synchronizing",
@@ -813,6 +822,12 @@ assert.deepEqual(room.getStoragePendingMutations(), [
     operations: [{ op: "replace", path: "/title", value: "Still Local" }],
   },
 ]);
+assert.deepEqual(roomStorageStatusUpdates.at(-1), {
+  room: "tenant-a:room-api",
+  status: "synchronizing",
+  pendingMutations: 1,
+  pendingOpIds: ["concurrent-b"],
+});
 assert.deepEqual(storageStatusUpdates.at(-1), {
   room: "tenant-a:room-api",
   status: "synchronizing",

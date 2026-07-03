@@ -405,7 +405,10 @@ export interface OpenRTCRoom {
   subscribe(type: "event", callback: (event: OpenRTCEvent) => void): () => void;
   subscribe(type: "comments", callback: (event: OpenRTCCommentEvent) => void): () => void;
   subscribe(type: "storage", callback: (event: OpenRTCStorageEvent) => void): () => void;
-  subscribe(type: "storage-status", callback: (status: OpenRTCStorageStatus) => void): () => void;
+  subscribe(
+    type: "storage-status",
+    callback: (status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void,
+  ): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
@@ -2532,7 +2535,10 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
   subscribe(type: "event", callback: (event: OpenRTCEvent) => void): () => void;
   subscribe(type: "comments", callback: (event: OpenRTCCommentEvent) => void): () => void;
   subscribe(type: "storage", callback: (event: OpenRTCStorageEvent) => void): () => void;
-  subscribe(type: "storage-status", callback: (status: OpenRTCStorageStatus) => void): () => void;
+  subscribe(
+    type: "storage-status",
+    callback: (status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void,
+  ): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
@@ -2553,7 +2559,7 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
       | ((event: OpenRTCEvent) => void)
       | ((event: OpenRTCCommentEvent) => void)
       | ((event: OpenRTCStorageEvent) => void)
-      | ((status: OpenRTCStorageStatus) => void)
+      | ((status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void)
       | ((status: ConnectionStatus) => void)
       | ((error: OpenRTCError) => void)
       | ((event: OpenRTCLostConnectionEvent) => void),
@@ -2588,7 +2594,10 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
     if (type === "storage-status") {
       return this.client.on("storage-status", (event) => {
         if (event.room === this.id) {
-          (callback as (status: OpenRTCStorageStatus) => void)(event.status);
+          (callback as (status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void)(
+            event.status,
+            event,
+          );
         }
       });
     }
