@@ -9,6 +9,8 @@ import {
   OPENRTC_NOTIFICATION_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
+  accessMatrixScope,
+  accessMatrixScopes,
   createOpenRTCDevAdminClient,
   createOpenRTCDevClient,
   fetchOpenRTCDevToken,
@@ -52,6 +54,22 @@ assert.deepEqual(accessMatrixPermissions({
   OPENRTC_ROOM_PERMISSIONS.feedsRead,
 ]);
 assert.deepEqual(accessMatrixPermissions({ comments: "write" }), [OPENRTC_ROOM_PERMISSIONS.commentsWrite]);
+assert.deepEqual(accessMatrixScopes({
+  room: "write",
+  storage: "read",
+  comments: "none",
+  feeds: "write",
+}, "tenant-a:*"), [
+  "room:write:tenant-a:*",
+  "storage:read:tenant-a:*",
+  "feeds:write:tenant-a:*",
+]);
+assert.equal(
+  accessMatrixScope({ room: "read", storage: "write", comments: "write" }, "tenant-a:canvas-1"),
+  "room:read:tenant-a:canvas-1 storage:write:tenant-a:canvas-1 comments:write:tenant-a:canvas-1",
+);
+assert.throws(() => accessMatrixScopes({ room: "read" }, ""), /non-empty string/);
+assert.throws(() => accessMatrixScope({ room: "read" }, "tenant-a:* storage:*"), /cannot contain whitespace/);
 
 class FakeWebSocket implements OpenRTCWebSocket {
   static instances: FakeWebSocket[] = [];

@@ -253,6 +253,7 @@ export const OPENRTC_ROOM_PERMISSIONS = {
 } as const;
 
 export type OpenRTCRoomPermission = (typeof OPENRTC_ROOM_PERMISSIONS)[keyof typeof OPENRTC_ROOM_PERMISSIONS];
+export type OpenRTCRoomPermissionScope = `${OpenRTCRoomPermission}:${string}`;
 export type OpenRTCAccessLevel = "none" | "read" | "write";
 
 export interface OpenRTCPermissionMatrix {
@@ -440,6 +441,15 @@ export function accessMatrixPermissions(matrix: OpenRTCPermissionMatrix): OpenRT
   return permissions;
 }
 
+export function accessMatrixScopes(matrix: OpenRTCPermissionMatrix, roomPattern: string): OpenRTCRoomPermissionScope[] {
+  const pattern = normalizeScopeRoomPattern(roomPattern);
+  return accessMatrixPermissions(matrix).map((permission) => `${permission}:${pattern}` as OpenRTCRoomPermissionScope);
+}
+
+export function accessMatrixScope(matrix: OpenRTCPermissionMatrix, roomPattern: string): string {
+  return accessMatrixScopes(matrix, roomPattern).join(" ");
+}
+
 function addMatrixPermission(
   permissions: OpenRTCRoomPermission[],
   level: OpenRTCAccessLevel | undefined,
@@ -451,6 +461,16 @@ function addMatrixPermission(
   } else if (level === "write") {
     permissions.push(writePermission);
   }
+}
+
+function normalizeScopeRoomPattern(roomPattern: string): string {
+  if (typeof roomPattern !== "string" || roomPattern.length === 0) {
+    throw new Error("OpenRTC scope room pattern must be a non-empty string");
+  }
+  if (roomPattern.trim() !== roomPattern || /\s/.test(roomPattern)) {
+    throw new Error("OpenRTC scope room pattern cannot contain whitespace");
+  }
+  return roomPattern;
 }
 
 export interface OpenRTCAdminRoomInput {

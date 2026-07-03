@@ -200,11 +200,11 @@ func scopePrefixesForAction(action string) []string {
 	case "presence":
 		return []string{"presence:", "room:presence:write:", "room:write:"}
 	case "storage":
-		return []string{"storage:read:", "storage:write:", "storage:", "room:write:"}
+		return []string{"storage:read:", "storage:write:", "storage:"}
 	case "storage:read":
-		return []string{"storage:read:", "storage:write:", "storage:", "room:write:"}
+		return []string{"storage:read:", "storage:write:", "storage:"}
 	case "storage:write":
-		return []string{"storage:write:", "storage:", "room:write:"}
+		return []string{"storage:write:", "storage:"}
 	case "comments":
 		return []string{"comments:write:", "comments:"}
 	case "comments:read":

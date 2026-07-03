@@ -94,6 +94,9 @@ func TestVerifierValidateAndClaimsAuthorize(t *testing.T) {
 	if !(&Claims{Scope: "room:write:tenant-a:*"}).Allows("publish", "tenant-a:room-1", false, ":") {
 		t.Fatalf("expected normalized room write scope to allow publish")
 	}
+	if (&Claims{Scope: "room:write:tenant-a:*"}).Allows("storage:write", "tenant-a:room-1", false, ":") {
+		t.Fatalf("expected normalized room write scope to deny storage writes")
+	}
 	if !(&Claims{Scope: "storage:read:tenant-a:*"}).Allows("storage:read", "tenant-a:room-1", false, ":") {
 		t.Fatalf("expected normalized storage read scope to allow storage reads")
 	}
