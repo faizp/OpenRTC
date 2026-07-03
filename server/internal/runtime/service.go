@@ -416,22 +416,23 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		kind := payload[0]
-		if !isClientYJSFrameKind(kind) {
-			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
-			return
-		}
-		event := roomengine.NewYJSEvent(room, cluster.YJSEventKind(kind), payload[1:], roomengine.YJSEventOptions{
+		kind := cluster.YJSEventKind(payload[0])
+		plan, ok := roomengine.NewYJSEventPlan(room, kind, payload[1:], roomengine.YJSEventOptions{
 			OriginNode:   s.cfg.NodeID,
 			OriginConnID: conn.id,
 		})
-		if yjsFrameRequiresPublish(kind) {
+		if !ok {
+			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
+			return
+		}
+		event := plan.Event
+		if plan.RequiresPublish {
 			if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
 				return
 			}
 		}
-		if isDurableYJSFrameKind(kind) {
+		if plan.Durable {
 			event, err = s.storeYJSEvent(event)
 			if err != nil {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
@@ -448,26 +449,6 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-}
-
-func isClientYJSFrameKind(kind byte) bool {
-	return kind == yjsFrameUpdate ||
-		kind == yjsFrameStateVector ||
-		kind == yjsFrameStateVectorDiff ||
-		kind == yjsFrameSubdocUpdate ||
-		kind == yjsFrameSubdocStateVector ||
-		kind == yjsFrameSubdocDiff
-}
-
-func yjsFrameRequiresPublish(kind byte) bool {
-	return kind == yjsFrameUpdate ||
-		kind == yjsFrameStateVectorDiff ||
-		kind == yjsFrameSubdocUpdate ||
-		kind == yjsFrameSubdocDiff
-}
-
-func isDurableYJSFrameKind(kind byte) bool {
-	return kind == yjsFrameUpdate || kind == yjsFrameSubdocUpdate
 }
 
 func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {

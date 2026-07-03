@@ -152,6 +152,12 @@ type YJSEventOptions struct {
 	OriginConnID string
 }
 
+type YJSEventPlan struct {
+	Event           cluster.YJSEvent
+	RequiresPublish bool
+	Durable         bool
+}
+
 type PresenceFanout struct {
 	Event         cluster.PresenceEvent
 	TargetConnIDs []string
@@ -461,6 +467,17 @@ func NewYJSEvent(room string, kind cluster.YJSEventKind, update []byte, options 
 		OriginNode:   options.OriginNode,
 		OriginConnID: options.OriginConnID,
 	}
+}
+
+func NewYJSEventPlan(room string, kind cluster.YJSEventKind, update []byte, options YJSEventOptions) (YJSEventPlan, bool) {
+	if !validClientYJSEventKind(kind) {
+		return YJSEventPlan{}, false
+	}
+	return YJSEventPlan{
+		Event:           NewYJSEvent(room, kind, update, options),
+		RequiresPublish: yjsEventRequiresPublish(kind),
+		Durable:         durableYJSEventKind(kind),
+	}, true
 }
 
 func (e *Engine) Snapshot(room string) Snapshot {
@@ -947,6 +964,26 @@ func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 
 func validStorageMutationKind(kind string) bool {
 	return kind == StorageMutationSet || kind == StorageMutationPatch
+}
+
+func validClientYJSEventKind(kind cluster.YJSEventKind) bool {
+	return kind == cluster.YJSEventUpdate ||
+		kind == cluster.YJSEventStateVectorRequest ||
+		kind == cluster.YJSEventStateVectorDiff ||
+		kind == cluster.YJSEventSubdocUpdate ||
+		kind == cluster.YJSEventSubdocStateVector ||
+		kind == cluster.YJSEventSubdocDiff
+}
+
+func yjsEventRequiresPublish(kind cluster.YJSEventKind) bool {
+	return kind == cluster.YJSEventUpdate ||
+		kind == cluster.YJSEventStateVectorDiff ||
+		kind == cluster.YJSEventSubdocUpdate ||
+		kind == cluster.YJSEventSubdocDiff
+}
+
+func durableYJSEventKind(kind cluster.YJSEventKind) bool {
+	return kind == cluster.YJSEventUpdate || kind == cluster.YJSEventSubdocUpdate
 }
 
 func newStorageMutation(kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) StorageMutation {

@@ -674,6 +674,50 @@ func TestNewYJSEvent(t *testing.T) {
 	}
 }
 
+func TestNewYJSEventPlan(t *testing.T) {
+	cases := []struct {
+		name            string
+		kind            cluster.YJSEventKind
+		requiresPublish bool
+		durable         bool
+	}{
+		{name: "update", kind: cluster.YJSEventUpdate, requiresPublish: true, durable: true},
+		{name: "state vector request", kind: cluster.YJSEventStateVectorRequest},
+		{name: "state vector diff", kind: cluster.YJSEventStateVectorDiff, requiresPublish: true},
+		{name: "subdoc update", kind: cluster.YJSEventSubdocUpdate, requiresPublish: true, durable: true},
+		{name: "subdoc state vector", kind: cluster.YJSEventSubdocStateVector},
+		{name: "subdoc diff", kind: cluster.YJSEventSubdocDiff, requiresPublish: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			update := []byte("update")
+			plan, ok := NewYJSEventPlan("room-a", tc.kind, update, YJSEventOptions{
+				OriginNode:   "node-a",
+				OriginConnID: "conn-1",
+			})
+			if !ok {
+				t.Fatalf("expected valid yjs event plan")
+			}
+			if plan.RequiresPublish != tc.requiresPublish || plan.Durable != tc.durable {
+				t.Fatalf("unexpected yjs plan flags: %+v", plan)
+			}
+			if plan.Event.Room != "room-a" || plan.Event.Kind != tc.kind || plan.Event.OriginNode != "node-a" || plan.Event.OriginConnID != "conn-1" {
+				t.Fatalf("unexpected yjs plan event: %+v", plan.Event)
+			}
+			update[0] = 'X'
+			if string(plan.Event.Update) != "update" {
+				t.Fatalf("yjs plan event update should be copied, got %q", plan.Event.Update)
+			}
+		})
+	}
+
+	for _, kind := range []cluster.YJSEventKind{cluster.YJSEventSnapshot, cluster.YJSEventKind(99)} {
+		if _, ok := NewYJSEventPlan("room-a", kind, []byte("update"), YJSEventOptions{}); ok {
+			t.Fatalf("expected invalid yjs event plan for kind %d", kind)
+		}
+	}
+}
+
 func TestEngineStorageSetGetAndPatch(t *testing.T) {
 	engine := New()
 	if _, err := engine.GetStorage("room-a"); !errors.Is(err, cluster.ErrStorageNotFound) {
