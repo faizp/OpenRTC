@@ -154,17 +154,168 @@ export interface OpenRTCDevToolsOptions {
   room?: string | undefined;
 }
 
+export interface OpenRTCDevDependencyStatus {
+  healthy: boolean;
+  error?: string;
+}
+
+export interface OpenRTCDevManagedServiceStatus {
+  running: boolean;
+  url: string;
+  healthz: string;
+  readyz: string;
+  generation: number;
+  started_at?: string;
+}
+
+export interface OpenRTCDevSeedRoomStatus {
+  room: string;
+  exists: boolean;
+  storage_found: boolean;
+  error?: string;
+}
+
+export interface OpenRTCDevEndpointSnapshot {
+  app: string;
+  config: string;
+  jwks: string;
+  token: string;
+  runtime_ws: string;
+  runtime_yjs: string;
+  runtime_proxy: string;
+  admin_api: string;
+  admin_proxy: string;
+  connections: string;
+  sockets: string;
+  storage: string;
+  yjs: string;
+  events: string;
+  crash_runtime: string;
+  crash_admin: string;
+}
+
+export interface OpenRTCDevStatusSnapshot {
+  status: string;
+  storage_backend: string;
+  redis: OpenRTCDevDependencyStatus;
+  runtime: OpenRTCDevManagedServiceStatus;
+  admin: OpenRTCDevManagedServiceStatus;
+  seed_rooms: OpenRTCDevSeedRoomStatus[];
+  endpoints: OpenRTCDevEndpointSnapshot;
+}
+
+export interface OpenRTCDevActiveUser {
+  type: string;
+  connection_id: string;
+  id: string;
+  tenant?: string;
+  node_id?: string;
+  connected_at?: string;
+  presence?: unknown;
+}
+
+export interface OpenRTCDevConnectionsSnapshot {
+  room: string;
+  connections: OpenRTCDevActiveUser[];
+}
+
+export interface OpenRTCDevSocketConnection {
+  connection_id: string;
+  subject?: string;
+  tenant?: string;
+  rooms: string[];
+}
+
+export interface OpenRTCDevYJSSocketConnection {
+  connection_id: string;
+  subject?: string;
+  tenant?: string;
+  room: string;
+}
+
+export interface OpenRTCDevSocketSnapshot {
+  node_id: string;
+  connections: OpenRTCDevSocketConnection[];
+  yjs_connections: OpenRTCDevYJSSocketConnection[];
+  active_sockets: number;
+  active_room_count: number;
+}
+
+export interface OpenRTCDevStorageDocumentSnapshot {
+  found: boolean;
+  document?: unknown;
+}
+
+export interface OpenRTCDevRuntimeStorageSnapshot extends OpenRTCDevStorageDocumentSnapshot {
+  node_id: string;
+  room: string;
+  store_backed: boolean;
+}
+
+export interface OpenRTCDevStorageSnapshot {
+  room: string;
+  durable: OpenRTCDevStorageDocumentSnapshot;
+  runtime?: OpenRTCDevRuntimeStorageSnapshot;
+}
+
+export interface OpenRTCDevYJSDocumentSummary {
+  found: boolean;
+  snapshot_found: boolean;
+  snapshot_bytes: number;
+  snapshot_hash?: string;
+  snapshot_checkpoint: number;
+  update_count: number;
+  update_bytes: number;
+  update_sequences?: number[];
+  update_kinds?: string[];
+}
+
+export interface OpenRTCDevRuntimeYJSDocumentSummary extends OpenRTCDevYJSDocumentSummary {
+  node_id: string;
+  room: string;
+  store_backed: boolean;
+}
+
+export interface OpenRTCDevYJSSnapshot {
+  room: string;
+  durable: OpenRTCDevYJSDocumentSummary;
+  runtime?: OpenRTCDevRuntimeYJSDocumentSummary;
+}
+
+export interface OpenRTCDevPublishedEvent {
+  room: string;
+  event: string;
+  payload?: unknown;
+  exclude_sender_conn_id?: string;
+  trace_id?: string;
+  seq?: number;
+  origin_node: string;
+}
+
+export interface OpenRTCDevEventsSnapshot {
+  room: string;
+  after_seq: number;
+  limit: number;
+  events: OpenRTCDevPublishedEvent[];
+}
+
+export interface OpenRTCDevRestartSnapshot {
+  status: string;
+  service: string;
+  service_status: OpenRTCDevManagedServiceStatus;
+}
+
 export interface OpenRTCDevTools {
   readonly config: OpenRTCDevClientConfig;
   readonly room?: string;
-  fetchStatus(): Promise<unknown>;
-  fetchConnections(options?: OpenRTCDevRoomOptions): Promise<unknown>;
-  fetchSockets(options?: OpenRTCDevRoomOptions): Promise<unknown>;
-  fetchStorage(options?: OpenRTCDevRoomOptions): Promise<unknown>;
-  fetchYJS(options?: OpenRTCDevRoomOptions): Promise<unknown>;
-  fetchEvents(options?: OpenRTCDevEventsOptions): Promise<unknown>;
-  restartRuntime(): Promise<unknown>;
-  restartAdmin(): Promise<unknown>;
+  fetchStatus(): Promise<OpenRTCDevStatusSnapshot>;
+  fetchConnections(options?: OpenRTCDevRoomOptions): Promise<OpenRTCDevConnectionsSnapshot>;
+  fetchSockets(options?: OpenRTCDevRoomOptions): Promise<OpenRTCDevSocketSnapshot>;
+  fetchStorage(options?: OpenRTCDevRoomOptions): Promise<OpenRTCDevStorageSnapshot>;
+  fetchYJS(options?: OpenRTCDevRoomOptions): Promise<OpenRTCDevYJSSnapshot>;
+  fetchEvents(options?: OpenRTCDevEventsOptions): Promise<OpenRTCDevEventsSnapshot>;
+  restartRuntime(): Promise<OpenRTCDevRestartSnapshot>;
+  restartAdmin(): Promise<OpenRTCDevRestartSnapshot>;
 }
 
 export interface OpenRTCDevClientOptions
@@ -802,9 +953,13 @@ export function createOpenRTCDevTools(
   return {
     config,
     ...(options.room ? { room: options.room } : {}),
-    fetchStatus: () => fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "statusURL", baseURL)),
+    fetchStatus: () =>
+      fetchOpenRTCDevJSON<OpenRTCDevStatusSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "statusURL", baseURL),
+      ),
     fetchConnections: (endpointOptions = {}) =>
-      fetchOpenRTCDevJSON(
+      fetchOpenRTCDevJSON<OpenRTCDevConnectionsSnapshot>(
         fetchImpl,
         openRTCDevEndpointURL(
           config,
@@ -814,14 +969,17 @@ export function createOpenRTCDevTools(
         ),
       ),
     fetchSockets: (endpointOptions = {}) =>
-      fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "socketsURL", baseURL, endpointOptions)),
+      fetchOpenRTCDevJSON<OpenRTCDevSocketSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "socketsURL", baseURL, endpointOptions),
+      ),
     fetchStorage: (endpointOptions = {}) =>
-      fetchOpenRTCDevJSON(
+      fetchOpenRTCDevJSON<OpenRTCDevStorageSnapshot>(
         fetchImpl,
         openRTCDevEndpointURL(config, "storageURL", baseURL, roomEndpointOptions(endpointOptions.room ?? options.room)),
       ),
     fetchYJS: (endpointOptions = {}) =>
-      fetchOpenRTCDevJSON(
+      fetchOpenRTCDevJSON<OpenRTCDevYJSSnapshot>(
         fetchImpl,
         openRTCDevEndpointURL(
           config,
@@ -838,12 +996,23 @@ export function createOpenRTCDevTools(
       if (endpointOptions.limit !== undefined) {
         urlOptions.limit = endpointOptions.limit;
       }
-      return fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "eventsURL", baseURL, urlOptions));
+      return fetchOpenRTCDevJSON<OpenRTCDevEventsSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "eventsURL", baseURL, urlOptions),
+      );
     },
     restartRuntime: () =>
-      fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "crashRuntimeURL", baseURL), { method: "POST" }),
+      fetchOpenRTCDevJSON<OpenRTCDevRestartSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "crashRuntimeURL", baseURL),
+        { method: "POST" },
+      ),
     restartAdmin: () =>
-      fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "crashAdminURL", baseURL), { method: "POST" }),
+      fetchOpenRTCDevJSON<OpenRTCDevRestartSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "crashAdminURL", baseURL),
+        { method: "POST" },
+      ),
   };
 }
 
@@ -3090,18 +3259,18 @@ function openRTCDevEndpointURL(
   return parsed.toString();
 }
 
-async function fetchOpenRTCDevJSON(
+async function fetchOpenRTCDevJSON<TResponse>(
   fetchImpl: OpenRTCFetch,
   input: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string },
-): Promise<unknown> {
+): Promise<TResponse> {
   const response = await fetchImpl(input, init);
   const text = await response.text();
   const body = text ? parseJSON(text) : undefined;
   if (!response.ok) {
     throw new OpenRTCDevError(response.status, body, errorMessage(response, body));
   }
-  return body;
+  return body as TResponse;
 }
 
 function parseOpenRTCDevTokenResponse(value: unknown): OpenRTCDevTokenResponse {

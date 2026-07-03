@@ -1365,38 +1365,139 @@ const devClient = await createOpenRTCDevClient({
     if (url.pathname !== "/dev/token") {
       devToolCalls.push(init ? { input, init } : { input });
       if (url.pathname === "/dev/status") {
-        return fakeResponse(200, JSON.stringify({ status: "ok" }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            status: "ok",
+            storage_backend: "memory",
+            redis: { healthy: true },
+            runtime: {
+              running: true,
+              url: "http://127.0.0.1:8080",
+              healthz: "http://127.0.0.1:8080/healthz",
+              readyz: "http://127.0.0.1:8080/readyz",
+              generation: 2,
+            },
+            admin: {
+              running: true,
+              url: "http://127.0.0.1:8090",
+              healthz: "http://127.0.0.1:8090/healthz",
+              readyz: "http://127.0.0.1:8090/readyz",
+              generation: 1,
+            },
+            seed_rooms: [{ room: "demo:room-1", exists: true, storage_found: true }],
+            endpoints: { sockets: "http://127.0.0.1:3000/dev/sockets" },
+          }),
+        );
       }
       if (url.pathname === "/dev/connections") {
-        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), connections: [] }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            room: url.searchParams.get("room"),
+            connections: [
+              {
+                type: "json",
+                connection_id: "conn-dev-1",
+                id: "ada",
+                tenant: "demo",
+                presence: { cursor: { x: 1, y: 2 } },
+              },
+            ],
+          }),
+        );
       }
       if (url.pathname === "/dev/sockets") {
-        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), active_sockets: 1 }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            node_id: "openrtc-dev-runtime",
+            connections: [{ connection_id: "conn-dev-1", subject: "ada", tenant: "demo", rooms: ["demo:canvas-1"] }],
+            yjs_connections: [{ connection_id: "yjs-dev-1", subject: "ada", tenant: "demo", room: "demo:canvas-1" }],
+            active_sockets: 2,
+            active_room_count: 1,
+          }),
+        );
       }
       if (url.pathname === "/dev/storage") {
-        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), durable: { found: true } }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            room: url.searchParams.get("room"),
+            durable: { found: true, document: { title: "Draft" } },
+            runtime: {
+              node_id: "openrtc-dev-runtime",
+              room: url.searchParams.get("room"),
+              found: true,
+              store_backed: true,
+              document: { title: "Runtime" },
+            },
+          }),
+        );
       }
       if (url.pathname === "/dev/yjs") {
-        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), durable: { found: true } }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            room: url.searchParams.get("room"),
+            durable: {
+              found: true,
+              snapshot_found: true,
+              snapshot_bytes: 12,
+              snapshot_hash: "fnv1a64:abc",
+              snapshot_checkpoint: 7,
+              update_count: 2,
+              update_bytes: 30,
+              update_sequences: [8, 9],
+              update_kinds: ["update", "subdoc-update"],
+            },
+          }),
+        );
       }
       if (url.pathname === "/dev/events") {
         return fakeResponse(
           200,
           JSON.stringify({
             room: url.searchParams.get("room"),
-            after_seq: url.searchParams.get("after_seq"),
-            limit: url.searchParams.get("limit"),
-            events: [],
+            after_seq: Number(url.searchParams.get("after_seq")),
+            limit: Number(url.searchParams.get("limit")),
+            events: [{ room: "demo:canvas-1", event: "demo.event", payload: { ok: true }, seq: 8, origin_node: "node-a" }],
           }),
         );
       }
       if (url.pathname === "/dev/crash/runtime") {
         assert.equal(init?.method, "POST");
-        return fakeResponse(200, JSON.stringify({ status: "restarted", service: "runtime" }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            status: "restarted",
+            service: "runtime",
+            service_status: {
+              running: true,
+              url: "http://127.0.0.1:8080",
+              healthz: "http://127.0.0.1:8080/healthz",
+              readyz: "http://127.0.0.1:8080/readyz",
+              generation: 3,
+            },
+          }),
+        );
       }
       if (url.pathname === "/dev/crash/admin") {
         assert.equal(init?.method, "POST");
-        return fakeResponse(200, JSON.stringify({ status: "restarted", service: "admin" }));
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            status: "restarted",
+            service: "admin",
+            service_status: {
+              running: true,
+              url: "http://127.0.0.1:8090",
+              healthz: "http://127.0.0.1:8090/healthz",
+              readyz: "http://127.0.0.1:8090/readyz",
+              generation: 2,
+            },
+          }),
+        );
       }
       throw new Error(`unexpected dev tool URL: ${input}`);
     }
@@ -1420,25 +1521,42 @@ assert.equal(devClient.room, "demo:canvas-1");
 assert.equal(devClient.config.wsURL, "ws://127.0.0.1:8080/ws");
 assert.equal(devClient.tools.room, "demo:canvas-1");
 assert.equal(devClient.tools.config, devClient.config);
-assert.deepEqual(await devClient.tools.fetchStatus(), { status: "ok" });
-assert.deepEqual(await devClient.tools.fetchConnections(), { room: "demo:canvas-1", connections: [] });
-assert.deepEqual(await devClient.tools.fetchSockets({ room: "demo:canvas-1" }), {
-  room: "demo:canvas-1",
-  active_sockets: 1,
-});
-assert.deepEqual(await devClient.tools.fetchStorage(), { room: "demo:canvas-1", durable: { found: true } });
-assert.deepEqual(await devClient.tools.fetchYJS({ room: "demo:canvas-yjs" }), {
-  room: "demo:canvas-yjs",
-  durable: { found: true },
-});
-assert.deepEqual(await devClient.tools.fetchEvents({ afterSequence: 7, limit: 3 }), {
-  room: "demo:canvas-1",
-  after_seq: "7",
-  limit: "3",
-  events: [],
-});
-assert.deepEqual(await devClient.tools.restartRuntime(), { status: "restarted", service: "runtime" });
-assert.deepEqual(await devClient.tools.restartAdmin(), { status: "restarted", service: "admin" });
+const devStatus = await devClient.tools.fetchStatus();
+assert.equal(devStatus.status, "ok");
+assert.equal(devStatus.storage_backend, "memory");
+assert.equal(devStatus.redis.healthy, true);
+assert.equal(devStatus.runtime.generation, 2);
+assert.equal(devStatus.seed_rooms[0]?.storage_found, true);
+assert.equal(devStatus.endpoints.sockets, "http://127.0.0.1:3000/dev/sockets");
+const devConnections = await devClient.tools.fetchConnections();
+assert.equal(devConnections.room, "demo:canvas-1");
+assert.equal(devConnections.connections[0]?.connection_id, "conn-dev-1");
+assert.deepEqual(devConnections.connections[0]?.presence, { cursor: { x: 1, y: 2 } });
+const devSockets = await devClient.tools.fetchSockets({ room: "demo:canvas-1" });
+assert.equal(devSockets.node_id, "openrtc-dev-runtime");
+assert.equal(devSockets.active_sockets, 2);
+assert.equal(devSockets.connections[0]?.rooms[0], "demo:canvas-1");
+assert.equal(devSockets.yjs_connections[0]?.room, "demo:canvas-1");
+const devStorage = await devClient.tools.fetchStorage();
+assert.equal(devStorage.room, "demo:canvas-1");
+assert.deepEqual(devStorage.durable.document, { title: "Draft" });
+assert.equal(devStorage.runtime?.store_backed, true);
+const devYJS = await devClient.tools.fetchYJS({ room: "demo:canvas-yjs" });
+assert.equal(devYJS.room, "demo:canvas-yjs");
+assert.equal(devYJS.durable.snapshot_hash, "fnv1a64:abc");
+assert.deepEqual(devYJS.durable.update_kinds, ["update", "subdoc-update"]);
+const devEvents = await devClient.tools.fetchEvents({ afterSequence: 7, limit: 3 });
+assert.equal(devEvents.room, "demo:canvas-1");
+assert.equal(devEvents.after_seq, 7);
+assert.equal(devEvents.limit, 3);
+assert.equal(devEvents.events[0]?.event, "demo.event");
+assert.equal(devEvents.events[0]?.seq, 8);
+const runtimeRestart = await devClient.tools.restartRuntime();
+assert.equal(runtimeRestart.service, "runtime");
+assert.equal(runtimeRestart.service_status.generation, 3);
+const adminRestart = await devClient.tools.restartAdmin();
+assert.equal(adminRestart.service, "admin");
+assert.equal(adminRestart.service_status.generation, 2);
 assert.deepEqual(
   devToolCalls.map((call) => [new URL(call.input).pathname, call.init?.method ?? "GET"]),
   [
