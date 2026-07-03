@@ -166,7 +166,8 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useNotificationListener`, `useNotificationEvents`, `useDiagnostics`, `useErrorListener`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useSetStorage`, `usePatchStorage`,
-`useStorageMutation`, and `useStorageListener`. It also exports
+`useSetLiveStorage`, `useUpdateLiveStorage`, `useStorageMutation`, and
+`useStorageListener`. It also exports
 Liveblocks-style `Cursors`, `Cursor`, and `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with

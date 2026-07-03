@@ -7,12 +7,14 @@ import {
   useNotificationListener,
   usePatchStorage,
   useRoomCommentEvents,
+  useSetLiveStorage,
   useSetStorage,
   useStorage,
   useStorageListener,
   useStorageMutation,
   useStorageSelector,
   useStorageStatus,
+  useUpdateLiveStorage,
 } from "./index.ts";
 
 type ElementProps = Record<string, unknown>;
@@ -32,6 +34,8 @@ assert.equal(typeof useStorageSelector, "function");
 assert.equal(typeof useStorageStatus, "function");
 assert.equal(typeof useSetStorage, "function");
 assert.equal(typeof usePatchStorage, "function");
+assert.equal(typeof useSetLiveStorage, "function");
+assert.equal(typeof useUpdateLiveStorage, "function");
 assert.equal(typeof useStorageMutation, "function");
 assert.equal(typeof useStorageListener, "function");
 assert.equal(typeof useCommentListener, "function");

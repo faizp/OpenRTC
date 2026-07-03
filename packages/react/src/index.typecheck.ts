@@ -1,4 +1,12 @@
-import type { OpenRTCCursorPeer, OpenRTCEvent, PresencePeer, PresenceState } from "@openrtc/client";
+import type {
+  OpenRTCCursorPeer,
+  OpenRTCEvent,
+  OpenRTCLiveObject,
+  OpenRTCStorageEvent,
+  OpenRTCStorageStatus,
+  PresencePeer,
+  PresenceState,
+} from "@openrtc/client";
 import type { ReactNode } from "react";
 import {
   AvatarStack,
@@ -26,7 +34,15 @@ import {
   useSelf,
   useSelfCursor,
   useSetCursor,
+  useSetLiveStorage,
+  useSetStorage,
   useStatus,
+  useStorage,
+  useStorageListener,
+  useStorageMutation,
+  useStorageSelector,
+  useStorageStatus,
+  useUpdateLiveStorage,
 } from "./index.ts";
 
 function expectType<T>(_value: T): void {}
@@ -115,4 +131,46 @@ function PresenceIntegrationTypes() {
   return null;
 }
 
+function StorageIntegrationTypes() {
+  type CanvasStorage = {
+    title: string;
+    items: unknown;
+  };
+
+  const roomId = "tenant-a:canvas-1";
+  expectType<CanvasStorage | undefined>(useStorage<CanvasStorage>(roomId));
+  expectType<string>(useStorageSelector<CanvasStorage, string>(roomId, (storage) => storage?.title ?? "Untitled"));
+  expectType<OpenRTCStorageStatus>(useStorageStatus(roomId));
+
+  const setStorage = useSetStorage<CanvasStorage>(roomId);
+  expectType<Promise<CanvasStorage>>(setStorage({ title: "Draft", items: [] }, { opId: "set-1" }));
+
+  const setLiveStorage = useSetLiveStorage<CanvasStorage>(roomId);
+  expectType<Promise<OpenRTCLiveObject<CanvasStorage>>>(setLiveStorage({ title: "Draft", items: [] }));
+  expectType<Promise<OpenRTCLiveObject<CanvasStorage>>>(
+    setLiveStorage({ liveblocksType: "LiveObject", data: { title: "Draft", items: [] } }),
+  );
+
+  const updateLiveStorage = useUpdateLiveStorage<CanvasStorage>(roomId);
+  expectType<Promise<OpenRTCLiveObject<CanvasStorage>>>(updateLiveStorage({ title: "Published" }));
+
+  const mutateStorage = useStorageMutation<OpenRTCLiveObject<CanvasStorage>, [title: string], Promise<void>>(
+    roomId,
+    async ({ storage, setLiveStorage, updateLiveStorage }, title) => {
+      expectType<OpenRTCLiveObject<CanvasStorage> | undefined>(storage);
+      await setLiveStorage<CanvasStorage>({ title, items: [] });
+      await updateLiveStorage<CanvasStorage>({ title });
+    },
+    [],
+  );
+  expectType<Promise<void>>(mutateStorage("Published"));
+
+  useStorageListener<OpenRTCLiveObject<CanvasStorage>>(roomId, (event) => {
+    expectType<OpenRTCStorageEvent<OpenRTCLiveObject<CanvasStorage>>>(event);
+  });
+
+  return null;
+}
+
 void PresenceIntegrationTypes;
+void StorageIntegrationTypes;

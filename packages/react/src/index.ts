@@ -36,6 +36,7 @@ import {
   type OpenRTCRoomPresence,
   type OpenRTCRoomState,
   type OpenRTCLostConnectionEvent,
+  type OpenRTCLiveObject,
   type OpenRTCStorageEvent,
   type OpenRTCStorageMutationOptions,
   type OpenRTCStorageStatus,
@@ -57,6 +58,14 @@ export interface StorageMutationContext<TDocument = unknown> {
   storage: TDocument | undefined;
   setStorage(document: TDocument, options?: OpenRTCStorageMutationOptions): Promise<TDocument>;
   patchStorage(operations: JSONPatchOperation[], options?: OpenRTCStorageMutationOptions): Promise<TDocument>;
+  setLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    data: TData | OpenRTCLiveObject<TData>,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<OpenRTCLiveObject<TData>>;
+  updateLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+    patch: Partial<TData>,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<OpenRTCLiveObject<TData>>;
 }
 
 export interface CursorOptions extends JoinOptions {
@@ -452,6 +461,33 @@ export function usePatchStorage<TDocument = unknown>(
   );
 }
 
+export function useSetLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+  room: string,
+): (
+  data: TData | OpenRTCLiveObject<TData>,
+  options?: OpenRTCStorageMutationOptions,
+) => Promise<OpenRTCLiveObject<TData>> {
+  const roomHandle = useRoomHandle(room);
+
+  return useCallback(
+    (data: TData | OpenRTCLiveObject<TData>, options?: OpenRTCStorageMutationOptions) =>
+      roomHandle.setLiveStorage<TData>(data, options),
+    [roomHandle],
+  );
+}
+
+export function useUpdateLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(
+  room: string,
+): (patch: Partial<TData>, options?: OpenRTCStorageMutationOptions) => Promise<OpenRTCLiveObject<TData>> {
+  const roomHandle = useRoomHandle(room);
+
+  return useCallback(
+    (patch: Partial<TData>, options?: OpenRTCStorageMutationOptions) =>
+      roomHandle.updateLiveStorage<TData>(patch, options),
+    [roomHandle],
+  );
+}
+
 export function useStorageMutation<TDocument = unknown, Args extends unknown[] = [], TResult = void>(
   room: string,
   mutation: (context: StorageMutationContext<TDocument>, ...args: Args) => TResult,
@@ -467,6 +503,8 @@ export function useStorageMutation<TDocument = unknown, Args extends unknown[] =
         storage: roomHandle.getStorageSnapshot<TDocument>(),
         setStorage: (document, options) => roomHandle.setStorage<TDocument>(document, options),
         patchStorage: (operations, options) => roomHandle.patchStorage<TDocument>(operations, options),
+        setLiveStorage: (data, options) => roomHandle.setLiveStorage(data, options),
+        updateLiveStorage: (patch, options) => roomHandle.updateLiveStorage(patch, options),
       },
       ...args,
     );
