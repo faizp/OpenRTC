@@ -1155,6 +1155,9 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		if err := service.handleLeave(conn, protocol.Message{ID: "leave", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected leave store error, got %v", err)
 		}
+		if got := service.roomEngine().MemberIDs("tenant-a:room-1", ""); !reflect.DeepEqual(got, []string{conn.id}) {
+			t.Fatalf("leave store error should not apply local membership, got %#v", got)
+		}
 	})
 
 	t.Run("presence write", func(t *testing.T) {
@@ -1197,6 +1200,7 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		receiver := runtimeTestConn(service, "conn-leave-publish-receiver", claims, 2)
 		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
 		joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+		setRuntimePresence(service, conn, "tenant-a:room-1", json.RawMessage(`{"cursor":{"x":1}}`))
 		if err := service.handleLeave(conn, protocol.Message{ID: "leave", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected leave presence publish error, got %v", err)
 		}
@@ -1204,6 +1208,12 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		assertRuntimeNoOutbound(t, receiver)
 		if service.stats.LeavesTotal != 0 || service.metrics.LeavesTotal.Load() != 0 {
 			t.Fatalf("leave stats/metrics should not increment after publish failure")
+		}
+		if got := service.roomEngine().MemberIDs("tenant-a:room-1", ""); !reflect.DeepEqual(got, []string{conn.id, receiver.id}) {
+			t.Fatalf("leave publish error should not apply local membership, got %#v", got)
+		}
+		if _, ok := service.roomEngine().Snapshot("tenant-a:room-1").Presence[conn.id]; !ok {
+			t.Fatalf("leave publish error should not clear local presence")
 		}
 	})
 

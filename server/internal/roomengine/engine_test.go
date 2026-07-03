@@ -333,6 +333,38 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	}
 }
 
+func TestEngineLeavePlanAppliesAfterSideEffects(t *testing.T) {
+	engine := New()
+	_, _ = engine.Join("conn-1", "room-a", 0)
+	_, _ = engine.Join("conn-2", "room-a", 0)
+	engine.SetPresence("conn-1", "room-a", json.RawMessage(`{"cursor":{"x":1}}`))
+
+	plan := engine.NewLeavePlan("conn-1", "room-a", PresenceEventOptions{OriginNode: "node-a"})
+	if !plan.Left || plan.PresenceFanout == nil {
+		t.Fatalf("expected leave plan, got %+v", plan)
+	}
+	if !reflect.DeepEqual(plan.PresenceFanout.TargetConnIDs, []string{"conn-2"}) {
+		t.Fatalf("unexpected planned offline fanout targets: %#v", plan.PresenceFanout.TargetConnIDs)
+	}
+	if got := engine.MemberIDs("room-a", ""); !reflect.DeepEqual(got, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("leave plan should not remove members before apply, got %#v", got)
+	}
+	if _, ok := engine.Snapshot("room-a").Presence["conn-1"]; !ok {
+		t.Fatalf("leave plan should not remove presence before apply")
+	}
+
+	result := engine.ApplyLeavePlan(plan)
+	if !result.Left || result.PresenceFanout == nil {
+		t.Fatalf("expected applied leave result, got %+v", result)
+	}
+	if got := engine.MemberIDs("room-a", ""); !reflect.DeepEqual(got, []string{"conn-2"}) {
+		t.Fatalf("unexpected members after leave apply: %#v", got)
+	}
+	if _, ok := engine.Snapshot("room-a").Presence["conn-1"]; ok {
+		t.Fatalf("presence should be removed after leave apply")
+	}
+}
+
 func TestEnginePresenceSetPlanAppliesAfterSideEffects(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-1", "room-a", 0)

@@ -546,19 +546,22 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 }
 
 func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error {
-	leaveResult := s.roomEngine().LeaveWithPresenceFanout(conn.id, message.Room, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
-	if err := s.applyRoomMembershipMutation(leaveResult.MembershipMutation); err != nil {
+	plan := s.roomEngine().NewLeavePlan(conn.id, message.Room, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
+	if err := s.applyRoomMembershipMutation(plan.MembershipMutation); err != nil {
 		return err
 	}
-	if leaveResult.Left {
-		fanout := leaveResult.PresenceFanout
+	if plan.Left {
+		fanout := plan.PresenceFanout
 		if fanout != nil {
 			if err := s.publishPresenceFanout(*fanout); err != nil {
 				return err
 			}
+			s.roomEngine().ApplyLeavePlan(plan)
 			if err := s.broadcastPresenceFanout(*fanout); err != nil {
 				return err
 			}
+		} else {
+			s.roomEngine().ApplyLeavePlan(plan)
 		}
 		s.recordLeave()
 	}

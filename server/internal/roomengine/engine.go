@@ -104,6 +104,12 @@ type LeaveResult struct {
 	MembershipMutation *MembershipMutation
 }
 
+type LeavePlan struct {
+	Left               bool
+	PresenceFanout     *PresenceFanout
+	MembershipMutation *MembershipMutation
+}
+
 type DisconnectResult struct {
 	Rooms           []string
 	PresenceFanouts []PresenceFanout
@@ -394,39 +400,62 @@ func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, er
 }
 
 func (e *Engine) Leave(connID string, room string) LeaveResult {
-	return e.leave(connID, room, PresenceEventOptions{}, false)
+	return e.ApplyLeavePlan(e.newLeavePlan(connID, room, PresenceEventOptions{}, false))
 }
 
 func (e *Engine) LeaveWithPresenceFanout(connID string, room string, options PresenceEventOptions) LeaveResult {
-	return e.leave(connID, room, options, true)
+	return e.ApplyLeavePlan(e.NewLeavePlan(connID, room, options))
 }
 
-func (e *Engine) leave(connID string, room string, options PresenceEventOptions, includeFanout bool) LeaveResult {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+func (e *Engine) NewLeavePlan(connID string, room string, options PresenceEventOptions) LeavePlan {
+	return e.newLeavePlan(connID, room, options, true)
+}
+
+func (e *Engine) newLeavePlan(connID string, room string, options PresenceEventOptions, includeFanout bool) LeavePlan {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 
 	joinedRooms := e.connRooms[connID]
 	if _, exists := joinedRooms[room]; !exists {
-		return LeaveResult{}
+		return LeavePlan{}
 	}
-	delete(joinedRooms, room)
-	if len(joinedRooms) == 0 {
-		delete(e.connRooms, connID)
-	}
-	e.removeRoomMemberLocked(connID, room)
-	e.removePresenceLocked(connID, room)
-	result := LeaveResult{
+	result := LeavePlan{
 		Left:               true,
 		MembershipMutation: newMembershipMutation(MembershipMutationLeave, connID, room),
 	}
 	if includeFanout {
 		fanout := PresenceFanout{
 			Event:         NewOfflinePresenceEvent(connID, room, options),
-			TargetConnIDs: e.memberIDsLocked(room, ""),
+			TargetConnIDs: e.memberIDsLocked(room, connID),
 		}
 		result.PresenceFanout = &fanout
 	}
 	return result
+}
+
+func (e *Engine) ApplyLeavePlan(plan LeavePlan) LeaveResult {
+	if !plan.Left || plan.MembershipMutation == nil {
+		return LeaveResult{}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	mutation := plan.MembershipMutation
+	joinedRooms := e.connRooms[mutation.ConnID]
+	if _, exists := joinedRooms[mutation.Room]; exists {
+		delete(joinedRooms, mutation.Room)
+		if len(joinedRooms) == 0 {
+			delete(e.connRooms, mutation.ConnID)
+		}
+		e.removeRoomMemberLocked(mutation.ConnID, mutation.Room)
+		e.removePresenceLocked(mutation.ConnID, mutation.Room)
+	}
+	return LeaveResult{
+		Left:               true,
+		PresenceFanout:     plan.PresenceFanout,
+		MembershipMutation: plan.MembershipMutation,
+	}
 }
 
 func (e *Engine) Disconnect(connID string) []string {
