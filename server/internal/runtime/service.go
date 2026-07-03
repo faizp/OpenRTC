@@ -129,14 +129,6 @@ type outboundMessage struct {
 	Meta    interface{} `json:"meta,omitempty"`
 }
 
-type storageUpdatePayload struct {
-	Kind         string                       `json:"kind"`
-	OpID         string                       `json:"op_id,omitempty"`
-	OriginConnID string                       `json:"origin_conn_id,omitempty"`
-	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
-	Document     json.RawMessage              `json:"document"`
-}
-
 type notificationDeltaPayload struct {
 	Type           string                           `json:"type"`
 	UserID         string                           `json:"userId"`
@@ -745,15 +737,13 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
 	}
 
-	document, err := s.setStorage(message.Room, message.Payload)
-	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
-	}
-	update := storageUpdatePayload{
-		Kind:         "set",
+	update, err := s.setStorageMutation(message.Room, message.Payload, roomengine.StorageMutationOptions{
+		MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
 		OpID:         storageOpID(message),
 		OriginConnID: conn.id,
-		Document:     document,
+	})
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
 	if err := s.broadcastStorageUpdate(message.Room, update, conn.id); err != nil {
 		return err
@@ -761,7 +751,7 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 	if err := s.publishStorageUpdate(message.Room, update, conn.id); err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	return conn.enqueue(storageAckMessage(message, "set", document))
+	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
 }
 
 func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message) error {
@@ -773,16 +763,13 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	if parseErr != nil {
 		return conn.enqueue(runtimeErrorMessage(message.ID, parseErr.Code, parseErr.Message))
 	}
-	document, err := s.applyStoragePatch(message.Room, operations)
-	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
-	}
-	update := storageUpdatePayload{
-		Kind:         "patch",
+	update, err := s.applyStoragePatchMutation(message.Room, operations, roomengine.StorageMutationOptions{
+		MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
 		OpID:         storageOpID(message),
 		OriginConnID: conn.id,
-		Operations:   operations,
-		Document:     document,
+	})
+	if err != nil {
+		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
 	if err := s.broadcastStorageUpdate(message.Room, update, conn.id); err != nil {
 		return err
@@ -790,7 +777,7 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	if err := s.publishStorageUpdate(message.Room, update, conn.id); err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	return conn.enqueue(storageAckMessage(message, "patch", document))
+	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
 }
 
 func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
@@ -802,10 +789,19 @@ func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 		return
 	}
 	if event.Event == storageClusterEvent {
-		var update storageUpdatePayload
+		var update roomengine.StorageMutation
 		if err := json.Unmarshal(event.Payload, &update); err != nil {
 			return
 		}
+		normalized, err := s.roomEngine().RecordStorageMutation(event.Room, update.Kind, update.Document, update.Operations, roomengine.StorageMutationOptions{
+			MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
+			OpID:         update.OpID,
+			OriginConnID: update.OriginConnID,
+		})
+		if err != nil {
+			return
+		}
+		update = normalized
 		_ = s.broadcastStorageUpdate(event.Room, update, event.ExcludeSenderConnID)
 		return
 	}
@@ -921,7 +917,7 @@ func (s *Service) broadcastPresenceEvent(event cluster.PresenceEvent) error {
 	return nil
 }
 
-func (s *Service) broadcastStorageUpdate(room string, update storageUpdatePayload, excludeConnID string) error {
+func (s *Service) broadcastStorageUpdate(room string, update roomengine.StorageMutation, excludeConnID string) error {
 	targetIDs := s.roomEngine().MemberIDs(room, excludeConnID)
 	s.mu.RLock()
 	targets := make([]*clientConn, 0, len(targetIDs))
@@ -1032,21 +1028,29 @@ func (s *Service) getStorage(room string) (json.RawMessage, error) {
 	return s.roomEngine().GetStorage(room)
 }
 
-func (s *Service) setStorage(room string, document json.RawMessage) (json.RawMessage, error) {
+func (s *Service) setStorageMutation(room string, document json.RawMessage, options roomengine.StorageMutationOptions) (roomengine.StorageMutation, error) {
 	if s.store != nil {
-		return s.store.SetStorage(s.ctx, room, document)
+		stored, err := s.store.SetStorage(s.ctx, room, document)
+		if err != nil {
+			return roomengine.StorageMutation{}, err
+		}
+		return s.roomEngine().RecordStorageMutation(room, roomengine.StorageMutationSet, stored, nil, options)
 	}
-	return s.roomEngine().SetStorage(room, document, s.cfg.Limits.PayloadMaxBytes)
+	return s.roomEngine().SetStorageMutation(room, document, options)
 }
 
-func (s *Service) applyStoragePatch(room string, operations []cluster.JSONPatchOperation) (json.RawMessage, error) {
+func (s *Service) applyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options roomengine.StorageMutationOptions) (roomengine.StorageMutation, error) {
 	if s.store != nil {
-		return s.store.ApplyStoragePatch(s.ctx, room, operations, s.cfg.Limits.PayloadMaxBytes)
+		patched, err := s.store.ApplyStoragePatch(s.ctx, room, operations, options.MaxBytes)
+		if err != nil {
+			return roomengine.StorageMutation{}, err
+		}
+		return s.roomEngine().RecordStorageMutation(room, roomengine.StorageMutationPatch, patched, operations, options)
 	}
-	return s.roomEngine().ApplyStoragePatch(room, operations, s.cfg.Limits.PayloadMaxBytes)
+	return s.roomEngine().ApplyStoragePatchMutation(room, operations, options)
 }
 
-func (s *Service) publishStorageUpdate(room string, update storageUpdatePayload, excludeConnID string) error {
+func (s *Service) publishStorageUpdate(room string, update roomengine.StorageMutation, excludeConnID string) error {
 	if s.store == nil {
 		return nil
 	}

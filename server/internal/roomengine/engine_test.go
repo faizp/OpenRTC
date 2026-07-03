@@ -198,3 +198,75 @@ func TestEngineStorageSetGetAndPatch(t *testing.T) {
 		t.Fatalf("expected missing patch error, got %v", err)
 	}
 }
+
+func TestEngineStorageMutations(t *testing.T) {
+	engine := New()
+	options := StorageMutationOptions{
+		OpID:         "op-set",
+		OriginConnID: "conn-1",
+	}
+	setMutation, err := engine.SetStorageMutation("room-a", json.RawMessage(`{
+		"liveblocksType":"LiveObject",
+		"data":{"title":"Draft"}
+	}`), options)
+	if err != nil {
+		t.Fatalf("set storage mutation: %v", err)
+	}
+	if setMutation.Kind != StorageMutationSet || setMutation.OpID != "op-set" || setMutation.OriginConnID != "conn-1" {
+		t.Fatalf("unexpected set mutation metadata: %+v", setMutation)
+	}
+	if len(setMutation.Operations) != 0 {
+		t.Fatalf("set mutation should not include operations: %#v", setMutation.Operations)
+	}
+	if string(setMutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+		t.Fatalf("unexpected set mutation document: %s", setMutation.Document)
+	}
+	setMutation.Document[0] = 'X'
+	loaded, err := engine.GetStorage("room-a")
+	if err != nil {
+		t.Fatalf("get storage after set mutation: %v", err)
+	}
+	if string(loaded) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+		t.Fatalf("mutation document should be defensively copied, got %s", loaded)
+	}
+
+	operations := []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+	}
+	patchMutation, err := engine.ApplyStoragePatchMutation("room-a", operations, StorageMutationOptions{
+		OpID:         "op-patch",
+		OriginConnID: "conn-1",
+	})
+	if err != nil {
+		t.Fatalf("patch storage mutation: %v", err)
+	}
+	if patchMutation.Kind != StorageMutationPatch || patchMutation.OpID != "op-patch" || len(patchMutation.Operations) != 1 {
+		t.Fatalf("unexpected patch mutation metadata: %+v", patchMutation)
+	}
+	operations[0].Value = json.RawMessage(`"Changed"`)
+	if string(patchMutation.Operations[0].Value) != `"Published"` {
+		t.Fatalf("patch mutation operations should be defensively copied: %#v", patchMutation.Operations)
+	}
+
+	recorded, err := engine.RecordStorageMutation("room-a", StorageMutationPatch, json.RawMessage(`{
+		"liveblocksType":"LiveObject",
+		"data":{"title":"Remote"}
+	}`), patchMutation.Operations, StorageMutationOptions{OpID: "op-remote"})
+	if err != nil {
+		t.Fatalf("record storage mutation: %v", err)
+	}
+	if recorded.Kind != StorageMutationPatch || recorded.OpID != "op-remote" || string(recorded.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Remote"}}` {
+		t.Fatalf("unexpected recorded mutation: %+v", recorded)
+	}
+	loaded, err = engine.GetStorage("room-a")
+	if err != nil {
+		t.Fatalf("get storage after record mutation: %v", err)
+	}
+	if string(loaded) != `{"liveblocksType":"LiveObject","data":{"title":"Remote"}}` {
+		t.Fatalf("recorded mutation should update storage, got %s", loaded)
+	}
+
+	if _, err := engine.RecordStorageMutation("room-a", "unknown", json.RawMessage(`{}`), nil, StorageMutationOptions{}); !errors.Is(err, ErrStorageMutationKind) {
+		t.Fatalf("expected invalid mutation kind error, got %v", err)
+	}
+}

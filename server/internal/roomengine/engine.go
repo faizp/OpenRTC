@@ -10,7 +10,15 @@ import (
 	"github.com/openrtc/openrtc/server/internal/cluster"
 )
 
-var ErrRoomLimitExceeded = errors.New("room limit exceeded")
+var (
+	ErrRoomLimitExceeded   = errors.New("room limit exceeded")
+	ErrStorageMutationKind = errors.New("invalid storage mutation kind")
+)
+
+const (
+	StorageMutationSet   = "set"
+	StorageMutationPatch = "patch"
+)
 
 type Engine struct {
 	mu        sync.RWMutex
@@ -42,6 +50,20 @@ type LeaveResult struct {
 type Snapshot struct {
 	Members  []string
 	Presence map[string]json.RawMessage
+}
+
+type StorageMutationOptions struct {
+	MaxBytes     int
+	OpID         string
+	OriginConnID string
+}
+
+type StorageMutation struct {
+	Kind         string                       `json:"kind"`
+	OpID         string                       `json:"op_id,omitempty"`
+	OriginConnID string                       `json:"origin_conn_id,omitempty"`
+	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
+	Document     json.RawMessage              `json:"document"`
 }
 
 func New() *Engine {
@@ -293,6 +315,14 @@ func (e *Engine) SetStorage(room string, document json.RawMessage, maxBytes int)
 	return append(json.RawMessage(nil), compacted...), nil
 }
 
+func (e *Engine) SetStorageMutation(room string, document json.RawMessage, options StorageMutationOptions) (StorageMutation, error) {
+	stored, err := e.SetStorage(room, document, options.MaxBytes)
+	if err != nil {
+		return StorageMutation{}, err
+	}
+	return newStorageMutation(StorageMutationSet, stored, nil, options), nil
+}
+
 func (e *Engine) ApplyStoragePatch(room string, operations []cluster.JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -315,6 +345,28 @@ func (e *Engine) ApplyStoragePatch(room string, operations []cluster.JSONPatchOp
 	return append(json.RawMessage(nil), patched...), nil
 }
 
+func (e *Engine) ApplyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
+	patched, err := e.ApplyStoragePatch(room, operations, options.MaxBytes)
+	if err != nil {
+		return StorageMutation{}, err
+	}
+	return newStorageMutation(StorageMutationPatch, patched, operations, options), nil
+}
+
+func (e *Engine) RecordStorageMutation(room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
+	if !validStorageMutationKind(kind) {
+		return StorageMutation{}, ErrStorageMutationKind
+	}
+	stored, err := e.SetStorage(room, document, options.MaxBytes)
+	if err != nil {
+		return StorageMutation{}, err
+	}
+	if kind == StorageMutationSet {
+		operations = nil
+	}
+	return newStorageMutation(kind, stored, operations, options), nil
+}
+
 func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 	if members := e.rooms[room]; members != nil {
 		delete(members, connID)
@@ -322,6 +374,32 @@ func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 			delete(e.rooms, room)
 		}
 	}
+}
+
+func validStorageMutationKind(kind string) bool {
+	return kind == StorageMutationSet || kind == StorageMutationPatch
+}
+
+func newStorageMutation(kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) StorageMutation {
+	return StorageMutation{
+		Kind:         kind,
+		OpID:         options.OpID,
+		OriginConnID: options.OriginConnID,
+		Operations:   cloneStorageOperations(operations),
+		Document:     append(json.RawMessage(nil), document...),
+	}
+}
+
+func cloneStorageOperations(operations []cluster.JSONPatchOperation) []cluster.JSONPatchOperation {
+	if len(operations) == 0 {
+		return nil
+	}
+	cloned := make([]cluster.JSONPatchOperation, len(operations))
+	for i, operation := range operations {
+		cloned[i] = operation
+		cloned[i].Value = append(json.RawMessage(nil), operation.Value...)
+	}
+	return cloned
 }
 
 func compactJSON(raw json.RawMessage) (json.RawMessage, error) {

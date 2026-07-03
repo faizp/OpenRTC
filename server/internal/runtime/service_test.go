@@ -23,6 +23,7 @@ import (
 	"github.com/openrtc/openrtc/server/internal/cluster"
 	"github.com/openrtc/openrtc/server/internal/config"
 	"github.com/openrtc/openrtc/server/internal/protocol"
+	"github.com/openrtc/openrtc/server/internal/roomengine"
 	"github.com/openrtc/openrtc/server/internal/stats"
 )
 
@@ -1460,7 +1461,7 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if setUpdate.T != "STORAGE_UPDATE" || setUpdate.Room != "tenant-a:room-1" {
 		t.Fatalf("unexpected storage set update: %+v", setUpdate)
 	}
-	setPayload, ok := setUpdate.Payload.(storageUpdatePayload)
+	setPayload, ok := setUpdate.Payload.(roomengine.StorageMutation)
 	if !ok || setPayload.Kind != "set" || setPayload.OpID != "op-set" || setPayload.OriginConnID != sender.id {
 		t.Fatalf("unexpected storage set payload: %#v", setUpdate.Payload)
 	}
@@ -1494,7 +1495,7 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if patchUpdate.T != "STORAGE_UPDATE" {
 		t.Fatalf("unexpected storage patch update: %+v", patchUpdate)
 	}
-	patchPayload, ok := patchUpdate.Payload.(storageUpdatePayload)
+	patchPayload, ok := patchUpdate.Payload.(roomengine.StorageMutation)
 	if !ok || patchPayload.Kind != "patch" || patchPayload.OpID != "op-patch" || len(patchPayload.Operations) != 1 {
 		t.Fatalf("unexpected storage patch payload: %#v", patchUpdate.Payload)
 	}
@@ -1552,14 +1553,43 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	if len(store.publishedEvents) != 1 || store.publishedEvents[0].Event != storageClusterEvent {
 		t.Fatalf("expected storage cluster event publish, got %#v", store.publishedEvents)
 	}
+	stored, err := service.roomEngine().GetStorage("tenant-a:room-1")
+	if err != nil {
+		t.Fatalf("expected store-backed storage mutation to update room engine: %v", err)
+	}
+	if string(stored) != `{"title":"Published"}` {
+		t.Fatalf("unexpected room engine storage after store-backed patch: %s", stored)
+	}
 
 	receiver := runtimeTestConn(service, "conn-storage-cluster", claims, 4)
 	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
-	clusterEvent := store.publishedEvents[0]
-	clusterEvent.OriginNode = "node-b"
+	remoteMutation := roomengine.StorageMutation{
+		Kind:         roomengine.StorageMutationSet,
+		OpID:         "op-remote",
+		OriginConnID: "conn-remote",
+		Document:     json.RawMessage(`{"title":"Remote"}`),
+	}
+	remotePayload, err := json.Marshal(remoteMutation)
+	if err != nil {
+		t.Fatalf("marshal remote storage mutation: %v", err)
+	}
+	clusterEvent := cluster.PublishedEvent{
+		Room:                "tenant-a:room-1",
+		Event:               storageClusterEvent,
+		Payload:             remotePayload,
+		ExcludeSenderConnID: sender.id,
+		OriginNode:          "node-b",
+	}
 	service.handleClusterEvent(clusterEvent)
 	if got := readRuntimeOutbound(t, receiver); got.T != "STORAGE_UPDATE" {
 		t.Fatalf("expected storage update from cluster event, got %+v", got)
+	}
+	stored, err = service.roomEngine().GetStorage("tenant-a:room-1")
+	if err != nil {
+		t.Fatalf("expected remote storage mutation to update room engine: %v", err)
+	}
+	if string(stored) != `{"title":"Remote"}` {
+		t.Fatalf("unexpected room engine storage after remote mutation: %s", stored)
 	}
 }
 
