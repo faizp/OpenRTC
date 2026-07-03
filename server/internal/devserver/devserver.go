@@ -70,9 +70,11 @@ type managedService struct {
 	startFn func() (http.Handler, func() error, error)
 	logger  *log.Logger
 
-	mu      sync.Mutex
-	server  *http.Server
-	closeFn func() error
+	mu         sync.Mutex
+	server     *http.Server
+	closeFn    func() error
+	generation uint64
+	startedAt  time.Time
 }
 
 type seedStore interface {
@@ -142,10 +144,18 @@ type devDependencyStatus struct {
 }
 
 type devManagedServiceStatus struct {
-	Running bool   `json:"running"`
-	URL     string `json:"url"`
-	Health  string `json:"healthz"`
-	Ready   string `json:"readyz"`
+	Running    bool   `json:"running"`
+	URL        string `json:"url"`
+	Health     string `json:"healthz"`
+	Ready      string `json:"readyz"`
+	Generation uint64 `json:"generation"`
+	StartedAt  string `json:"started_at,omitempty"`
+}
+
+type devRestartSnapshot struct {
+	Status        string                  `json:"status"`
+	Service       string                  `json:"service"`
+	ServiceStatus devManagedServiceStatus `json:"service_status"`
 }
 
 type devSeedRoomStatus struct {
@@ -385,6 +395,8 @@ func (s *managedService) start() error {
 	server := &http.Server{Addr: s.addr, Handler: handler}
 	s.server = server
 	s.closeFn = closeFn
+	s.generation++
+	s.startedAt = time.Now().UTC()
 	go func() {
 		s.logger.Printf("%s server starting: %s", s.name, s.addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -400,6 +412,7 @@ func (s *managedService) stop(ctx context.Context) {
 	closeFn := s.closeFn
 	s.server = nil
 	s.closeFn = nil
+	s.startedAt = time.Time{}
 	s.mu.Unlock()
 
 	if server != nil {
@@ -714,12 +727,22 @@ func handleStatus(opts options, store devStatusStore, runtimeSvc *managedService
 }
 
 func managedServiceStatus(service *managedService, baseURL string) devManagedServiceStatus {
-	return devManagedServiceStatus{
-		Running: service != nil && service.running(),
-		URL:     baseURL,
-		Health:  baseURL + "/healthz",
-		Ready:   baseURL + "/readyz",
+	status := devManagedServiceStatus{
+		URL:    baseURL,
+		Health: baseURL + "/healthz",
+		Ready:  baseURL + "/readyz",
 	}
+	if service == nil {
+		return status
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	status.Running = service.server != nil
+	status.Generation = service.generation
+	if !service.startedAt.IsZero() {
+		status.StartedAt = service.startedAt.Format(time.RFC3339Nano)
+	}
+	return status
 }
 
 func seedRoomStatuses(ctx context.Context, store devStatusStore, rooms []string) []devSeedRoomStatus {
@@ -958,9 +981,10 @@ func handleRestart(service *managedService) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":  "restarted",
-			"service": service.name,
+		_ = json.NewEncoder(w).Encode(devRestartSnapshot{
+			Status:        "restarted",
+			Service:       service.name,
+			ServiceStatus: managedServiceStatus(service, "http://"+service.addr),
 		})
 	}
 }

@@ -50,12 +50,12 @@ The dev server starts:
 - OpenRTC admin API at `http://127.0.0.1:8090`
 - Same-origin admin proxy at `http://127.0.0.1:3000/admin`
 - Same-origin runtime proxy at `http://127.0.0.1:3000/runtime`
-- Dev stack status at `http://127.0.0.1:3000/dev/status`
+- Dev stack status and runtime/admin generation metadata at `http://127.0.0.1:3000/dev/status`
 - Active-user reads at `http://127.0.0.1:3000/dev/connections?room=demo:room-1`
 - Local runtime socket reads at `http://127.0.0.1:3000/dev/sockets`
 - Seeded typed storage reads at `http://127.0.0.1:3000/dev/storage?room=demo:room-1`
 - Bounded room event-log reads at `http://127.0.0.1:3000/dev/events?room=demo:room-1`
-- Ops dev status, socket/event inspection, and reconnect drill
+- Ops dev status, socket/event inspection, and reconnect drill with generation verification
 
 The older reference server entrypoint still works from this directory:
 

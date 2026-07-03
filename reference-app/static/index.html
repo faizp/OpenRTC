@@ -3243,9 +3243,12 @@
     async function restartDevRuntime() {
       const result = await devJSON("/dev/crash/runtime", { method: "POST" }, "ops-output");
       await waitForHTTPReady("/runtime/readyz", 8000, "runtime readiness after restart");
+      const status = await readDevStatus("ops-output", { allowDegraded: true });
       await checkHealth();
       setOutput("ops-output", {
         restart: result.body,
+        runtimeGeneration: status.runtime ? status.runtime.generation : null,
+        runtimeStartedAt: status.runtime ? status.runtime.started_at : null,
         health: "runtime ready",
       });
       return result;
@@ -3254,9 +3257,12 @@
     async function restartDevAdmin() {
       const result = await devJSON("/dev/crash/admin", { method: "POST" }, "ops-output");
       await waitForHTTPReady("/admin/readyz", 8000, "admin readiness after restart");
+      const status = await readDevStatus("ops-output", { allowDegraded: true });
       await checkHealth();
       setOutput("ops-output", {
         restart: result.body,
+        adminGeneration: status.admin ? status.admin.generation : null,
+        adminStartedAt: status.admin ? status.admin.started_at : null,
         health: "admin ready",
       });
       return result;
@@ -3272,11 +3278,18 @@
       setClientPresence();
       await waitUntil(() => state.connId && state.presence.has(state.connId), 5000, "presence echo before runtime restart");
       const beforeConnID = state.connId;
+      const beforeStatus = await readDevStatus("ops-output", { allowDegraded: true });
+      const beforeGeneration = beforeStatus.runtime ? beforeStatus.runtime.generation : 0;
       const beforeSockets = await readDevSockets(currentRoom(), "ops-output");
 
-      await devJSON("/dev/crash/runtime", { method: "POST" }, "ops-output");
+      const restart = await devJSON("/dev/crash/runtime", { method: "POST" }, "ops-output");
       await waitUntil(() => !state.ws || state.ws.readyState === WebSocket.CLOSED, 5000, "primary socket close after runtime restart");
       await waitForHTTPReady("/runtime/readyz", 8000, "runtime readiness after restart");
+      const afterStatus = await readDevStatus("ops-output", { allowDegraded: true });
+      const afterGeneration = afterStatus.runtime ? afterStatus.runtime.generation : 0;
+      if (beforeGeneration && afterGeneration && afterGeneration <= beforeGeneration) {
+        throw new Error("Runtime generation did not advance after restart");
+      }
 
       await connectAndJoin();
       await waitUntil(() => state.connId && state.connId !== beforeConnID, 5000, "new runtime connection ID");
@@ -3287,6 +3300,9 @@
         room: currentRoom(),
         beforeConnID,
         afterConnID: state.connId,
+        beforeGeneration,
+        afterGeneration,
+        restart: restart.body,
         beforeActiveSockets: beforeSockets.active_sockets || 0,
         afterActiveSockets: afterSockets.active_sockets || 0,
         afterConnections: (afterSockets.connections || []).map((conn) => ({

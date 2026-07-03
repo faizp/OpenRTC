@@ -7,10 +7,13 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -361,6 +364,9 @@ func TestHandleStatusReportsHealthyDevStack(t *testing.T) {
 	if body.Status != "ok" || body.StorageBackend != devStorageMemory || !body.Redis.Healthy || !body.Runtime.Running || !body.Admin.Running {
 		t.Fatalf("unexpected healthy status: %+v", body)
 	}
+	if body.Runtime.Generation == 0 || body.Runtime.StartedAt == "" {
+		t.Fatalf("expected runtime generation metadata: %+v", body.Runtime)
+	}
 	if len(body.SeedRooms) != 1 || body.SeedRooms[0].Room != "demo:room-1" || !body.SeedRooms[0].Exists || !body.SeedRooms[0].StorageFound {
 		t.Fatalf("unexpected seed room status: %+v", body.SeedRooms)
 	}
@@ -408,6 +414,52 @@ func TestHandleStatusReportsDegradedDevStack(t *testing.T) {
 	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/status", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleRestartReportsServiceStatus(t *testing.T) {
+	starts := 0
+	service := &managedService{
+		name:   "runtime",
+		addr:   "127.0.0.1:0",
+		logger: log.New(io.Discard, "", 0),
+		startFn: func() (http.Handler, func() error, error) {
+			starts++
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}), func() error { return nil }, nil
+		},
+	}
+	defer service.stop(context.Background())
+	handler := handleRestart(service)
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/crash/runtime", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if starts != 1 {
+		t.Fatalf("expected one start, got %d", starts)
+	}
+	var body devRestartSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode restart response: %v", err)
+	}
+	if body.Status != "restarted" || body.Service != "runtime" {
+		t.Fatalf("unexpected restart response: %+v", body)
+	}
+	if !body.ServiceStatus.Running || body.ServiceStatus.Generation != 1 || body.ServiceStatus.StartedAt == "" {
+		t.Fatalf("expected running generation status: %+v", body.ServiceStatus)
+	}
+	if body.ServiceStatus.URL != "http://127.0.0.1:0" || body.ServiceStatus.Ready != "http://127.0.0.1:0/readyz" {
+		t.Fatalf("unexpected service URLs: %+v", body.ServiceStatus)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/crash/runtime", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET 405, got %d", rec.Code)
 	}
 }
 
@@ -696,7 +748,12 @@ func (s *fakeSeedStore) SetStorage(_ context.Context, room string, document json
 }
 
 func runningManagedService(name string) *managedService {
-	return &managedService{name: name, server: &http.Server{}}
+	return &managedService{
+		name:       name,
+		server:     &http.Server{},
+		generation: 1,
+		startedAt:  time.Unix(1, 0).UTC(),
+	}
 }
 
 func clearDevStorageEnv(t *testing.T) {
