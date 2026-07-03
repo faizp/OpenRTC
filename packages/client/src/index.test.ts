@@ -12,6 +12,8 @@ import {
   accessMatrixRoomAccesses,
   accessMatrixScope,
   accessMatrixScopes,
+  addCommentMention,
+  addCommentReaction,
   createOpenRTCDevAdminClient,
   createOpenRTCDevClient,
   createOpenRTCDevTools,
@@ -37,6 +39,10 @@ import {
   liveObjectDelete,
   liveObject,
   liveObjectPatch,
+  normalizeCommentMentions,
+  normalizeCommentReactions,
+  removeCommentMention,
+  removeCommentReaction,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
   type OpenRTCEvent,
@@ -111,6 +117,36 @@ assert.deepEqual(accessMatrixRoomAccesses({
 });
 assert.throws(() => accessMatrixScopes({ room: "read" }, ""), /non-empty string/);
 assert.throws(() => accessMatrixScope({ room: "read" }, "tenant-a:* storage:*"), /cannot contain whitespace/);
+
+assert.deepEqual(normalizeCommentMentions([" user-2 ", "", "user-2", "user-3"]), ["user-2", "user-3"]);
+assert.deepEqual(addCommentMention(["user-2"], " user-3 "), ["user-2", "user-3"]);
+assert.deepEqual(removeCommentMention(["user-2", "user-3"], " user-2 "), ["user-3"]);
+assert.deepEqual(
+  normalizeCommentReactions([
+    { emoji: " +1 ", userId: " user-2 " },
+    { emoji: "+1", userId: "user-2" },
+    { emoji: "", userId: "user-3" },
+    { emoji: "eyes", userId: "user-3" },
+  ]),
+  [
+    { emoji: "+1", userId: "user-2" },
+    { emoji: "eyes", userId: "user-3" },
+  ],
+);
+assert.deepEqual(addCommentReaction([{ emoji: "+1", userId: "user-2" }], { emoji: "eyes", userId: " user-3 " }), [
+  { emoji: "+1", userId: "user-2" },
+  { emoji: "eyes", userId: "user-3" },
+]);
+assert.deepEqual(
+  removeCommentReaction(
+    [
+      { emoji: "+1", userId: "user-2" },
+      { emoji: "eyes", userId: "user-3" },
+    ],
+    { emoji: " +1 ", userId: "user-2" },
+  ),
+  [{ emoji: "eyes", userId: "user-3" }],
+);
 
 class FakeWebSocket implements OpenRTCWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -1843,8 +1879,8 @@ assert.deepEqual(updatedThread.comments, [{ id: "comment-2" }]);
 const patchedThread = await adminClient.updateComment("tenant-a:room-1", "thread-1", "comment-1", {
   body: { type: "text", text: "edited" },
   metadata: { status: "resolved" },
-  mentions: ["user-2"],
-  reactions: [{ emoji: "+1", userId: "user-2" }],
+  mentions: addCommentMention([], "user-2"),
+  reactions: addCommentReaction([], { emoji: "+1", userId: "user-2" }),
 });
 const patchedComment = patchedThread.comments[0];
 assert.ok(patchedComment);

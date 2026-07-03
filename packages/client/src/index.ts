@@ -703,6 +703,66 @@ function accessMatrixPermissionRecord(
   return out;
 }
 
+export function normalizeCommentMentions(mentions: readonly string[] = []): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const mention of mentions) {
+    const userId = mention.trim();
+    if (!userId || seen.has(userId)) {
+      continue;
+    }
+    seen.add(userId);
+    out.push(userId);
+  }
+  return out;
+}
+
+export function addCommentMention(mentions: readonly string[] | undefined, userId: string): string[] {
+  return normalizeCommentMentions([...(mentions ?? []), userId]);
+}
+
+export function removeCommentMention(mentions: readonly string[] | undefined, userId: string): string[] {
+  const target = userId.trim();
+  return normalizeCommentMentions(mentions).filter((mention) => mention !== target);
+}
+
+export function normalizeCommentReactions(
+  reactions: readonly OpenRTCAdminCommentReaction[] = [],
+): OpenRTCAdminCommentReaction[] {
+  const seen = new Set<string>();
+  const out: OpenRTCAdminCommentReaction[] = [];
+  for (const reaction of reactions) {
+    const emoji = reaction.emoji.trim();
+    const userId = reaction.userId.trim();
+    if (!emoji || !userId) {
+      continue;
+    }
+    const key = `${emoji}\u0000${userId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({ emoji, userId });
+  }
+  return out;
+}
+
+export function addCommentReaction(
+  reactions: readonly OpenRTCAdminCommentReaction[] | undefined,
+  reaction: OpenRTCAdminCommentReaction,
+): OpenRTCAdminCommentReaction[] {
+  return normalizeCommentReactions([...(reactions ?? []), reaction]);
+}
+
+export function removeCommentReaction(
+  reactions: readonly OpenRTCAdminCommentReaction[] | undefined,
+  reaction: OpenRTCAdminCommentReaction,
+): OpenRTCAdminCommentReaction[] {
+  const emoji = reaction.emoji.trim();
+  const userId = reaction.userId.trim();
+  return normalizeCommentReactions(reactions).filter((item) => item.emoji !== emoji || item.userId !== userId);
+}
+
 export interface OpenRTCAdminRoomInput {
   id: string;
   metadata?: unknown;
