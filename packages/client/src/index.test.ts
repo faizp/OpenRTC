@@ -30,9 +30,11 @@ import {
   liveListMove,
   liveListRemove,
   liveListReplace,
+  liveMapDelete,
   liveMapPatch,
   liveList,
   liveMap,
+  liveObjectDelete,
   liveObject,
   liveObjectPatch,
   type OpenRTCCommentEvent,
@@ -697,8 +699,15 @@ assert.equal(isLiveStorageNode(typedRoot, "LiveObject"), true);
 assert.deepEqual(liveObjectPatch({ "a/b": 1 }, { basePath: "/data/props/data" }), [
   { op: "add", path: "/data/props/data/a~1b", value: 1 },
 ]);
+assert.deepEqual(liveObjectDelete("a/b", { basePath: "/data/props/data" }), [
+  { op: "remove", path: "/data/props/data/a~1b" },
+]);
 assert.deepEqual(liveMapPatch({ "a/b": false }, { basePath: "/data/props/data" }), [
   { op: "add", path: "/data/props/data/a~1b", value: false },
+]);
+assert.deepEqual(liveMapDelete(["visible", "a/b"], { basePath: "/data/props/data" }), [
+  { op: "remove", path: "/data/props/data/visible" },
+  { op: "remove", path: "/data/props/data/a~1b" },
 ]);
 assert.deepEqual(liveListAppend("b", { basePath: "/data/items/data" }), [
   { op: "add", path: "/data/items/data/-", value: "b" },
@@ -716,6 +725,8 @@ assert.deepEqual(liveListMove(0, 1, { basePath: "/data/items/data" }), [
   { op: "move", from: "/data/items/data/0", path: "/data/items/data/1" },
 ]);
 assert.throws(() => liveMapPatch({}, { basePath: "/data/props/data" }), /LiveMap patch must contain/);
+assert.throws(() => liveObjectDelete([], { basePath: "/data/props/data" }), /delete must include/);
+assert.throws(() => liveMapDelete("", { basePath: "/data/props/data" }), /non-empty strings/);
 assert.throws(() => liveListInsert(-1, "x", { basePath: "/data/items/data" }), /non-negative integer/);
 
 const typedSet = room.setLiveStorage(

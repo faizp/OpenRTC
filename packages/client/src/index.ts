@@ -3075,6 +3075,13 @@ export function liveObjectPatch<TData extends Record<string, unknown>>(
   }));
 }
 
+export function liveObjectDelete(
+  keys: string | readonly string[],
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  return liveRecordDelete(keys, options, "LiveObject");
+}
+
 export function liveMapPatch<TData extends Record<string, unknown>>(
   patch: Partial<TData>,
   options: OpenRTCLiveNodePatchOptions = {},
@@ -3090,6 +3097,13 @@ export function liveMapPatch<TData extends Record<string, unknown>>(
     path: joinJSONPointer(basePath, key),
     value,
   }));
+}
+
+export function liveMapDelete(
+  keys: string | readonly string[],
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  return liveRecordDelete(keys, options, "LiveMap");
 }
 
 export function liveListAppend<TItem = unknown>(
@@ -3682,6 +3696,27 @@ function assertLiveRecordData(value: unknown, typeName: string): asserts value i
   if (!isRecordObject(value)) {
     throw new Error(`${typeName} data must be a JSON object`);
   }
+}
+
+function liveRecordDelete(
+  keys: string | readonly string[],
+  options: OpenRTCLiveNodePatchOptions,
+  typeName: "LiveObject" | "LiveMap",
+): JSONPatchOperation[] {
+  const items = Array.isArray(keys) ? keys : [keys];
+  if (items.length === 0) {
+    throw new Error(`${typeName} delete must include at least one key`);
+  }
+  const basePath = options.basePath ?? "/data";
+  return items.map((key) => {
+    if (typeof key !== "string" || key === "") {
+      throw new Error(`${typeName} delete keys must be non-empty strings`);
+    }
+    return {
+      op: "remove",
+      path: joinJSONPointer(basePath, key),
+    };
+  });
 }
 
 function liveListIndexPath(index: number, options: OpenRTCLiveNodePatchOptions): string {
