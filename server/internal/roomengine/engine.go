@@ -28,6 +28,10 @@ const (
 	ClusterEventStorage      ClusterEventKind = "storage"
 	ClusterEventNotification ClusterEventKind = "notification"
 
+	RoomCreated = "openrtc.rooms.created"
+	RoomUpdated = "openrtc.rooms.updated"
+	RoomDeleted = "openrtc.rooms.deleted"
+
 	CommentThreadCreated = "openrtc.comments.thread.created"
 	CommentCreated       = "openrtc.comments.comment.created"
 	CommentUpdated       = "openrtc.comments.comment.updated"
@@ -42,6 +46,10 @@ const (
 )
 
 const (
+	RoomEventTypeCreated = "room-created"
+	RoomEventTypeUpdated = "room-updated"
+	RoomEventTypeDeleted = "room-deleted"
+
 	CommentEventTypeThreadCreated  = "thread-created"
 	CommentEventTypeCommentCreated = "comment-created"
 	CommentEventTypeCommentUpdated = "comment-updated"
@@ -272,6 +280,12 @@ type NotificationFanout struct {
 	Event         cluster.PublishedEvent
 	UserID        string
 	TargetConnIDs []string
+}
+
+type RoomEventPayload struct {
+	Type   string              `json:"type"`
+	RoomID string              `json:"roomId"`
+	Room   *cluster.RoomRecord `json:"room,omitempty"`
 }
 
 type CommentEventPayload struct {
@@ -550,6 +564,25 @@ func NewStorageEvent(room string, update StorageMutation, options StorageEventOp
 	}, nil
 }
 
+func NewRoomEvent(eventName string, roomID string, room *cluster.RoomRecord, options EventOptions) (cluster.PublishedEvent, RoomEventPayload, error) {
+	payload := RoomEventPayload{
+		Type:   RoomEventType(eventName),
+		RoomID: roomID,
+	}
+	if room != nil {
+		clonedRoom := cloneRoomRecord(*room)
+		payload.Room = &clonedRoom
+		if payload.RoomID == "" {
+			payload.RoomID = clonedRoom.ID
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return cluster.PublishedEvent{}, RoomEventPayload{}, err
+	}
+	return NewEvent(payload.RoomID, eventName, raw, options), payload, nil
+}
+
 func NewCommentEvent(eventName string, thread cluster.ThreadRecord, comment *cluster.CommentRecord, options EventOptions) (cluster.PublishedEvent, CommentEventPayload, error) {
 	payload := CommentEventPayload{
 		Type:     CommentEventType(eventName),
@@ -629,6 +662,28 @@ func IsNotificationEvent(eventName string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func IsRoomEvent(eventName string) bool {
+	switch eventName {
+	case RoomCreated, RoomUpdated, RoomDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func RoomEventType(eventName string) string {
+	switch eventName {
+	case RoomCreated:
+		return RoomEventTypeCreated
+	case RoomUpdated:
+		return RoomEventTypeUpdated
+	case RoomDeleted:
+		return RoomEventTypeDeleted
+	default:
+		return eventName
 	}
 }
 
@@ -1397,6 +1452,25 @@ func cloneStorageMutation(update StorageMutation) StorageMutation {
 		Operations:   cloneStorageOperations(update.Operations),
 		Document:     append(json.RawMessage(nil), update.Document...),
 	}
+}
+
+func cloneRoomRecord(room cluster.RoomRecord) cluster.RoomRecord {
+	room.Metadata = append(json.RawMessage(nil), room.Metadata...)
+	room.DefaultAccesses = append([]string(nil), room.DefaultAccesses...)
+	room.UsersAccesses = cloneAccessMap(room.UsersAccesses)
+	room.GroupsAccesses = cloneAccessMap(room.GroupsAccesses)
+	return room
+}
+
+func cloneAccessMap(accesses map[string][]string) map[string][]string {
+	if len(accesses) == 0 {
+		return nil
+	}
+	cloned := make(map[string][]string, len(accesses))
+	for key, values := range accesses {
+		cloned[key] = append([]string(nil), values...)
+	}
+	return cloned
 }
 
 func cloneThreadRecord(thread cluster.ThreadRecord) cluster.ThreadRecord {

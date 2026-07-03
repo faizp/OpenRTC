@@ -562,6 +562,14 @@ func TestNewClusterEventPlan(t *testing.T) {
 	if IsNotificationEvent("doc.update") {
 		t.Fatalf("doc.update should not be treated as a notification event")
 	}
+	for _, eventName := range []string{RoomCreated, RoomUpdated, RoomDeleted} {
+		if !IsRoomEvent(eventName) {
+			t.Fatalf("expected room event %q", eventName)
+		}
+	}
+	if IsRoomEvent("doc.update") {
+		t.Fatalf("doc.update should not be treated as a room event")
+	}
 	for _, eventName := range []string{CommentThreadCreated, CommentCreated, CommentUpdated} {
 		if !IsCommentEvent(eventName) {
 			t.Fatalf("expected comment event %q", eventName)
@@ -573,6 +581,53 @@ func TestNewClusterEventPlan(t *testing.T) {
 }
 
 func TestNewReservedEventBuilders(t *testing.T) {
+	room := cluster.RoomRecord{
+		ID:              "room-a",
+		Metadata:        json.RawMessage(`{"title":"Draft"}`),
+		DefaultAccesses: []string{cluster.PermissionRoomRead},
+		UsersAccesses: map[string][]string{
+			"user-1": {cluster.PermissionRoomWrite},
+		},
+		GroupsAccesses: map[string][]string{
+			"team-1": {cluster.PermissionRoomPresenceWrite},
+		},
+	}
+	roomEvent, roomPayload, err := NewRoomEvent(RoomCreated, "", &room, EventOptions{
+		OriginNode: "admin:node-a",
+		TraceID:    "trace-room",
+	})
+	if err != nil {
+		t.Fatalf("new room event: %v", err)
+	}
+	if roomEvent.Room != "room-a" || roomEvent.Event != RoomCreated || roomEvent.OriginNode != "admin:node-a" || roomEvent.TraceID != "trace-room" {
+		t.Fatalf("unexpected room event envelope: %+v", roomEvent)
+	}
+	if roomPayload.Type != RoomEventTypeCreated || roomPayload.RoomID != "room-a" || roomPayload.Room == nil || roomPayload.Room.ID != "room-a" {
+		t.Fatalf("unexpected room payload: %+v", roomPayload)
+	}
+
+	room.Metadata[0] = '['
+	room.DefaultAccesses[0] = cluster.PermissionStorageRead
+	room.UsersAccesses["user-1"][0] = cluster.PermissionStorageWrite
+	if string(roomPayload.Room.Metadata) != `{"title":"Draft"}` || roomPayload.Room.DefaultAccesses[0] != cluster.PermissionRoomRead || roomPayload.Room.UsersAccesses["user-1"][0] != cluster.PermissionRoomWrite {
+		t.Fatalf("room payload should be copied, got %+v", roomPayload)
+	}
+	var decodedRoomPayload RoomEventPayload
+	if err := json.Unmarshal(roomEvent.Payload, &decodedRoomPayload); err != nil {
+		t.Fatalf("decode room event payload: %v", err)
+	}
+	if decodedRoomPayload.Type != RoomEventTypeCreated || decodedRoomPayload.Room == nil || string(decodedRoomPayload.Room.Metadata) != `{"title":"Draft"}` {
+		t.Fatalf("unexpected serialized room payload: %+v", decodedRoomPayload)
+	}
+
+	deletedRoomEvent, deletedRoomPayload, err := NewRoomEvent(RoomDeleted, "room-a", nil, EventOptions{})
+	if err != nil {
+		t.Fatalf("new room delete event: %v", err)
+	}
+	if deletedRoomEvent.Room != "room-a" || deletedRoomPayload.Type != RoomEventTypeDeleted || deletedRoomPayload.RoomID != "room-a" || deletedRoomPayload.Room != nil {
+		t.Fatalf("unexpected room delete payload: event=%+v payload=%+v", deletedRoomEvent, deletedRoomPayload)
+	}
+
 	thread := cluster.ThreadRecord{
 		ID:       "thread-1",
 		RoomID:   "room-a",

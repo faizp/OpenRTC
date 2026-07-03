@@ -119,27 +119,9 @@ const (
 	maxRoomListQueryPathKeyBytes = 64
 )
 
-const (
-	roomEventCreated = "openrtc.rooms.created"
-	roomEventUpdated = "openrtc.rooms.updated"
-	roomEventDeleted = "openrtc.rooms.deleted"
-)
-
-const (
-	roomEventTypeCreated = "room-created"
-	roomEventTypeUpdated = "room-updated"
-	roomEventTypeDeleted = "room-deleted"
-)
-
 type roomListResponse struct {
 	Rooms      []cluster.RoomRecord `json:"rooms"`
 	NextCursor string               `json:"next_cursor,omitempty"`
-}
-
-type roomEventPayload struct {
-	Type   string              `json:"type"`
-	RoomID string              `json:"roomId"`
-	Room   *cluster.RoomRecord `json:"room,omitempty"`
 }
 
 type roomListQuery struct {
@@ -1136,11 +1118,7 @@ func (s *Service) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	s.dispatchWebhook(r.Context(), roomEventCreated, roomEventPayload{
-		Type:   roomEventTypeCreated,
-		RoomID: record.ID,
-		Room:   &record,
-	})
+	s.dispatchRoomWebhook(r.Context(), roomengine.RoomCreated, record.ID, &record)
 	writeJSON(w, http.StatusCreated, record)
 }
 
@@ -1254,11 +1232,6 @@ func (s *Service) handleGetRoom(w http.ResponseWriter, r *http.Request, room str
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	s.dispatchWebhook(r.Context(), roomEventUpdated, roomEventPayload{
-		Type:   roomEventTypeUpdated,
-		RoomID: record.ID,
-		Room:   &record,
-	})
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -1317,6 +1290,7 @@ func (s *Service) handleUpdateRoom(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.dispatchRoomWebhook(r.Context(), roomengine.RoomUpdated, record.ID, &record)
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -1344,10 +1318,7 @@ func (s *Service) handleDeleteRoom(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	s.dispatchWebhook(r.Context(), roomEventDeleted, roomEventPayload{
-		Type:   roomEventTypeDeleted,
-		RoomID: room,
-	})
+	s.dispatchRoomWebhook(r.Context(), roomengine.RoomDeleted, room, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1926,6 +1897,17 @@ func commentUpdateFromRequest(request CommentUpdateRequest) cluster.CommentUpdat
 		update.ReactionsSet = true
 	}
 	return update
+}
+
+func (s *Service) dispatchRoomWebhook(ctx context.Context, eventName string, roomID string, room *cluster.RoomRecord) {
+	_, payload, err := roomengine.NewRoomEvent(eventName, roomID, room, roomengine.EventOptions{
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
+	if err != nil {
+		s.logWebhookDelivery("marshal", eventName, 0, err)
+		return
+	}
+	s.dispatchWebhook(ctx, eventName, payload)
 }
 
 func (s *Service) publishCommentEvent(ctx context.Context, eventName string, thread cluster.ThreadRecord, comment *cluster.CommentRecord) error {
