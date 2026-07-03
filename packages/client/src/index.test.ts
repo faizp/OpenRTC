@@ -13,6 +13,7 @@ import {
   accessMatrixScopes,
   createOpenRTCDevAdminClient,
   createOpenRTCDevClient,
+  createOpenRTCDevTools,
   fetchOpenRTCDevToken,
   getCursorPeers,
   getPresenceColor,
@@ -1352,13 +1353,53 @@ assert.equal(devToken.config.eventsURL, "http://127.0.0.1:3000/dev/events?room=d
 assert.equal(devToken.config.crashRuntimeURL, "http://127.0.0.1:3000/dev/crash/runtime");
 assert.equal(devToken.config.crashAdminURL, "http://127.0.0.1:3000/dev/crash/admin");
 
+const devToolCalls: Array<{ input: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }> =
+  [];
 const socketCountBeforeDevClient = FakeWebSocket.instances.length;
 const devClient = await createOpenRTCDevClient({
   baseURL: "http://127.0.0.1:3000",
   room: "demo:canvas-1",
   WebSocket: FakeWebSocket,
-  fetch: async (input) => {
+  fetch: async (input, init) => {
     const url = new URL(input);
+    if (url.pathname !== "/dev/token") {
+      devToolCalls.push(init ? { input, init } : { input });
+      if (url.pathname === "/dev/status") {
+        return fakeResponse(200, JSON.stringify({ status: "ok" }));
+      }
+      if (url.pathname === "/dev/connections") {
+        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), connections: [] }));
+      }
+      if (url.pathname === "/dev/sockets") {
+        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), active_sockets: 1 }));
+      }
+      if (url.pathname === "/dev/storage") {
+        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), durable: { found: true } }));
+      }
+      if (url.pathname === "/dev/yjs") {
+        return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), durable: { found: true } }));
+      }
+      if (url.pathname === "/dev/events") {
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            room: url.searchParams.get("room"),
+            after_seq: url.searchParams.get("after_seq"),
+            limit: url.searchParams.get("limit"),
+            events: [],
+          }),
+        );
+      }
+      if (url.pathname === "/dev/crash/runtime") {
+        assert.equal(init?.method, "POST");
+        return fakeResponse(200, JSON.stringify({ status: "restarted", service: "runtime" }));
+      }
+      if (url.pathname === "/dev/crash/admin") {
+        assert.equal(init?.method, "POST");
+        return fakeResponse(200, JSON.stringify({ status: "restarted", service: "admin" }));
+      }
+      throw new Error(`unexpected dev tool URL: ${input}`);
+    }
     assert.equal(url.searchParams.get("room"), "demo:canvas-1");
     return fakeResponse(
       200,
@@ -1377,6 +1418,68 @@ const devClient = await createOpenRTCDevClient({
 });
 assert.equal(devClient.room, "demo:canvas-1");
 assert.equal(devClient.config.wsURL, "ws://127.0.0.1:8080/ws");
+assert.equal(devClient.tools.room, "demo:canvas-1");
+assert.equal(devClient.tools.config, devClient.config);
+assert.deepEqual(await devClient.tools.fetchStatus(), { status: "ok" });
+assert.deepEqual(await devClient.tools.fetchConnections(), { room: "demo:canvas-1", connections: [] });
+assert.deepEqual(await devClient.tools.fetchSockets({ room: "demo:canvas-1" }), {
+  room: "demo:canvas-1",
+  active_sockets: 1,
+});
+assert.deepEqual(await devClient.tools.fetchStorage(), { room: "demo:canvas-1", durable: { found: true } });
+assert.deepEqual(await devClient.tools.fetchYJS({ room: "demo:canvas-yjs" }), {
+  room: "demo:canvas-yjs",
+  durable: { found: true },
+});
+assert.deepEqual(await devClient.tools.fetchEvents({ afterSequence: 7, limit: 3 }), {
+  room: "demo:canvas-1",
+  after_seq: "7",
+  limit: "3",
+  events: [],
+});
+assert.deepEqual(await devClient.tools.restartRuntime(), { status: "restarted", service: "runtime" });
+assert.deepEqual(await devClient.tools.restartAdmin(), { status: "restarted", service: "admin" });
+assert.deepEqual(
+  devToolCalls.map((call) => [new URL(call.input).pathname, call.init?.method ?? "GET"]),
+  [
+    ["/dev/status", "GET"],
+    ["/dev/connections", "GET"],
+    ["/dev/sockets", "GET"],
+    ["/dev/storage", "GET"],
+    ["/dev/yjs", "GET"],
+    ["/dev/events", "GET"],
+    ["/dev/crash/runtime", "POST"],
+    ["/dev/crash/admin", "POST"],
+  ],
+);
+const legacyDevTools = createOpenRTCDevTools(
+  {
+    publicKey: devConfig.publicKey,
+    tokenURL: devConfig.tokenURL,
+    jwksURL: devConfig.jwksURL,
+    wsURL: devConfig.wsURL,
+    yjsURL: devConfig.yjsURL,
+    adminURL: devConfig.adminURL,
+    adminProxyURL: devConfig.adminProxyURL,
+    runtimeURL: devConfig.runtimeURL,
+    runtimeProxyURL: devConfig.runtimeProxyURL,
+    seedRooms: devConfig.seedRooms,
+  },
+  {
+    baseURL: "http://127.0.0.1:3000",
+    room: "demo:legacy",
+    fetch: async (input, init) =>
+      fakeResponse(200, JSON.stringify({ url: input, method: init?.method ?? "GET" })),
+  },
+);
+assert.deepEqual(await legacyDevTools.fetchEvents({ limit: 5 }), {
+  url: "http://127.0.0.1:3000/dev/events?room=demo%3Alegacy&limit=5",
+  method: "GET",
+});
+assert.deepEqual(await legacyDevTools.restartRuntime(), {
+  url: "http://127.0.0.1:3000/dev/crash/runtime",
+  method: "POST",
+});
 const devClientConnected = devClient.client.connect();
 await Promise.resolve();
 const devSocket = FakeWebSocket.instances[socketCountBeforeDevClient];

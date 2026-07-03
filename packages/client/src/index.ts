@@ -139,6 +139,34 @@ export interface OpenRTCDevTokenOptions {
   fetch?: OpenRTCFetch;
 }
 
+export interface OpenRTCDevRoomOptions {
+  room?: string;
+}
+
+export interface OpenRTCDevEventsOptions extends OpenRTCDevRoomOptions {
+  afterSequence?: number;
+  limit?: number;
+}
+
+export interface OpenRTCDevToolsOptions {
+  baseURL?: string | undefined;
+  fetch?: OpenRTCFetch | undefined;
+  room?: string | undefined;
+}
+
+export interface OpenRTCDevTools {
+  readonly config: OpenRTCDevClientConfig;
+  readonly room?: string;
+  fetchStatus(): Promise<unknown>;
+  fetchConnections(options?: OpenRTCDevRoomOptions): Promise<unknown>;
+  fetchSockets(options?: OpenRTCDevRoomOptions): Promise<unknown>;
+  fetchStorage(options?: OpenRTCDevRoomOptions): Promise<unknown>;
+  fetchYJS(options?: OpenRTCDevRoomOptions): Promise<unknown>;
+  fetchEvents(options?: OpenRTCDevEventsOptions): Promise<unknown>;
+  restartRuntime(): Promise<unknown>;
+  restartAdmin(): Promise<unknown>;
+}
+
 export interface OpenRTCDevClientOptions
   extends Omit<OpenRTCDevTokenOptions, "kind" | "scope">,
     Omit<OpenRTCClientOptions, "url" | "token"> {}
@@ -155,12 +183,14 @@ export interface OpenRTCDevClient {
   room: string;
   auth: OpenRTCDevTokenResponse;
   config: OpenRTCDevClientConfig;
+  tools: OpenRTCDevTools;
 }
 
 export interface OpenRTCDevAdminClient {
   admin: OpenRTCAdminClient;
   auth: OpenRTCDevTokenResponse;
   config: OpenRTCDevClientConfig;
+  tools: OpenRTCDevTools;
 }
 
 export interface JoinOptions {
@@ -734,7 +764,12 @@ export async function createOpenRTCDevClient(options: OpenRTCDevClientOptions = 
     clientOptions.reconnect = options.reconnect;
   }
   const client = new OpenRTCClient(clientOptions);
-  return { client, room, auth, config: auth.config };
+  const tools = createOpenRTCDevTools(auth.config, {
+    baseURL: options.baseURL,
+    fetch: options.fetch,
+    room,
+  });
+  return { client, room, auth, config: auth.config, tools };
 }
 
 export async function createOpenRTCDevAdminClient(
@@ -749,7 +784,67 @@ export async function createOpenRTCDevAdminClient(
     adminOptions.fetch = options.fetch;
   }
   const admin = new OpenRTCAdminClient(adminOptions);
-  return { admin, auth, config: auth.config };
+  const tools = createOpenRTCDevTools(auth.config, {
+    baseURL: options.baseURL,
+    fetch: options.fetch,
+    room: options.room ?? auth.room ?? auth.config.seedRooms[0],
+  });
+  return { admin, auth, config: auth.config, tools };
+}
+
+export function createOpenRTCDevTools(
+  config: OpenRTCDevClientConfig,
+  options: OpenRTCDevToolsOptions = {},
+): OpenRTCDevTools {
+  const fetchImpl = resolveFetch(options.fetch);
+  const baseURL = options.baseURL ?? DEFAULT_OPENRTC_DEV_BASE_URL;
+  const roomEndpointOptions = (room: string | undefined): OpenRTCDevEventsOptions => (room ? { room } : {});
+  return {
+    config,
+    ...(options.room ? { room: options.room } : {}),
+    fetchStatus: () => fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "statusURL", baseURL)),
+    fetchConnections: (endpointOptions = {}) =>
+      fetchOpenRTCDevJSON(
+        fetchImpl,
+        openRTCDevEndpointURL(
+          config,
+          "connectionsURL",
+          baseURL,
+          roomEndpointOptions(endpointOptions.room ?? options.room),
+        ),
+      ),
+    fetchSockets: (endpointOptions = {}) =>
+      fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "socketsURL", baseURL, endpointOptions)),
+    fetchStorage: (endpointOptions = {}) =>
+      fetchOpenRTCDevJSON(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "storageURL", baseURL, roomEndpointOptions(endpointOptions.room ?? options.room)),
+      ),
+    fetchYJS: (endpointOptions = {}) =>
+      fetchOpenRTCDevJSON(
+        fetchImpl,
+        openRTCDevEndpointURL(
+          config,
+          "yjsInspectionURL",
+          baseURL,
+          roomEndpointOptions(endpointOptions.room ?? options.room),
+        ),
+      ),
+    fetchEvents: (endpointOptions = {}) => {
+      const urlOptions = roomEndpointOptions(endpointOptions.room ?? options.room);
+      if (endpointOptions.afterSequence !== undefined) {
+        urlOptions.afterSequence = endpointOptions.afterSequence;
+      }
+      if (endpointOptions.limit !== undefined) {
+        urlOptions.limit = endpointOptions.limit;
+      }
+      return fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "eventsURL", baseURL, urlOptions));
+    },
+    restartRuntime: () =>
+      fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "crashRuntimeURL", baseURL), { method: "POST" }),
+    restartAdmin: () =>
+      fetchOpenRTCDevJSON(fetchImpl, openRTCDevEndpointURL(config, "crashAdminURL", baseURL), { method: "POST" }),
+  };
 }
 
 export class OpenRTCClient {
@@ -2952,6 +3047,61 @@ function openRTCDevTokenURL(options: OpenRTCDevTokenOptions): string {
     parsed.searchParams.set("scope", options.scope);
   }
   return parsed.toString();
+}
+
+type OpenRTCDevEndpointKey =
+  | "statusURL"
+  | "connectionsURL"
+  | "socketsURL"
+  | "storageURL"
+  | "yjsInspectionURL"
+  | "eventsURL"
+  | "crashRuntimeURL"
+  | "crashAdminURL";
+
+const OPENRTC_DEV_ENDPOINT_PATHS: Record<OpenRTCDevEndpointKey, string> = {
+  statusURL: "/dev/status",
+  connectionsURL: "/dev/connections",
+  socketsURL: "/dev/sockets",
+  storageURL: "/dev/storage",
+  yjsInspectionURL: "/dev/yjs",
+  eventsURL: "/dev/events",
+  crashRuntimeURL: "/dev/crash/runtime",
+  crashAdminURL: "/dev/crash/admin",
+};
+
+function openRTCDevEndpointURL(
+  config: OpenRTCDevClientConfig,
+  key: OpenRTCDevEndpointKey,
+  baseURL: string,
+  options: OpenRTCDevEventsOptions = {},
+): string {
+  const rawURL = config[key] ?? OPENRTC_DEV_ENDPOINT_PATHS[key];
+  const parsed = new URL(rawURL, baseURL.endsWith("/") ? baseURL : `${baseURL}/`);
+  if (options.room) {
+    parsed.searchParams.set("room", options.room);
+  }
+  if (options.afterSequence !== undefined) {
+    parsed.searchParams.set("after_seq", String(options.afterSequence));
+  }
+  if (options.limit !== undefined) {
+    parsed.searchParams.set("limit", String(options.limit));
+  }
+  return parsed.toString();
+}
+
+async function fetchOpenRTCDevJSON(
+  fetchImpl: OpenRTCFetch,
+  input: string,
+  init?: { method?: string; headers?: Record<string, string>; body?: string },
+): Promise<unknown> {
+  const response = await fetchImpl(input, init);
+  const text = await response.text();
+  const body = text ? parseJSON(text) : undefined;
+  if (!response.ok) {
+    throw new OpenRTCDevError(response.status, body, errorMessage(response, body));
+  }
+  return body;
 }
 
 function parseOpenRTCDevTokenResponse(value: unknown): OpenRTCDevTokenResponse {

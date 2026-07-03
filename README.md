@@ -56,6 +56,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
+- `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return `tools` helpers for fetching status, sockets, storage, Yjs metadata, event logs, and restart drills from the advertised dev URLs.
 
 For a zero-config local client, let the SDK fetch the dev token response and
 use its embedded config:
@@ -63,9 +64,11 @@ use its embedded config:
 ```ts
 import { createOpenRTCDevAdminClient, createOpenRTCDevClient } from "@openrtc/client";
 
-const { client, room } = await createOpenRTCDevClient();
+const { client, room, tools } = await createOpenRTCDevClient();
 await client.connect();
 client.enterRoom(room);
+await tools.fetchStatus();
+await tools.fetchStorage();
 
 const { admin } = await createOpenRTCDevAdminClient({ useProxy: true });
 await admin.stats();

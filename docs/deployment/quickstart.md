@@ -24,7 +24,9 @@ Open `http://127.0.0.1:3000`. Use
 tokens. The token response also includes the local `config` object, debug endpoint
 URLs, and default `room`, so browser clients can connect without hard-coding dev URLs; the
 `@openrtc/client` `createOpenRTCDevClient()` and
-`createOpenRTCDevAdminClient()` helpers consume this response directly. Use
+`createOpenRTCDevAdminClient()` helpers consume this response directly and return
+`tools` helpers for status, sockets, storage, Yjs metadata, event logs, and
+runtime/admin restart drills. Use
 `http://127.0.0.1:3000/dev/status` to verify storage backend, Redis protocol health, runtime/admin generation,
 seeded-room, and endpoint readiness. Use
 `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect room active
