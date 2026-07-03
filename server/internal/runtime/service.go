@@ -1139,7 +1139,8 @@ func (s *Service) unregisterYJSConn(conn *yjsConn) {
 }
 
 func (s *Service) unregisterConn(conn *clientConn) {
-	disconnectResult := s.roomEngine().DisconnectSession(conn.id, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
+	disconnectPlan := s.roomEngine().NewDisconnectPlan(conn.id, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
+	disconnectResult := s.roomEngine().ApplyDisconnectPlan(disconnectPlan)
 	s.mu.Lock()
 	delete(s.conns, conn.id)
 	s.syncStatsLocked()

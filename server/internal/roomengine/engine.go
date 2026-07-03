@@ -116,6 +116,12 @@ type DisconnectResult struct {
 	Cleanup         *ConnectionCleanup
 }
 
+type DisconnectPlan struct {
+	Rooms           []string
+	PresenceFanouts []PresenceFanout
+	Cleanup         *ConnectionCleanup
+}
+
 type Snapshot struct {
 	Members  []string
 	Presence map[string]json.RawMessage
@@ -459,27 +465,24 @@ func (e *Engine) ApplyLeavePlan(plan LeavePlan) LeaveResult {
 }
 
 func (e *Engine) Disconnect(connID string) []string {
-	rooms, _ := e.disconnect(connID, PresenceEventOptions{}, false)
-	return rooms
+	return e.ApplyDisconnectPlan(e.newDisconnectPlan(connID, PresenceEventOptions{}, false)).Rooms
 }
 
 func (e *Engine) DisconnectPresenceFanouts(connID string, options PresenceEventOptions) []PresenceFanout {
-	_, fanouts := e.disconnect(connID, options, true)
-	return fanouts
+	return e.ApplyDisconnectPlan(e.NewDisconnectPlan(connID, options)).PresenceFanouts
 }
 
 func (e *Engine) DisconnectSession(connID string, options PresenceEventOptions) DisconnectResult {
-	rooms, fanouts := e.disconnect(connID, options, true)
-	return DisconnectResult{
-		Rooms:           rooms,
-		PresenceFanouts: fanouts,
-		Cleanup:         newConnectionCleanup(connID),
-	}
+	return e.ApplyDisconnectPlan(e.NewDisconnectPlan(connID, options))
 }
 
-func (e *Engine) disconnect(connID string, options PresenceEventOptions, includeFanouts bool) ([]string, []PresenceFanout) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+func (e *Engine) NewDisconnectPlan(connID string, options PresenceEventOptions) DisconnectPlan {
+	return e.newDisconnectPlan(connID, options, true)
+}
+
+func (e *Engine) newDisconnectPlan(connID string, options PresenceEventOptions, includeFanouts bool) DisconnectPlan {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 
 	joinedRooms := e.connRooms[connID]
 	rooms := make([]string, 0, len(joinedRooms))
@@ -490,18 +493,40 @@ func (e *Engine) disconnect(connID string, options PresenceEventOptions, include
 
 	fanouts := make([]PresenceFanout, 0, len(rooms))
 	for _, room := range rooms {
-		e.removeRoomMemberLocked(connID, room)
-		e.removePresenceLocked(connID, room)
 		if includeFanouts {
 			fanouts = append(fanouts, PresenceFanout{
 				Event:         NewOfflinePresenceEvent(connID, room, options),
-				TargetConnIDs: e.memberIDsLocked(room, ""),
+				TargetConnIDs: e.memberIDsLocked(room, connID),
 			})
 		}
 	}
+	return DisconnectPlan{
+		Rooms:           rooms,
+		PresenceFanouts: fanouts,
+		Cleanup:         newConnectionCleanup(connID),
+	}
+}
+
+func (e *Engine) ApplyDisconnectPlan(plan DisconnectPlan) DisconnectResult {
+	if plan.Cleanup == nil {
+		return DisconnectResult{}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	connID := plan.Cleanup.ConnID
+	for _, room := range plan.Rooms {
+		e.removeRoomMemberLocked(connID, room)
+		e.removePresenceLocked(connID, room)
+	}
 	delete(e.connRooms, connID)
 	delete(e.sessions, connID)
-	return rooms, fanouts
+	return DisconnectResult{
+		Rooms:           append([]string(nil), plan.Rooms...),
+		PresenceFanouts: append([]PresenceFanout(nil), plan.PresenceFanouts...),
+		Cleanup:         plan.Cleanup,
+	}
 }
 
 func (e *Engine) SetPresence(connID string, room string, payload json.RawMessage) {

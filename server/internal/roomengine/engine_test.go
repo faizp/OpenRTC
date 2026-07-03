@@ -429,6 +429,49 @@ func TestEngineDisconnectPresenceFanouts(t *testing.T) {
 	}
 }
 
+func TestEngineDisconnectPlanAppliesAfterSideEffects(t *testing.T) {
+	engine := New()
+	engine.RegisterSession(SessionInfo{ConnID: "conn-1", Subject: "user-1", Tenant: "tenant-a"})
+	_, _ = engine.Join("conn-1", "room-b", 0)
+	_, _ = engine.Join("conn-1", "room-a", 0)
+	_, _ = engine.Join("conn-2", "room-a", 0)
+	engine.SetPresence("conn-1", "room-a", json.RawMessage(`{"cursor":{"x":1}}`))
+
+	plan := engine.NewDisconnectPlan("conn-1", PresenceEventOptions{OriginNode: "node-a"})
+	if !reflect.DeepEqual(plan.Rooms, []string{"room-a", "room-b"}) {
+		t.Fatalf("unexpected planned rooms: %#v", plan.Rooms)
+	}
+	if plan.Cleanup == nil || plan.Cleanup.ConnID != "conn-1" {
+		t.Fatalf("unexpected planned cleanup: %+v", plan.Cleanup)
+	}
+	if len(plan.PresenceFanouts) != 2 || !reflect.DeepEqual(plan.PresenceFanouts[0].TargetConnIDs, []string{"conn-2"}) {
+		t.Fatalf("unexpected planned disconnect fanouts: %#v", plan.PresenceFanouts)
+	}
+	if got := engine.JoinedRooms("conn-1"); !reflect.DeepEqual(got, []string{"room-a", "room-b"}) {
+		t.Fatalf("disconnect plan should not clear rooms before apply, got %#v", got)
+	}
+	if _, ok := engine.Snapshot("room-a").Presence["conn-1"]; !ok {
+		t.Fatalf("disconnect plan should not clear presence before apply")
+	}
+	if fanout := engine.NotificationFanout(cluster.PublishedEvent{Event: "openrtc.notifications.inbox.created"}, "user-1"); !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-1"}) {
+		t.Fatalf("disconnect plan should not clear session before apply, got %#v", fanout.TargetConnIDs)
+	}
+
+	result := engine.ApplyDisconnectPlan(plan)
+	if !reflect.DeepEqual(result.Rooms, []string{"room-a", "room-b"}) {
+		t.Fatalf("unexpected disconnected rooms: %#v", result.Rooms)
+	}
+	if got := engine.JoinedRooms("conn-1"); len(got) != 0 {
+		t.Fatalf("expected disconnected connection rooms to be cleared, got %#v", got)
+	}
+	if _, ok := engine.Snapshot("room-a").Presence["conn-1"]; ok {
+		t.Fatalf("expected presence to be removed after disconnect apply")
+	}
+	if fanout := engine.NotificationFanout(cluster.PublishedEvent{Event: "openrtc.notifications.inbox.created"}, "user-1"); len(fanout.TargetConnIDs) != 0 {
+		t.Fatalf("expected disconnected session to be cleared, got %#v", fanout.TargetConnIDs)
+	}
+}
+
 func TestEngineDisconnectSessionIncludesCleanupIntent(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-1", "room-b", 0)
