@@ -425,7 +425,6 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
 			return
 		}
-		event := plan.Event
 		if plan.RequiresPublish {
 			if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
@@ -433,17 +432,19 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if plan.Durable {
-			event, err = s.storeYJSEvent(event)
+			storedEvent, err := s.storeYJSEvent(plan.Event)
 			if err != nil {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
 				return
 			}
+			plan = plan.WithEvent(storedEvent)
 		}
-		if err := s.broadcastYJSEvent(event); err != nil {
+		effects := s.roomEngine().YJSMutationEffects(plan)
+		if err := s.broadcastYJSFanout(effects.Fanout); err != nil {
 			return
 		}
-		if s.store != nil {
-			if err := s.store.PublishYJSEvent(s.ctx, event); err != nil {
+		if s.store != nil && effects.PublishCluster {
+			if err := s.store.PublishYJSEvent(s.ctx, effects.Event); err != nil {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeInternal).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeInternal))
 				return
 			}

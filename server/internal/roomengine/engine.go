@@ -189,6 +189,14 @@ type YJSEventPlan struct {
 	Durable         bool
 }
 
+type YJSMutationEffects struct {
+	Event           cluster.YJSEvent
+	Fanout          YJSFanout
+	PublishCluster  bool
+	RequiresPublish bool
+	Durable         bool
+}
+
 type YJSPersistencePlan struct {
 	Event cluster.YJSEvent
 	Mode  string
@@ -569,6 +577,11 @@ func NewYJSEventPlan(room string, kind cluster.YJSEventKind, update []byte, opti
 	}, true
 }
 
+func (plan YJSEventPlan) WithEvent(event cluster.YJSEvent) YJSEventPlan {
+	plan.Event = cloneYJSEvent(event)
+	return plan
+}
+
 func NewYJSPersistencePlan(event cluster.YJSEvent) (YJSPersistencePlan, error) {
 	mode, ok := yjsPersistenceMode(event.Kind)
 	if !ok {
@@ -905,6 +918,16 @@ func (e *Engine) YJSFanout(event cluster.YJSEvent) YJSFanout {
 	return YJSFanout{
 		Event:         cloneYJSEvent(event),
 		TargetConnIDs: e.yjsTargetIDsLocked(event.Room, event.OriginConnID),
+	}
+}
+
+func (e *Engine) YJSMutationEffects(plan YJSEventPlan) YJSMutationEffects {
+	return YJSMutationEffects{
+		Event:           cloneYJSEvent(plan.Event),
+		Fanout:          e.YJSFanout(plan.Event),
+		PublishCluster:  true,
+		RequiresPublish: plan.RequiresPublish,
+		Durable:         plan.Durable,
 	}
 }
 

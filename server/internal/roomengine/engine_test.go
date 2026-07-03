@@ -879,6 +879,62 @@ func TestNewYJSEventPlan(t *testing.T) {
 	}
 }
 
+func TestEngineYJSMutationEffects(t *testing.T) {
+	engine := New()
+	engine.RegisterYJSConn("conn-sender", "room-a")
+	engine.RegisterYJSConn("conn-peer", "room-a")
+
+	readPlan, ok := NewYJSEventPlan("room-a", cluster.YJSEventStateVectorRequest, []byte("state-vector"), YJSEventOptions{
+		OriginNode:   "node-a",
+		OriginConnID: "conn-sender",
+	})
+	if !ok {
+		t.Fatalf("expected valid state-vector plan")
+	}
+	readEffects := engine.YJSMutationEffects(readPlan)
+	if readEffects.RequiresPublish || readEffects.Durable || !readEffects.PublishCluster {
+		t.Fatalf("unexpected read-sync effects flags: %+v", readEffects)
+	}
+	if readEffects.Event.Kind != cluster.YJSEventStateVectorRequest || string(readEffects.Event.Update) != "state-vector" {
+		t.Fatalf("unexpected read-sync effects event: %+v", readEffects.Event)
+	}
+	if !reflect.DeepEqual(readEffects.Fanout.TargetConnIDs, []string{"conn-peer"}) {
+		t.Fatalf("unexpected read-sync fanout targets: %#v", readEffects.Fanout.TargetConnIDs)
+	}
+
+	durablePlan, ok := NewYJSEventPlan("room-a", cluster.YJSEventUpdate, []byte("update"), YJSEventOptions{
+		OriginNode:   "node-a",
+		OriginConnID: "conn-sender",
+	})
+	if !ok {
+		t.Fatalf("expected valid update plan")
+	}
+	storedUpdate := []byte("stored-update")
+	durablePlan = durablePlan.WithEvent(cluster.YJSEvent{
+		Room:         "room-a",
+		Kind:         cluster.YJSEventUpdate,
+		Update:       storedUpdate,
+		Sequence:     42,
+		OriginNode:   "node-a",
+		OriginConnID: "conn-sender",
+	})
+	effects := engine.YJSMutationEffects(durablePlan)
+	if !effects.RequiresPublish || !effects.Durable || !effects.PublishCluster {
+		t.Fatalf("unexpected durable effects flags: %+v", effects)
+	}
+	if effects.Event.Sequence != 42 || string(effects.Event.Update) != "stored-update" {
+		t.Fatalf("unexpected durable effects event: %+v", effects.Event)
+	}
+	if effects.Fanout.Event.Sequence != 42 || string(effects.Fanout.Event.Update) != "stored-update" {
+		t.Fatalf("unexpected durable fanout event: %+v", effects.Fanout.Event)
+	}
+	storedUpdate[0] = 'X'
+	effects.Event.Update[0] = 'Y'
+	if string(effects.Fanout.Event.Update) != "stored-update" {
+		t.Fatalf("effects fanout event should be independently copied, got %q", effects.Fanout.Event.Update)
+	}
+}
+
 func TestNewYJSPersistencePlan(t *testing.T) {
 	cases := []struct {
 		name string

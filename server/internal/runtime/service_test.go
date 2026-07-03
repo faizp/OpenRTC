@@ -537,6 +537,35 @@ func TestHandleYJSFrameBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("state vector request publishes across cluster without write permission", func(t *testing.T) {
+		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
+			"tenant": "tenant-a",
+			"join":   []string{"tenant-a:*"},
+			"scope":  "join:tenant-a:*",
+		})
+		defer cleanup()
+		store := &fakeRuntimeStore{
+			roomRecord:   runtimeWritableRoomRecord(),
+			publishYJSCh: make(chan cluster.YJSEvent, 1),
+		}
+		service.store = store
+		ws, closeConn := dialRuntimeYJS(t, service, token)
+		defer closeConn()
+		receiver := &yjsConn{id: "state-vector-cluster-peer", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
+		registerRuntimeYJSConn(service, receiver)
+		if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{yjsFrameStateVector}, []byte("state-vector")...)); err != nil {
+			t.Fatalf("write yjs state vector frame: %v", err)
+		}
+		frame := receiveRuntimeTestValue(t, receiver.send, "relayed yjs state vector")
+		if len(frame) == 0 || frame[0] != yjsFrameStateVector || string(frame[1:]) != "state-vector" {
+			t.Fatalf("unexpected yjs state vector frame: %v", frame)
+		}
+		published := receiveRuntimeTestValue(t, store.publishYJSCh, "published yjs state vector")
+		if published.Kind != cluster.YJSEventStateVectorRequest || string(published.Update) != "state-vector" {
+			t.Fatalf("unexpected published yjs state vector: %+v", published)
+		}
+	})
+
 	t.Run("state vector diff requires publish", func(t *testing.T) {
 		service, token, cleanup := newRuntimeAuthorizedService(t, map[string]any{
 			"tenant": "tenant-a",
