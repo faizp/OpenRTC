@@ -423,22 +423,28 @@ func TestEngineEventAndStorageFanouts(t *testing.T) {
 	_, _ = engine.Join("conn-a", "room-a", 0)
 
 	payload := json.RawMessage(`{"ok":true}`)
-	eventFanout := engine.EventFanout(cluster.PublishedEvent{
-		Room:                "room-a",
-		Event:               "doc.update",
-		Payload:             payload,
+	event := NewEvent("room-a", "doc.update", payload, EventOptions{
 		ExcludeSenderConnID: "conn-sender",
 		OriginNode:          "node-a",
 		TraceID:             "trace-1",
-		Sequence:            7,
 	})
+	event.Sequence = 7
+	if event.Room != "room-a" || event.Event != "doc.update" || event.OriginNode != "node-a" || event.TraceID != "trace-1" || event.ExcludeSenderConnID != "conn-sender" {
+		t.Fatalf("unexpected constructed event metadata: %+v", event)
+	}
+	payload[0] = '['
+	if string(event.Payload) != `{"ok":true}` {
+		t.Fatalf("constructed event payload should be copied, got %s", event.Payload)
+	}
+
+	eventFanout := engine.EventFanout(event)
 	if !reflect.DeepEqual(eventFanout.TargetConnIDs, []string{"conn-a", "conn-b"}) {
 		t.Fatalf("unexpected event fanout targets: %#v", eventFanout.TargetConnIDs)
 	}
 	if eventFanout.Event.Event != "doc.update" || eventFanout.Event.TraceID != "trace-1" || eventFanout.Event.Sequence != 7 {
 		t.Fatalf("unexpected event fanout metadata: %+v", eventFanout.Event)
 	}
-	payload[0] = '['
+	event.Payload[0] = '['
 	if string(eventFanout.Event.Payload) != `{"ok":true}` {
 		t.Fatalf("event fanout payload should be copied, got %s", eventFanout.Event.Payload)
 	}

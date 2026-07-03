@@ -136,6 +136,12 @@ type PresenceEventOptions struct {
 	OriginNode string
 }
 
+type EventOptions struct {
+	OriginNode          string
+	TraceID             string
+	ExcludeSenderConnID string
+}
+
 type PresenceFanout struct {
 	Event         cluster.PresenceEvent
 	TargetConnIDs []string
@@ -409,6 +415,17 @@ func NewOfflinePresenceEvent(connID string, room string, options PresenceEventOp
 		ConnID:     connID,
 		Offline:    true,
 		OriginNode: options.OriginNode,
+	}
+}
+
+func NewEvent(room string, eventName string, payload json.RawMessage, options EventOptions) cluster.PublishedEvent {
+	return cluster.PublishedEvent{
+		Room:                room,
+		Event:               eventName,
+		Payload:             append(json.RawMessage(nil), payload...),
+		ExcludeSenderConnID: options.ExcludeSenderConnID,
+		TraceID:             options.TraceID,
+		OriginNode:          options.OriginNode,
 	}
 }
 

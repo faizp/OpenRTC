@@ -652,13 +652,10 @@ func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {
 		traceID = message.EmitMeta.TraceID
 	}
 
-	event := cluster.PublishedEvent{
-		Room:       message.Room,
-		Event:      message.Event,
-		Payload:    message.Payload,
+	event := roomengine.NewEvent(message.Room, message.Event, message.Payload, roomengine.EventOptions{
 		TraceID:    traceID,
 		OriginNode: s.cfg.NodeID,
-	}
+	})
 	if s.store != nil {
 		published, err := s.store.PublishEvent(s.ctx, event)
 		if err != nil {
