@@ -24,14 +24,15 @@ const (
 )
 
 type Engine struct {
-	mu        sync.RWMutex
-	rooms     map[string]map[string]struct{}
-	connRooms map[string]map[string]struct{}
-	sessions  map[string]SessionInfo
-	presence  map[string]map[string]json.RawMessage
-	yjsRooms  map[string]map[string]struct{}
-	yjsDocs   map[string]*memoryYJSDocument
-	storage   map[string]json.RawMessage
+	mu          sync.RWMutex
+	rooms       map[string]map[string]struct{}
+	connRooms   map[string]map[string]struct{}
+	sessions    map[string]SessionInfo
+	presence    map[string]map[string]json.RawMessage
+	yjsRooms    map[string]map[string]struct{}
+	yjsSessions map[string]YJSSessionInfo
+	yjsDocs     map[string]*memoryYJSDocument
+	storage     map[string]json.RawMessage
 }
 
 type memoryYJSDocument struct {
@@ -87,6 +88,13 @@ type SessionInfo struct {
 	ConnID  string
 	Subject string
 	Tenant  string
+}
+
+type YJSSessionInfo struct {
+	ConnID  string
+	Subject string
+	Tenant  string
+	Room    string
 }
 
 type ConnectionTouch struct {
@@ -169,15 +177,36 @@ type NotificationFanout struct {
 	TargetConnIDs []string
 }
 
+type ConnectionsSnapshot struct {
+	Connections     []ConnectionSnapshot
+	YJSConnections  []YJSConnectionSnapshot
+	ActiveRoomCount int
+}
+
+type ConnectionSnapshot struct {
+	ConnectionID string   `json:"connection_id"`
+	Subject      string   `json:"subject,omitempty"`
+	Tenant       string   `json:"tenant,omitempty"`
+	Rooms        []string `json:"rooms"`
+}
+
+type YJSConnectionSnapshot struct {
+	ConnectionID string `json:"connection_id"`
+	Subject      string `json:"subject,omitempty"`
+	Tenant       string `json:"tenant,omitempty"`
+	Room         string `json:"room"`
+}
+
 func New() *Engine {
 	return &Engine{
-		rooms:     make(map[string]map[string]struct{}),
-		connRooms: make(map[string]map[string]struct{}),
-		sessions:  make(map[string]SessionInfo),
-		presence:  make(map[string]map[string]json.RawMessage),
-		yjsRooms:  make(map[string]map[string]struct{}),
-		yjsDocs:   make(map[string]*memoryYJSDocument),
-		storage:   make(map[string]json.RawMessage),
+		rooms:       make(map[string]map[string]struct{}),
+		connRooms:   make(map[string]map[string]struct{}),
+		sessions:    make(map[string]SessionInfo),
+		presence:    make(map[string]map[string]json.RawMessage),
+		yjsRooms:    make(map[string]map[string]struct{}),
+		yjsSessions: make(map[string]YJSSessionInfo),
+		yjsDocs:     make(map[string]*memoryYJSDocument),
+		storage:     make(map[string]json.RawMessage),
 	}
 }
 
@@ -564,6 +593,10 @@ func (e *Engine) JoinedRooms(connID string) []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.joinedRoomsLocked(connID)
+}
+
+func (e *Engine) joinedRoomsLocked(connID string) []string {
 	joinedRooms := e.connRooms[connID]
 	rooms := make([]string, 0, len(joinedRooms))
 	for room := range joinedRooms {
@@ -574,26 +607,88 @@ func (e *Engine) JoinedRooms(connID string) []string {
 }
 
 func (e *Engine) RegisterYJSConn(connID string, room string) {
+	e.RegisterYJSSession(YJSSessionInfo{ConnID: connID, Room: room})
+}
+
+func (e *Engine) RegisterYJSSession(info YJSSessionInfo) {
+	if info.ConnID == "" || info.Room == "" {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	members := e.yjsRooms[room]
+	if existing, ok := e.yjsSessions[info.ConnID]; ok && existing.Room != info.Room {
+		e.removeYJSConnLocked(info.ConnID, existing.Room)
+	}
+	e.yjsSessions[info.ConnID] = info
+
+	members := e.yjsRooms[info.Room]
 	if members == nil {
 		members = make(map[string]struct{})
-		e.yjsRooms[room] = members
+		e.yjsRooms[info.Room] = members
 	}
-	members[connID] = struct{}{}
+	members[info.ConnID] = struct{}{}
 }
 
 func (e *Engine) UnregisterYJSConn(connID string, room string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if existing, ok := e.yjsSessions[connID]; ok {
+		if room == "" {
+			room = existing.Room
+		}
+		if existing.Room != room {
+			e.removeYJSConnLocked(connID, existing.Room)
+		}
+	}
+	e.removeYJSConnLocked(connID, room)
+	delete(e.yjsSessions, connID)
+}
+
+func (e *Engine) removeYJSConnLocked(connID string, room string) {
 	if members := e.yjsRooms[room]; members != nil {
 		delete(members, connID)
 		if len(members) == 0 {
 			delete(e.yjsRooms, room)
 		}
+	}
+}
+
+func (e *Engine) ConnectionsSnapshot() ConnectionsSnapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	connections := make([]ConnectionSnapshot, 0, len(e.sessions))
+	for connID, session := range e.sessions {
+		connections = append(connections, ConnectionSnapshot{
+			ConnectionID: connID,
+			Subject:      session.Subject,
+			Tenant:       session.Tenant,
+			Rooms:        e.joinedRoomsLocked(connID),
+		})
+	}
+	sort.Slice(connections, func(i int, j int) bool {
+		return connections[i].ConnectionID < connections[j].ConnectionID
+	})
+
+	yjsConnections := make([]YJSConnectionSnapshot, 0, len(e.yjsSessions))
+	for connID, session := range e.yjsSessions {
+		yjsConnections = append(yjsConnections, YJSConnectionSnapshot{
+			ConnectionID: connID,
+			Subject:      session.Subject,
+			Tenant:       session.Tenant,
+			Room:         session.Room,
+		})
+	}
+	sort.Slice(yjsConnections, func(i int, j int) bool {
+		return yjsConnections[i].ConnectionID < yjsConnections[j].ConnectionID
+	})
+
+	return ConnectionsSnapshot{
+		Connections:     connections,
+		YJSConnections:  yjsConnections,
+		ActiveRoomCount: len(e.rooms),
 	}
 }
 

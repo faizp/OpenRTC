@@ -2305,7 +2305,7 @@ func registerRuntimeYJSConn(service *Service, conn *yjsConn) {
 	service.mu.Lock()
 	service.yjsConns[conn.id] = conn
 	service.mu.Unlock()
-	service.roomEngine().RegisterYJSConn(conn.id, conn.room)
+	service.roomEngine().RegisterYJSSession(yjsSessionInfoFromConn(conn))
 }
 
 func compactRuntimeTestJSON(raw json.RawMessage) (json.RawMessage, error) {

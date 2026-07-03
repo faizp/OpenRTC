@@ -521,6 +521,53 @@ func TestEngineNotificationFanoutTargetsSessionsBySubject(t *testing.T) {
 	}
 }
 
+func TestEngineConnectionsSnapshot(t *testing.T) {
+	engine := New()
+	engine.RegisterSession(SessionInfo{ConnID: "conn-b", Subject: "user-b", Tenant: "tenant-a"})
+	engine.RegisterSession(SessionInfo{ConnID: "conn-a", Subject: "user-a", Tenant: "tenant-a"})
+	_, _ = engine.Join("conn-a", "room-2", 0)
+	_, _ = engine.Join("conn-a", "room-1", 0)
+	_, _ = engine.Join("conn-b", "room-1", 0)
+	engine.RegisterYJSSession(YJSSessionInfo{ConnID: "yjs-b", Subject: "editor-b", Tenant: "tenant-a", Room: "doc-2"})
+	engine.RegisterYJSSession(YJSSessionInfo{ConnID: "yjs-a", Subject: "editor-a", Tenant: "tenant-a", Room: "doc-1"})
+
+	snapshot := engine.ConnectionsSnapshot()
+	if snapshot.ActiveRoomCount != 2 {
+		t.Fatalf("unexpected active room count: %d", snapshot.ActiveRoomCount)
+	}
+	if len(snapshot.Connections) != 2 || snapshot.Connections[0].ConnectionID != "conn-a" || snapshot.Connections[1].ConnectionID != "conn-b" {
+		t.Fatalf("connections should be sorted by id: %+v", snapshot.Connections)
+	}
+	if snapshot.Connections[0].Subject != "user-a" || snapshot.Connections[0].Tenant != "tenant-a" {
+		t.Fatalf("unexpected conn-a session metadata: %+v", snapshot.Connections[0])
+	}
+	if !reflect.DeepEqual(snapshot.Connections[0].Rooms, []string{"room-1", "room-2"}) {
+		t.Fatalf("unexpected conn-a rooms: %#v", snapshot.Connections[0].Rooms)
+	}
+	if len(snapshot.YJSConnections) != 2 || snapshot.YJSConnections[0].ConnectionID != "yjs-a" || snapshot.YJSConnections[1].ConnectionID != "yjs-b" {
+		t.Fatalf("yjs connections should be sorted by id: %+v", snapshot.YJSConnections)
+	}
+	if snapshot.YJSConnections[0].Subject != "editor-a" || snapshot.YJSConnections[0].Tenant != "tenant-a" || snapshot.YJSConnections[0].Room != "doc-1" {
+		t.Fatalf("unexpected yjs-a session metadata: %+v", snapshot.YJSConnections[0])
+	}
+
+	snapshot.Connections[0].Rooms[0] = "changed"
+	again := engine.ConnectionsSnapshot()
+	if !reflect.DeepEqual(again.Connections[0].Rooms, []string{"room-1", "room-2"}) {
+		t.Fatalf("connection snapshot rooms should be copied, got %#v", again.Connections[0].Rooms)
+	}
+
+	engine.DisconnectSession("conn-a", PresenceEventOptions{OriginNode: "node-a"})
+	engine.UnregisterYJSConn("yjs-a", "doc-1")
+	again = engine.ConnectionsSnapshot()
+	if len(again.Connections) != 1 || again.Connections[0].ConnectionID != "conn-b" {
+		t.Fatalf("expected disconnected json session to be removed, got %+v", again.Connections)
+	}
+	if len(again.YJSConnections) != 1 || again.YJSConnections[0].ConnectionID != "yjs-b" {
+		t.Fatalf("expected unregistered yjs session to be removed, got %+v", again.YJSConnections)
+	}
+}
+
 func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	engine := New()
 	engine.RegisterYJSConn("conn-1", "room-a")

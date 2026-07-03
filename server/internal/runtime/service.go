@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -153,19 +152,9 @@ type DevConnectionsSnapshot struct {
 	ActiveRoomCount int                        `json:"active_room_count"`
 }
 
-type DevConnectionSnapshot struct {
-	ConnectionID string   `json:"connection_id"`
-	Subject      string   `json:"subject,omitempty"`
-	Tenant       string   `json:"tenant,omitempty"`
-	Rooms        []string `json:"rooms"`
-}
+type DevConnectionSnapshot = roomengine.ConnectionSnapshot
 
-type DevYJSConnectionSnapshot struct {
-	ConnectionID string `json:"connection_id"`
-	Subject      string `json:"subject,omitempty"`
-	Tenant       string `json:"tenant,omitempty"`
-	Room         string `json:"room"`
-}
+type DevYJSConnectionSnapshot = roomengine.YJSConnectionSnapshot
 
 type DevStorageSnapshot struct {
 	NodeID      string          `json:"node_id"`
@@ -233,47 +222,14 @@ func (s *Service) DevStorageSnapshot(room string) DevStorageSnapshot {
 }
 
 func (s *Service) DevConnectionsSnapshot() DevConnectionsSnapshot {
-	engine := s.roomEngine()
-	s.mu.RLock()
-	connections := make([]DevConnectionSnapshot, 0, len(s.conns))
-	for connID, conn := range s.conns {
-		snapshot := DevConnectionSnapshot{
-			ConnectionID: connID,
-			Rooms:        engine.JoinedRooms(connID),
-		}
-		if conn.claims != nil {
-			snapshot.Subject = conn.claims.Subject
-			snapshot.Tenant = conn.claims.Tenant
-		}
-		connections = append(connections, snapshot)
-	}
-	yjsConnections := make([]DevYJSConnectionSnapshot, 0, len(s.yjsConns))
-	for connID, conn := range s.yjsConns {
-		snapshot := DevYJSConnectionSnapshot{
-			ConnectionID: connID,
-			Room:         conn.room,
-		}
-		if conn.claims != nil {
-			snapshot.Subject = conn.claims.Subject
-			snapshot.Tenant = conn.claims.Tenant
-		}
-		yjsConnections = append(yjsConnections, snapshot)
-	}
-	s.mu.RUnlock()
-
-	sort.Slice(connections, func(i int, j int) bool {
-		return connections[i].ConnectionID < connections[j].ConnectionID
-	})
-	sort.Slice(yjsConnections, func(i int, j int) bool {
-		return yjsConnections[i].ConnectionID < yjsConnections[j].ConnectionID
-	})
+	snapshot := s.roomEngine().ConnectionsSnapshot()
 
 	return DevConnectionsSnapshot{
 		NodeID:          s.cfg.NodeID,
-		Connections:     connections,
-		YJSConnections:  yjsConnections,
-		ActiveSockets:   len(connections) + len(yjsConnections),
-		ActiveRoomCount: engine.ActiveRoomCount(),
+		Connections:     snapshot.Connections,
+		YJSConnections:  snapshot.YJSConnections,
+		ActiveSockets:   len(snapshot.Connections) + len(snapshot.YJSConnections),
+		ActiveRoomCount: snapshot.ActiveRoomCount,
 	}
 }
 
@@ -1217,7 +1173,7 @@ func (s *Service) registerYJSConn(conn *yjsConn) {
 	s.mu.Lock()
 	s.yjsConns[conn.id] = conn
 	s.mu.Unlock()
-	s.roomEngine().RegisterYJSConn(conn.id, conn.room)
+	s.roomEngine().RegisterYJSSession(yjsSessionInfoFromConn(conn))
 }
 
 func (s *Service) unregisterYJSConn(conn *yjsConn) {
@@ -1268,6 +1224,18 @@ func (s *Service) applyConnectionTouch(touch *roomengine.ConnectionTouch) {
 func sessionInfoFromConn(conn *clientConn) roomengine.SessionInfo {
 	info := roomengine.SessionInfo{
 		ConnID: conn.id,
+	}
+	if conn.claims != nil {
+		info.Subject = conn.claims.Subject
+		info.Tenant = conn.claims.Tenant
+	}
+	return info
+}
+
+func yjsSessionInfoFromConn(conn *yjsConn) roomengine.YJSSessionInfo {
+	info := roomengine.YJSSessionInfo{
+		ConnID: conn.id,
+		Room:   conn.room,
 	}
 	if conn.claims != nil {
 		info.Subject = conn.claims.Subject
