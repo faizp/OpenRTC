@@ -110,6 +110,10 @@ const (
 	maxCommentMentions           = 100
 	maxCommentReactions          = 500
 	maxCommentReactionEmojiBytes = 64
+	maxRoomListQueryBytes        = 1024
+	maxRoomListQueryClauses      = 20
+	maxRoomListQueryPathDepth    = 8
+	maxRoomListQueryPathKeyBytes = 64
 )
 
 const (
@@ -153,6 +157,25 @@ type notificationEventPayload struct {
 	UserID         string                           `json:"userId"`
 	NotificationID string                           `json:"notificationId,omitempty"`
 	Notification   *cluster.InboxNotificationRecord `json:"notification,omitempty"`
+}
+
+type roomListQuery struct {
+	Clauses []roomListQueryClause
+}
+
+type roomListQueryField int
+
+const (
+	roomListQueryFieldID roomListQueryField = iota
+	roomListQueryFieldMetadata
+)
+
+type roomListQueryClause struct {
+	Field        roomListQueryField
+	MetadataPath []string
+	Value        any
+	Exists       bool
+	IDContains   string
 }
 
 type activeUsersResponse struct {
@@ -1347,8 +1370,13 @@ func (s *Service) handleListRooms(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
 		return
 	}
+	query, parseErr := parseRoomListQuery(r.URL.Query().Get("query"))
+	if parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
 
-	list, err := s.store.ListRooms(r.Context(), prefix, cursor, limit)
+	list, err := s.listRooms(r.Context(), prefix, cursor, limit, query)
 	if err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
@@ -1358,6 +1386,35 @@ func (s *Service) handleListRooms(w http.ResponseWriter, r *http.Request) {
 		response.NextCursor = strconv.FormatUint(list.NextCursor, 10)
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Service) listRooms(ctx context.Context, prefix string, cursor uint64, limit int, query roomListQuery) (cluster.RoomList, error) {
+	if !query.Active() {
+		return s.store.ListRooms(ctx, prefix, cursor, limit)
+	}
+	rooms := make([]cluster.RoomRecord, 0, limit)
+	scanCursor := cursor
+	nextCursor := uint64(0)
+	for {
+		list, err := s.store.ListRooms(ctx, prefix, scanCursor, limit)
+		if err != nil {
+			return cluster.RoomList{}, err
+		}
+		for _, room := range list.Rooms {
+			if query.Matches(room) {
+				rooms = append(rooms, room)
+				if len(rooms) >= limit {
+					break
+				}
+			}
+		}
+		nextCursor = list.NextCursor
+		if len(rooms) >= limit || nextCursor == 0 || nextCursor == scanCursor {
+			break
+		}
+		scanCursor = nextCursor
+	}
+	return cluster.RoomList{Rooms: rooms, NextCursor: nextCursor}, nil
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -2016,6 +2073,268 @@ func parseCursor(raw string) (uint64, error) {
 		return 0, errors.New("cursor must be an unsigned integer")
 	}
 	return cursor, nil
+}
+
+func parseRoomListQuery(raw string) (roomListQuery, *protocol.ParseError) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return roomListQuery{}, nil
+	}
+	if len(raw) > maxRoomListQueryBytes {
+		return roomListQuery{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query must be at most 1024 bytes"}
+	}
+	parts, parseErr := splitRoomListQuery(raw)
+	if parseErr != nil {
+		return roomListQuery{}, parseErr
+	}
+	if len(parts) > maxRoomListQueryClauses {
+		return roomListQuery{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query supports at most 20 clauses"}
+	}
+	query := roomListQuery{Clauses: make([]roomListQueryClause, 0, len(parts))}
+	for _, part := range parts {
+		clause, parseErr := parseRoomListQueryClause(part)
+		if parseErr != nil {
+			return roomListQuery{}, parseErr
+		}
+		query.Clauses = append(query.Clauses, clause)
+	}
+	return query, nil
+}
+
+func splitRoomListQuery(raw string) ([]string, *protocol.ParseError) {
+	parts := make([]string, 0)
+	start := -1
+	inQuote := false
+	escaped := false
+	for index := 0; index < len(raw); index++ {
+		ch := raw[index]
+		if start == -1 {
+			if isRoomQuerySpace(ch) {
+				continue
+			}
+			start = index
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inQuote {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if isRoomQuerySpace(ch) && !inQuote {
+			parts = append(parts, raw[start:index])
+			start = -1
+		}
+	}
+	if escaped || inQuote {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query contains an unterminated quoted value"}
+	}
+	if start != -1 {
+		parts = append(parts, raw[start:])
+	}
+	if len(parts) == 0 {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query must include at least one clause"}
+	}
+	return parts, nil
+}
+
+func parseRoomListQueryClause(raw string) (roomListQueryClause, *protocol.ParseError) {
+	field, value, ok := strings.Cut(raw, ":")
+	if !ok || field == "" || value == "" {
+		return roomListQueryClause{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query clauses must use field:value"}
+	}
+	if field == "id" {
+		idValue, parseErr := parseRoomQueryStringValue(value)
+		if parseErr != nil {
+			return roomListQueryClause{}, parseErr
+		}
+		return roomListQueryClause{Field: roomListQueryFieldID, IDContains: idValue}, nil
+	}
+	path, parseErr := parseRoomQueryMetadataPath(field)
+	if parseErr != nil {
+		return roomListQueryClause{}, parseErr
+	}
+	if value == "*" {
+		return roomListQueryClause{Field: roomListQueryFieldMetadata, MetadataPath: path, Exists: true}, nil
+	}
+	parsedValue, parseErr := parseRoomQueryScalarValue(value)
+	if parseErr != nil {
+		return roomListQueryClause{}, parseErr
+	}
+	return roomListQueryClause{Field: roomListQueryFieldMetadata, MetadataPath: path, Value: parsedValue}, nil
+}
+
+func parseRoomQueryStringValue(raw string) (string, *protocol.ParseError) {
+	if raw == "*" {
+		return "", &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "id room query does not support wildcard exists"}
+	}
+	if strings.HasPrefix(raw, "\"") {
+		var value string
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return "", &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query string value must be valid JSON string syntax"}
+		}
+		if value == "" {
+			return "", &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query string value must not be empty"}
+		}
+		return value, nil
+	}
+	return raw, nil
+}
+
+func parseRoomQueryScalarValue(raw string) (any, *protocol.ParseError) {
+	if strings.HasPrefix(raw, "\"") {
+		var value string
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query string value must be valid JSON string syntax"}
+		}
+		return value, nil
+	}
+	switch raw {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	case "null":
+		return nil, nil
+	}
+	if strings.HasPrefix(raw, "{") || strings.HasPrefix(raw, "[") {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query values must be scalar"}
+	}
+	if number, err := strconv.ParseFloat(raw, 64); err == nil {
+		return number, nil
+	}
+	return raw, nil
+}
+
+func parseRoomQueryMetadataPath(raw string) ([]string, *protocol.ParseError) {
+	if strings.HasPrefix(raw, "metadata.") {
+		path := strings.Split(strings.TrimPrefix(raw, "metadata."), ".")
+		return validateRoomQueryMetadataPath(path)
+	}
+	if strings.HasPrefix(raw, "metadata[") {
+		return parseRoomQueryBracketPath(raw)
+	}
+	return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query fields must be id or metadata paths"}
+}
+
+func parseRoomQueryBracketPath(raw string) ([]string, *protocol.ParseError) {
+	rest := strings.TrimPrefix(raw, "metadata")
+	path := make([]string, 0, 2)
+	for rest != "" {
+		if !strings.HasPrefix(rest, "[\"") {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "metadata bracket paths must use metadata[\"key\"] syntax"}
+		}
+		rest = strings.TrimPrefix(rest, "[\"")
+		end := strings.Index(rest, "\"]")
+		if end < 0 {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "metadata bracket paths must use metadata[\"key\"] syntax"}
+		}
+		path = append(path, rest[:end])
+		rest = rest[end+2:]
+	}
+	return validateRoomQueryMetadataPath(path)
+}
+
+func validateRoomQueryMetadataPath(path []string) ([]string, *protocol.ParseError) {
+	if len(path) == 0 || len(path) > maxRoomListQueryPathDepth {
+		return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "metadata query path depth must be between 1 and 8"}
+	}
+	for _, key := range path {
+		if !isRoomQueryPathKey(key) {
+			return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "metadata query path keys must be 1-64 characters using letters, numbers, underscore, or dash"}
+		}
+	}
+	return path, nil
+}
+
+func (q roomListQuery) Active() bool {
+	return len(q.Clauses) > 0
+}
+
+func (q roomListQuery) Matches(room cluster.RoomRecord) bool {
+	for _, clause := range q.Clauses {
+		if !clause.Matches(room) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c roomListQueryClause) Matches(room cluster.RoomRecord) bool {
+	switch c.Field {
+	case roomListQueryFieldID:
+		return strings.Contains(room.ID, c.IDContains)
+	case roomListQueryFieldMetadata:
+		value, ok := roomMetadataValue(room.Metadata, c.MetadataPath)
+		if c.Exists {
+			return ok
+		}
+		return ok && roomQueryScalarEqual(value, c.Value)
+	default:
+		return false
+	}
+}
+
+func roomMetadataValue(metadata json.RawMessage, path []string) (any, bool) {
+	if len(metadata) == 0 || !json.Valid(metadata) {
+		return nil, false
+	}
+	var current any
+	if err := json.Unmarshal(metadata, &current); err != nil {
+		return nil, false
+	}
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[key]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func roomQueryScalarEqual(actual any, expected any) bool {
+	switch actualValue := actual.(type) {
+	case string:
+		expectedValue, ok := expected.(string)
+		return ok && actualValue == expectedValue
+	case float64:
+		expectedValue, ok := expected.(float64)
+		return ok && actualValue == expectedValue
+	case bool:
+		expectedValue, ok := expected.(bool)
+		return ok && actualValue == expectedValue
+	case nil:
+		return expected == nil
+	default:
+		return false
+	}
+}
+
+func isRoomQuerySpace(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+}
+
+func isRoomQueryPathKey(key string) bool {
+	if key == "" || len(key) > maxRoomListQueryPathKeyBytes {
+		return false
+	}
+	for index := 0; index < len(key); index++ {
+		ch := key[index]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseNotificationListLimit(raw string) (int, error) {

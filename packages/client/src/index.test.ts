@@ -1099,9 +1099,17 @@ assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
 const createdRoom = await adminClient.createRoom({ id: "tenant-a:room-1", metadata: { title: "Room" } });
 assert.deepEqual(createdRoom, { id: "tenant-a:room-1", metadata: { title: "Room" } });
 
-const rooms = await adminClient.listRooms({ prefix: "tenant-a:", limit: 10, cursor: "0" });
+const rooms = await adminClient.listRooms({
+  prefix: "tenant-a:",
+  limit: 10,
+  cursor: "0",
+  query: `metadata.title:"Room" metadata.public:true`,
+});
 assert.deepEqual(rooms, { rooms: [{ id: "tenant-a:room-1" }], next_cursor: "1" });
-assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms?prefix=tenant-a%3A&limit=10&cursor=0");
+assert.equal(
+  adminCalls.at(-1)?.input,
+  "http://localhost:8090/admin/v1/rooms?prefix=tenant-a%3A&limit=10&cursor=0&query=metadata.title%3A%22Room%22+metadata.public%3Atrue",
+);
 
 const activeUsers = await adminClient.activeUsers("tenant-a:room-1");
 assert.deepEqual(activeUsers.data, [{ type: "user", connection_id: "conn-1", id: "user-1" }]);

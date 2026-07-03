@@ -234,6 +234,7 @@ const admin = new OpenRTCAdminClient({
 
 await admin.createRoom({
   id: "tenant-a:canvas-1",
+  metadata: { type: "whiteboard", archived: false },
   defaultAccesses: accessMatrixPermissions({
     room: "read",
     storage: "read",
@@ -246,6 +247,12 @@ await admin.createRoom({
       comments: "write",
     }),
   },
+});
+
+const editableWhiteboards = await admin.listRooms({
+  prefix: "tenant-a:",
+  query: `metadata.type:whiteboard metadata.archived:false`,
+  limit: 50,
 });
 
 await admin.setPresence(

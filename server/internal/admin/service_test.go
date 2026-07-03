@@ -243,6 +243,27 @@ func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {
 	if _, err := parseCursor("not-a-number"); err == nil {
 		t.Fatalf("expected non-numeric cursor to fail")
 	}
+
+	query, parseErr := parseRoomListQuery(`id:room metadata.status:active metadata.priority:2 metadata.public:true metadata.owner:* metadata["kind"]:"white board"`)
+	if parseErr != nil {
+		t.Fatalf("expected room query to parse: %v", parseErr)
+	}
+	matchingRoom := cluster.RoomRecord{
+		ID:       "tenant-a:room-1",
+		Metadata: json.RawMessage(`{"status":"active","priority":2,"public":true,"owner":"user-1","kind":"white board"}`),
+	}
+	if !query.Matches(matchingRoom) {
+		t.Fatalf("expected query to match room")
+	}
+	if query.Matches(cluster.RoomRecord{ID: "tenant-a:room-2", Metadata: json.RawMessage(`{"status":"active","priority":2,"public":false,"owner":"user-1","kind":"white board"}`)}) {
+		t.Fatalf("expected bool mismatch to fail query")
+	}
+	if _, parseErr := parseRoomListQuery("metadata.status"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected malformed query to fail, got %v", parseErr)
+	}
+	if _, parseErr := parseRoomListQuery("metadata.bad/key:value"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected unsafe metadata path to fail, got %v", parseErr)
+	}
 }
 
 func TestStorageDocumentParsing(t *testing.T) {
@@ -2133,6 +2154,23 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	if store.listRoomsPrefix != "tenant-a:" || store.listRoomsCursor != 3 || store.listRoomsLimit != 10 {
 		t.Fatalf("unexpected list parameters: prefix=%q cursor=%d limit=%d", store.listRoomsPrefix, store.listRoomsCursor, store.listRoomsLimit)
 	}
+	store.listRooms = cluster.RoomList{
+		Rooms: []cluster.RoomRecord{
+			room,
+			{ID: "tenant-a:room-2", Metadata: json.RawMessage(`{"title":"Archived","status":"archived"}`)},
+		},
+	}
+	queryResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms?prefix=tenant-a%3A&query=metadata.title%3A%22Draft%22", "")
+	if queryResp.Code != http.StatusOK {
+		t.Fatalf("expected query rooms 200, got %d body=%q", queryResp.Code, queryResp.Body.String())
+	}
+	var queryList roomListResponse
+	if err := json.NewDecoder(queryResp.Body).Decode(&queryList); err != nil {
+		t.Fatalf("decode query rooms response: %v", err)
+	}
+	if len(queryList.Rooms) != 1 || queryList.Rooms[0].ID != "tenant-a:room-1" {
+		t.Fatalf("unexpected query list response: %+v", queryList)
+	}
 
 	getRoomResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1", "")
 	if getRoomResp.Code != http.StatusOK {
@@ -2268,6 +2306,10 @@ func TestAdminRoomAndStorageErrorBranches(t *testing.T) {
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms?cursor=bad", "")
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid room list cursor 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms?query=metadata.bad%2Fkey%3Avalue", "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid room query 400, got %d", resp.Code)
 	}
 	roomReq := httptest.NewRequest(http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1", nil)
 	roomReq.URL.Path = "/v1/rooms/%zz"

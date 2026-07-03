@@ -1963,7 +1963,7 @@ export class OpenRTCAdminClient {
     });
   }
 
-  listRooms(options: { prefix?: string; limit?: number; cursor?: string } = {}): Promise<OpenRTCAdminRoomList> {
+  listRooms(options: { prefix?: string; limit?: number; cursor?: string; query?: string } = {}): Promise<OpenRTCAdminRoomList> {
     return this.request<OpenRTCAdminRoomList>(this.pathWithQuery("/v1/rooms", options));
   }
 
