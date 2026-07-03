@@ -1053,7 +1053,12 @@ func (s *Service) storeYJSEvent(event cluster.YJSEvent) (cluster.YJSEvent, error
 }
 
 func (s *Service) broadcastYJSEvent(event cluster.YJSEvent) error {
-	targetIDs := s.roomEngine().YJSTargetIDs(event.Room, event.OriginConnID)
+	return s.broadcastYJSFanout(s.roomEngine().YJSFanout(event))
+}
+
+func (s *Service) broadcastYJSFanout(fanout roomengine.YJSFanout) error {
+	event := fanout.Event
+	targetIDs := fanout.TargetConnIDs
 	s.mu.RLock()
 	targets := make([]*yjsConn, 0, len(targetIDs))
 	for _, connID := range targetIDs {

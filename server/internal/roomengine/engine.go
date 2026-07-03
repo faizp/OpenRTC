@@ -87,6 +87,11 @@ type StorageFanout struct {
 	TargetConnIDs []string
 }
 
+type YJSFanout struct {
+	Event         cluster.YJSEvent
+	TargetConnIDs []string
+}
+
 func New() *Engine {
 	return &Engine{
 		rooms:     make(map[string]map[string]struct{}),
@@ -349,6 +354,20 @@ func (e *Engine) YJSTargetIDs(room string, excludeConnID string) []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.yjsTargetIDsLocked(room, excludeConnID)
+}
+
+func (e *Engine) YJSFanout(event cluster.YJSEvent) YJSFanout {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return YJSFanout{
+		Event:         cloneYJSEvent(event),
+		TargetConnIDs: e.yjsTargetIDsLocked(event.Room, event.OriginConnID),
+	}
+}
+
+func (e *Engine) yjsTargetIDsLocked(room string, excludeConnID string) []string {
 	members := make([]string, 0, len(e.yjsRooms[room]))
 	for connID := range e.yjsRooms[room] {
 		if excludeConnID != "" && connID == excludeConnID {
@@ -555,6 +574,11 @@ func clonePresenceEvent(event cluster.PresenceEvent) cluster.PresenceEvent {
 
 func clonePublishedEvent(event cluster.PublishedEvent) cluster.PublishedEvent {
 	event.Payload = append(json.RawMessage(nil), event.Payload...)
+	return event
+}
+
+func cloneYJSEvent(event cluster.YJSEvent) cluster.YJSEvent {
+	event.Update = append([]byte(nil), event.Update...)
 	return event
 }
 

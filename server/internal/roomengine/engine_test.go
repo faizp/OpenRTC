@@ -220,13 +220,37 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	engine := New()
 	engine.RegisterYJSConn("conn-1", "room-a")
 	engine.RegisterYJSConn("conn-2", "room-a")
+	engine.RegisterYJSConn("conn-3", "room-a")
 
-	if got := engine.YJSTargetIDs("room-a", "conn-1"); !reflect.DeepEqual(got, []string{"conn-2"}) {
+	if got := engine.YJSTargetIDs("room-a", "conn-1"); !reflect.DeepEqual(got, []string{"conn-2", "conn-3"}) {
 		t.Fatalf("unexpected yjs targets: %#v", got)
 	}
+	fanoutUpdate := []byte("fanout-update")
+	fanout := engine.YJSFanout(cluster.YJSEvent{
+		Room:         "room-a",
+		Kind:         cluster.YJSEventSubdocDiff,
+		Update:       fanoutUpdate,
+		OriginConnID: "conn-2",
+		OriginNode:   "node-a",
+		Sequence:     9,
+	})
+	if !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-1", "conn-3"}) {
+		t.Fatalf("unexpected yjs fanout targets: %#v", fanout.TargetConnIDs)
+	}
+	if fanout.Event.Kind != cluster.YJSEventSubdocDiff || fanout.Event.Sequence != 9 || fanout.Event.OriginNode != "node-a" {
+		t.Fatalf("unexpected yjs fanout event: %+v", fanout.Event)
+	}
+	fanoutUpdate[0] = 'X'
+	if string(fanout.Event.Update) != "fanout-update" {
+		t.Fatalf("yjs fanout update should be copied, got %q", fanout.Event.Update)
+	}
 	engine.UnregisterYJSConn("conn-2", "room-a")
+	if got := engine.YJSTargetIDs("room-a", "conn-1"); !reflect.DeepEqual(got, []string{"conn-3"}) {
+		t.Fatalf("unexpected yjs targets after unregister: %#v", got)
+	}
+	engine.UnregisterYJSConn("conn-3", "room-a")
 	if got := engine.YJSTargetIDs("room-a", "conn-1"); len(got) != 0 {
-		t.Fatalf("expected no yjs targets after unregister, got %#v", got)
+		t.Fatalf("expected no yjs targets after unregistering peers, got %#v", got)
 	}
 
 	update := []byte("update-1")
