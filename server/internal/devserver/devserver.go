@@ -63,6 +63,21 @@ type managedService struct {
 	closeFn func() error
 }
 
+type storageGetter interface {
+	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
+}
+
+type devStorageSnapshot struct {
+	Room    string                         `json:"room"`
+	Durable devStorageDocumentSnapshot     `json:"durable"`
+	Runtime *runtimeapp.DevStorageSnapshot `json:"runtime,omitempty"`
+}
+
+type devStorageDocumentSnapshot struct {
+	Found    bool            `json:"found"`
+	Document json.RawMessage `json:"document,omitempty"`
+}
+
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 	output := stderr
 	for _, arg := range args {
@@ -202,6 +217,7 @@ func run(ctx context.Context, opts options) error {
 	mux.HandleFunc("/config", handleDevConfig(opts))
 	mux.HandleFunc("/dev/connections", handleConnections(store))
 	mux.HandleFunc("/dev/sockets", handleSockets(currentRuntimeService))
+	mux.HandleFunc("/dev/storage", handleStorage(store, currentRuntimeService))
 	mux.HandleFunc("/dev/crash/runtime", handleRestart(runtimeSvc))
 	mux.HandleFunc("/dev/crash/admin", handleRestart(adminSvc))
 	mux.Handle("/admin/", reverseProxy("/admin", fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort)))
@@ -236,6 +252,7 @@ func run(ctx context.Context, opts options) error {
 	log.Printf("Local public key: %s", localPublicKey)
 	log.Printf("Seed rooms:      %s", strings.Join(opts.seedRooms, ","))
 	log.Printf("Dev sockets:     http://%s:%d/dev/sockets", opts.host, opts.appPort)
+	log.Printf("Dev storage:     http://%s:%d/dev/storage?room=%s", opts.host, opts.appPort, firstSeedRoom(opts.seedRooms))
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("dev server exited: %w", err)
@@ -462,6 +479,42 @@ func handleSockets(currentRuntimeService func() *runtimeapp.Service) http.Handle
 	}
 }
 
+func handleStorage(store storageGetter, currentRuntimeService func() *runtimeapp.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		room := strings.TrimSpace(r.URL.Query().Get("room"))
+		if room == "" {
+			http.Error(w, "room query parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		snapshot := devStorageSnapshot{Room: room}
+		document, err := store.GetStorage(r.Context(), room)
+		if err != nil {
+			if !errors.Is(err, cluster.ErrStorageNotFound) {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			snapshot.Durable = devStorageDocumentSnapshot{
+				Found:    true,
+				Document: document,
+			}
+		}
+
+		if service := currentRuntimeService(); service != nil {
+			runtimeSnapshot := service.DevStorageSnapshot(room)
+			snapshot.Runtime = &runtimeSnapshot
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snapshot)
+	}
+}
+
 func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room string) runtimeapp.DevConnectionsSnapshot {
 	filtered := runtimeapp.DevConnectionsSnapshot{
 		NodeID:         snapshot.NodeID,
@@ -484,6 +537,13 @@ func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room strin
 	filtered.ActiveSockets = len(filtered.Connections) + len(filtered.YJSConnections)
 	filtered.ActiveRoomCount = snapshot.ActiveRoomCount
 	return filtered
+}
+
+func firstSeedRoom(seedRooms []string) string {
+	if len(seedRooms) == 0 {
+		return "demo:room-1"
+	}
+	return seedRooms[0]
 }
 
 func handleRestart(service *managedService) http.HandlerFunc {

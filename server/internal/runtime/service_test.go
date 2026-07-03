@@ -1283,6 +1283,33 @@ func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	}
 }
 
+func TestRuntimeDevStorageSnapshot(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	missing := service.DevStorageSnapshot("tenant-a:missing")
+	if missing.NodeID != "node-a" || missing.Room != "tenant-a:missing" || missing.Found || missing.StoreBacked {
+		t.Fatalf("unexpected missing storage snapshot: %+v", missing)
+	}
+
+	if _, err := service.roomEngine().SetStorage("tenant-a:room-1", json.RawMessage(`{"title":"Draft"}`), 0); err != nil {
+		t.Fatalf("set storage: %v", err)
+	}
+	service.store = &fakeRuntimeStore{}
+	snapshot := service.DevStorageSnapshot("tenant-a:room-1")
+	if snapshot.NodeID != "node-a" || snapshot.Room != "tenant-a:room-1" || !snapshot.Found || !snapshot.StoreBacked {
+		t.Fatalf("unexpected storage snapshot metadata: %+v", snapshot)
+	}
+	if string(snapshot.Document) != `{"title":"Draft"}` {
+		t.Fatalf("unexpected storage snapshot document: %s", snapshot.Document)
+	}
+	snapshot.Document[0] = 'X'
+	again := service.DevStorageSnapshot("tenant-a:room-1")
+	if string(again.Document) != `{"title":"Draft"}` {
+		t.Fatalf("storage snapshot should be defensively copied, got %s", again.Document)
+	}
+}
+
 func TestRuntimeCloseClosesActiveSockets(t *testing.T) {
 	service := newRuntimeUnitService(t)
 

@@ -2,6 +2,7 @@ package devserver
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/openrtc/openrtc/server/internal/cluster"
 	"github.com/openrtc/openrtc/server/internal/config"
 	runtimeapp "github.com/openrtc/openrtc/server/internal/runtime"
 )
@@ -206,6 +208,62 @@ func TestHandleSocketsReportsRuntimeSnapshot(t *testing.T) {
 	}
 }
 
+func TestHandleStorageReportsDurableAndRuntimeSnapshots(t *testing.T) {
+	service := &runtimeapp.Service{}
+	handler := handleStorage(&fakeDevStorageStore{document: json.RawMessage(`{"title":"Durable"}`)}, func() *runtimeapp.Service {
+		return service
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/dev/storage?room=tenant-a:room-1", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devStorageSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode storage response: %v", err)
+	}
+	if body.Room != "tenant-a:room-1" || !body.Durable.Found || string(body.Durable.Document) != `{"title":"Durable"}` {
+		t.Fatalf("unexpected durable storage snapshot: %+v", body)
+	}
+	if body.Runtime == nil || body.Runtime.Room != "tenant-a:room-1" || body.Runtime.Found {
+		t.Fatalf("unexpected runtime storage snapshot: %+v", body.Runtime)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/storage", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing room 400, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/storage?room=tenant-a:room-1", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleStorageReportsMissingDurableSnapshot(t *testing.T) {
+	handler := handleStorage(&fakeDevStorageStore{err: cluster.ErrStorageNotFound}, func() *runtimeapp.Service {
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/storage?room=tenant-a:missing", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected missing durable storage to return 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devStorageSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode storage response: %v", err)
+	}
+	if body.Room != "tenant-a:missing" || body.Durable.Found || body.Runtime != nil {
+		t.Fatalf("unexpected missing durable storage snapshot: %+v", body)
+	}
+}
+
 func TestFilterSocketSnapshotByRoom(t *testing.T) {
 	snapshot := runtimeapp.DevConnectionsSnapshot{
 		NodeID:          "node-a",
@@ -271,6 +329,21 @@ func stringSliceClaim(value any) []string {
 		}
 	}
 	return out
+}
+
+type fakeDevStorageStore struct {
+	document json.RawMessage
+	err      error
+}
+
+func (s *fakeDevStorageStore) GetStorage(context.Context, string) (json.RawMessage, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.document == nil {
+		return nil, cluster.ErrStorageNotFound
+	}
+	return append(json.RawMessage(nil), s.document...), nil
 }
 
 func hasAudience(value any, audience string) bool {

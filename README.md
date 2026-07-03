@@ -50,6 +50,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:8090` for the admin API.
 - `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.
 - `http://127.0.0.1:3000/dev/sockets` for local runtime WebSocket/Yjs socket inspection.
+- `http://127.0.0.1:3000/dev/storage?room=demo:room-1` for durable and runtime-observed room storage inspection.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services.
 - The Ops tab includes a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
 

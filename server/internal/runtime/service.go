@@ -158,6 +158,14 @@ type DevYJSConnectionSnapshot struct {
 	Room         string `json:"room"`
 }
 
+type DevStorageSnapshot struct {
+	NodeID      string          `json:"node_id"`
+	Room        string          `json:"room"`
+	Found       bool            `json:"found"`
+	StoreBacked bool            `json:"store_backed"`
+	Document    json.RawMessage `json:"document,omitempty"`
+}
+
 func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
@@ -198,6 +206,21 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 	}
 
 	return service, nil
+}
+
+func (s *Service) DevStorageSnapshot(room string) DevStorageSnapshot {
+	snapshot := DevStorageSnapshot{
+		NodeID:      s.cfg.NodeID,
+		Room:        room,
+		StoreBacked: s.store != nil,
+	}
+	document, err := s.roomEngine().GetStorage(room)
+	if err != nil {
+		return snapshot
+	}
+	snapshot.Found = true
+	snapshot.Document = document
+	return snapshot
 }
 
 func (s *Service) DevConnectionsSnapshot() DevConnectionsSnapshot {
