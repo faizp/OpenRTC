@@ -471,7 +471,16 @@ func TestEngineEventAndStorageFanouts(t *testing.T) {
 
 func TestEngineNotificationFanoutTargetsSessionsBySubject(t *testing.T) {
 	engine := New()
-	engine.RegisterSession(SessionInfo{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"})
+	touch := engine.RegisterSession(SessionInfo{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"})
+	if touch == nil || *touch != (ConnectionTouch{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"}) {
+		t.Fatalf("unexpected register touch intent: %+v", touch)
+	}
+	if touch := engine.TouchSession("conn-b"); touch == nil || *touch != (ConnectionTouch{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"}) {
+		t.Fatalf("unexpected session touch intent: %+v", touch)
+	}
+	if touch := engine.TouchSession("missing"); touch != nil {
+		t.Fatalf("missing session should not produce touch intent: %+v", touch)
+	}
 	engine.RegisterSession(SessionInfo{ConnID: "conn-a", Subject: "user-1", Tenant: "tenant-a"})
 	engine.RegisterSession(SessionInfo{ConnID: "conn-other", Subject: "user-2", Tenant: "tenant-a"})
 	engine.RegisterSession(SessionInfo{ConnID: "conn-anonymous", Tenant: "tenant-a"})
@@ -502,6 +511,9 @@ func TestEngineNotificationFanoutTargetsSessionsBySubject(t *testing.T) {
 	disconnect := engine.DisconnectSession("conn-a", PresenceEventOptions{OriginNode: "node-a"})
 	if disconnect.Cleanup == nil || disconnect.Cleanup.ConnID != "conn-a" {
 		t.Fatalf("unexpected disconnect cleanup: %+v", disconnect.Cleanup)
+	}
+	if touch := engine.TouchSession("conn-a"); touch != nil {
+		t.Fatalf("disconnected session should not produce touch intent: %+v", touch)
 	}
 	fanout = engine.NotificationFanout(cluster.PublishedEvent{Event: "openrtc.notifications.inbox.read"}, "user-1")
 	if !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-b"}) {

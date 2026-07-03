@@ -2015,9 +2015,13 @@ func TestRuntimeBackgroundLoopsTickAndStop(t *testing.T) {
 		done:    make(chan struct{}),
 	}
 	conn.claims.Subject = "user-1"
+	service.roomEngine().RegisterSession(sessionInfoFromConn(conn))
 	go service.heartbeatLoop(conn)
 	if got := receiveRuntimeTestValue(t, store.touchCh, "touch connection"); got != conn.id {
 		t.Fatalf("unexpected touched connection: %s", got)
+	}
+	if store.touchedMeta.Subject != "user-1" || store.touchedMeta.Tenant != "tenant-a" {
+		t.Fatalf("unexpected touched heartbeat metadata: %+v", store.touchedMeta)
 	}
 	close(conn.done)
 	_ = clientWS.Close()

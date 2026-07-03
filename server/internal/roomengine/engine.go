@@ -89,6 +89,12 @@ type SessionInfo struct {
 	Tenant  string
 }
 
+type ConnectionTouch struct {
+	ConnID  string
+	Subject string
+	Tenant  string
+}
+
 type ConnectionCleanup struct {
 	ConnID string
 }
@@ -175,14 +181,26 @@ func New() *Engine {
 	}
 }
 
-func (e *Engine) RegisterSession(info SessionInfo) {
+func (e *Engine) RegisterSession(info SessionInfo) *ConnectionTouch {
 	if info.ConnID == "" {
-		return
+		return nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.sessions[info.ConnID] = info
+	return newConnectionTouch(info)
+}
+
+func (e *Engine) TouchSession(connID string) *ConnectionTouch {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	info, ok := e.sessions[connID]
+	if !ok {
+		return nil
+	}
+	return newConnectionTouch(info)
 }
 
 func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, error) {
@@ -805,6 +823,14 @@ func newMembershipMutation(kind string, connID string, room string) *MembershipM
 
 func newConnectionCleanup(connID string) *ConnectionCleanup {
 	return &ConnectionCleanup{ConnID: connID}
+}
+
+func newConnectionTouch(info SessionInfo) *ConnectionTouch {
+	return &ConnectionTouch{
+		ConnID:  info.ConnID,
+		Subject: info.Subject,
+		Tenant:  info.Tenant,
+	}
 }
 
 func cloneStorageOperations(operations []cluster.JSONPatchOperation) []cluster.JSONPatchOperation {

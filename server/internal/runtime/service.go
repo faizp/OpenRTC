@@ -1203,21 +1203,14 @@ func (s *Service) publishStorageUpdate(room string, update roomengine.StorageMut
 }
 
 func (s *Service) registerConn(conn *clientConn) {
-	s.roomEngine().RegisterSession(sessionInfoFromConn(conn))
+	touch := s.roomEngine().RegisterSession(sessionInfoFromConn(conn))
 	s.mu.Lock()
 	s.conns[conn.id] = conn
 	s.syncStatsLocked()
 	s.mu.Unlock()
 	s.metrics.ActiveConnections.Inc()
 
-	if s.store != nil {
-		_ = s.store.TouchConnection(s.ctx, conn.id, cluster.ConnectionMeta{
-			NodeID:      s.cfg.NodeID,
-			Subject:     conn.claims.Subject,
-			Tenant:      conn.claims.Tenant,
-			ConnectedAt: time.Now(),
-		})
-	}
+	s.applyConnectionTouch(touch)
 }
 
 func (s *Service) registerYJSConn(conn *yjsConn) {
@@ -1258,6 +1251,18 @@ func (s *Service) applyConnectionCleanup(cleanup *roomengine.ConnectionCleanup) 
 		return
 	}
 	_ = s.store.CleanupConnection(s.ctx, s.cfg.NodeID, cleanup.ConnID)
+}
+
+func (s *Service) applyConnectionTouch(touch *roomengine.ConnectionTouch) {
+	if s.store == nil || touch == nil {
+		return
+	}
+	_ = s.store.TouchConnection(s.ctx, touch.ConnID, cluster.ConnectionMeta{
+		NodeID:      s.cfg.NodeID,
+		Subject:     touch.Subject,
+		Tenant:      touch.Tenant,
+		ConnectedAt: time.Now(),
+	})
 }
 
 func sessionInfoFromConn(conn *clientConn) roomengine.SessionInfo {
@@ -1304,14 +1309,7 @@ func (s *Service) heartbeatLoop(conn *clientConn) {
 			_ = conn.ws.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(writeWait))
 			conn.writeMu.Unlock()
 
-			if s.store != nil {
-				_ = s.store.TouchConnection(s.ctx, conn.id, cluster.ConnectionMeta{
-					NodeID:      s.cfg.NodeID,
-					Subject:     conn.claims.Subject,
-					Tenant:      conn.claims.Tenant,
-					ConnectedAt: time.Now(),
-				})
-			}
+			s.applyConnectionTouch(s.roomEngine().TouchSession(conn.id))
 		}
 	}
 }
