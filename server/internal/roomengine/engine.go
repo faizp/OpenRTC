@@ -74,6 +74,7 @@ type Engine struct {
 
 type memoryYJSDocument struct {
 	Snapshot           []byte
+	SnapshotHash       string
 	SnapshotCheckpoint int64
 	Updates            [][]byte
 	UpdateSequences    []int64
@@ -1234,6 +1235,7 @@ func (e *Engine) LoadYJSDocument(room string) cluster.YJSDocument {
 
 	out := cluster.YJSDocument{
 		Snapshot:           append([]byte(nil), doc.Snapshot...),
+		SnapshotHash:       doc.SnapshotHash,
 		SnapshotCheckpoint: doc.SnapshotCheckpoint,
 		Updates:            make([][]byte, 0, len(doc.Updates)),
 		UpdateSequences:    append([]int64(nil), doc.UpdateSequences...),
@@ -1265,6 +1267,7 @@ func (e *Engine) StoreYJSPersistence(plan YJSPersistencePlan) cluster.YJSEvent {
 	}
 	if plan.Mode == YJSPersistenceStoreSnapshot {
 		doc.Snapshot = append([]byte(nil), event.Update...)
+		doc.SnapshotHash = cluster.YJSSnapshotHash(event.Update)
 		return event
 	}
 

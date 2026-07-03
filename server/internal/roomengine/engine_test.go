@@ -1042,6 +1042,9 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	if string(doc.Snapshot) != "snapshot-1" {
 		t.Fatalf("unexpected snapshot: %q", doc.Snapshot)
 	}
+	if doc.SnapshotHash != cluster.YJSSnapshotHash([]byte("snapshot-1")) {
+		t.Fatalf("unexpected snapshot hash: %q", doc.SnapshotHash)
+	}
 	if len(doc.Updates) != 2 || string(doc.Updates[0]) != "update-1" || string(doc.Updates[1]) != "update-2" {
 		t.Fatalf("unexpected updates: %#v", doc.Updates)
 	}
@@ -1057,7 +1060,7 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	doc.UpdateSequences[0] = 99
 	doc.UpdateKinds[0] = cluster.YJSEventSnapshot
 	reloaded := engine.LoadYJSDocument("room-a")
-	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateSequences[0] != 1 || reloaded.UpdateKinds[0] != cluster.YJSEventUpdate {
+	if string(reloaded.Snapshot) != "snapshot-1" || reloaded.SnapshotHash != cluster.YJSSnapshotHash([]byte("snapshot-1")) || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateSequences[0] != 1 || reloaded.UpdateKinds[0] != cluster.YJSEventUpdate {
 		t.Fatalf("document load should return defensive copies, got %+v", reloaded)
 	}
 }

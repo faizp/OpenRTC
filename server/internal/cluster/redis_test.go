@@ -642,6 +642,9 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	if string(doc.Snapshot) != "snapshot-through-1" || doc.SnapshotCheckpoint != seq1 {
 		t.Fatalf("unexpected compacted snapshot: checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
 	}
+	if doc.SnapshotHash != YJSSnapshotHash([]byte("snapshot-through-1")) {
+		t.Fatalf("unexpected compacted snapshot hash: %q", doc.SnapshotHash)
+	}
 	assertYJSUpdates(t, doc, []string{"update-2", "subdoc-update"}, []int64{2, 3}, []YJSEventKind{YJSEventUpdate, YJSEventSubdocUpdate})
 
 	if err := store.StoreYJSSnapshot(ctx, "tenant-a:doc-1", []byte("client-snapshot")); err != nil {
@@ -653,6 +656,9 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	}
 	if string(doc.Snapshot) != "client-snapshot" || doc.SnapshotCheckpoint != seq1 {
 		t.Fatalf("client snapshot should preserve checkpoint, got checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
+	}
+	if doc.SnapshotHash != YJSSnapshotHash([]byte("client-snapshot")) {
+		t.Fatalf("unexpected client snapshot hash: %q", doc.SnapshotHash)
 	}
 	assertYJSUpdates(t, doc, []string{"update-2", "subdoc-update"}, []int64{2, 3}, []YJSEventKind{YJSEventUpdate, YJSEventSubdocUpdate})
 
@@ -672,6 +678,9 @@ func TestRedisYJSDocumentSequencedCompaction(t *testing.T) {
 	}
 	if string(doc.Snapshot) != "snapshot-through-3" || doc.SnapshotCheckpoint != seq3 {
 		t.Fatalf("unexpected final snapshot: checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
+	}
+	if doc.SnapshotHash != YJSSnapshotHash([]byte("snapshot-through-3")) {
+		t.Fatalf("unexpected final snapshot hash: %q", doc.SnapshotHash)
 	}
 	assertYJSUpdates(t, doc, nil, nil, nil)
 }
@@ -703,6 +712,9 @@ func TestRedisYJSDocumentLoadsLegacyUpdates(t *testing.T) {
 	}
 	if string(doc.Snapshot) != "legacy-snapshot" || doc.SnapshotCheckpoint != 0 {
 		t.Fatalf("unexpected legacy snapshot: checkpoint=%d snapshot=%q", doc.SnapshotCheckpoint, string(doc.Snapshot))
+	}
+	if doc.SnapshotHash != YJSSnapshotHash([]byte("legacy-snapshot")) {
+		t.Fatalf("unexpected legacy snapshot hash: %q", doc.SnapshotHash)
 	}
 	assertYJSUpdates(t, doc, []string{"legacy-update"}, []int64{0}, []YJSEventKind{YJSEventUpdate})
 }
@@ -747,6 +759,14 @@ func TestRedisYJSDocumentSkipsInvalidSequencedRecords(t *testing.T) {
 	}
 	if _, err := store.LoadYJSDocument(ctx, "tenant-a:broken-doc"); err == nil {
 		t.Fatalf("expected corrupt checkpoint snapshot to fail")
+	}
+	badHashRecord := encodeYJSSnapshotRecord(yjsSnapshotRecord{CheckpointSeq: 1, Snapshot: []byte("snapshot")})
+	badHashRecord = strings.Replace(badHashRecord, YJSSnapshotHash([]byte("snapshot")), "00000000", 1)
+	if err := store.client.Set(ctx, roomYJSSnapshotV2Key("tenant-a:bad-hash"), badHashRecord, 0).Err(); err != nil {
+		t.Fatalf("seed bad hash snapshot: %v", err)
+	}
+	if _, err := store.LoadYJSDocument(ctx, "tenant-a:bad-hash"); err == nil {
+		t.Fatalf("expected bad hash snapshot to fail")
 	}
 }
 
@@ -2207,10 +2227,14 @@ func TestJSONValueAndYJSRecordHelpers(t *testing.T) {
 	if snapshotRecord.CheckpointSeq != 7 || string(snapshotRecord.Snapshot) != "snap" {
 		t.Fatalf("unexpected snapshot record: %+v", snapshotRecord)
 	}
+	if snapshotRecord.Hash != YJSSnapshotHash([]byte("snap")) {
+		t.Fatalf("expected missing snapshot hash to be filled, got %q", snapshotRecord.Hash)
+	}
 	for _, raw := range []string{
 		`{`,
 		`{"checkpoint_seq":-1,"snapshot":"c25hcA=="}`,
 		`{"checkpoint_seq":0,"snapshot":""}`,
+		`{"checkpoint_seq":0,"snapshot":"c25hcA==","hash":"00000000"}`,
 	} {
 		if _, err := decodeYJSSnapshotRecord(raw); err == nil {
 			t.Fatalf("expected invalid snapshot record %q to fail", raw)

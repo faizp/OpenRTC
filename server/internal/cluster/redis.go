@@ -122,6 +122,7 @@ type ActiveUser struct {
 
 type YJSDocument struct {
 	Snapshot           []byte
+	SnapshotHash       string
 	SnapshotCheckpoint int64
 	Updates            [][]byte
 	UpdateSequences    []int64
@@ -255,6 +256,7 @@ func (r yjsUpdateRecord) KindValue() YJSEventKind {
 type yjsSnapshotRecord struct {
 	CheckpointSeq int64  `json:"checkpoint_seq"`
 	Snapshot      []byte `json:"snapshot"`
+	Hash          string `json:"hash,omitempty"`
 }
 
 type PublishedEventList struct {
@@ -1228,6 +1230,7 @@ func (s *RedisStore) LoadYJSDocument(ctx context.Context, room string) (YJSDocum
 		return YJSDocument{}, err
 	}
 	doc.Snapshot = snapshotRecord.Snapshot
+	doc.SnapshotHash = snapshotRecord.Hash
 	doc.SnapshotCheckpoint = snapshotRecord.CheckpointSeq
 
 	legacyUpdates, err := s.client.LRange(ctx, roomYJSUpdatesKey(room), 0, -1).Result()
@@ -1295,6 +1298,7 @@ func (s *RedisStore) StoreYJSSnapshot(ctx context.Context, room string, snapshot
 	return s.storeYJSSnapshotRecord(ctx, room, yjsSnapshotRecord{
 		CheckpointSeq: current.CheckpointSeq,
 		Snapshot:      append([]byte(nil), snapshot...),
+		Hash:          YJSSnapshotHash(snapshot),
 	})
 }
 
@@ -1308,6 +1312,7 @@ func (s *RedisStore) CompactYJSDocument(ctx context.Context, room string, checkp
 	record := yjsSnapshotRecord{
 		CheckpointSeq: checkpointSeq,
 		Snapshot:      append([]byte(nil), snapshot...),
+		Hash:          YJSSnapshotHash(snapshot),
 	}
 	raw := encodeYJSSnapshotRecord(record)
 	pipe := s.client.TxPipeline()
@@ -1421,7 +1426,8 @@ func (s *RedisStore) loadYJSSnapshotRecord(ctx context.Context, room string) (yj
 	if err != nil {
 		return yjsSnapshotRecord{}, err
 	}
-	return yjsSnapshotRecord{Snapshot: []byte(legacy)}, nil
+	snapshot := []byte(legacy)
+	return yjsSnapshotRecord{Snapshot: snapshot, Hash: YJSSnapshotHash(snapshot)}, nil
 }
 
 func (s *RedisStore) storeYJSSnapshotRecord(ctx context.Context, room string, record yjsSnapshotRecord) error {
@@ -2272,7 +2278,20 @@ func isDurableYJSEventKind(kind YJSEventKind) bool {
 	return kind == YJSEventUpdate || kind == YJSEventSubdocUpdate
 }
 
+func YJSSnapshotHash(snapshot []byte) string {
+	if len(snapshot) == 0 {
+		return ""
+	}
+	hash := uint32(0x811c9dc5)
+	for _, b := range snapshot {
+		hash ^= uint32(b)
+		hash *= 0x01000193
+	}
+	return fmt.Sprintf("%08x", hash)
+}
+
 func encodeYJSSnapshotRecord(record yjsSnapshotRecord) string {
+	record.Hash = YJSSnapshotHash(record.Snapshot)
 	raw, _ := json.Marshal(record)
 	return string(raw)
 }
@@ -2285,6 +2304,11 @@ func decodeYJSSnapshotRecord(raw string) (yjsSnapshotRecord, error) {
 	if record.CheckpointSeq < 0 || len(record.Snapshot) == 0 {
 		return yjsSnapshotRecord{}, errors.New("invalid yjs snapshot record")
 	}
+	computedHash := YJSSnapshotHash(record.Snapshot)
+	if record.Hash != "" && record.Hash != computedHash {
+		return yjsSnapshotRecord{}, errors.New("invalid yjs snapshot hash")
+	}
+	record.Hash = computedHash
 	return record, nil
 }
 

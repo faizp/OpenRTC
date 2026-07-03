@@ -1983,6 +1983,9 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	if string(doc.Snapshot) != "snapshot-1" || len(doc.Updates) != 1 || string(doc.Updates[0]) != "update-1" || doc.UpdateSequences[0] != 1 {
 		t.Fatalf("unexpected local yjs document: %+v", doc)
 	}
+	if doc.SnapshotHash != cluster.YJSSnapshotHash([]byte("snapshot-1")) {
+		t.Fatalf("unexpected local yjs snapshot hash: %q", doc.SnapshotHash)
+	}
 	if len(doc.UpdateKinds) != 1 || doc.UpdateKinds[0] != cluster.YJSEventUpdate {
 		t.Fatalf("unexpected local yjs update kinds: %+v", doc.UpdateKinds)
 	}
@@ -1995,6 +1998,9 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	}
 	if string(reloaded.Snapshot) != "snapshot-1" || string(reloaded.Updates[0]) != "update-1" || reloaded.UpdateKinds[0] != cluster.YJSEventUpdate {
 		t.Fatalf("loadYJSDocument should return defensive copies, got %+v", reloaded)
+	}
+	if reloaded.SnapshotHash != cluster.YJSSnapshotHash([]byte("snapshot-1")) {
+		t.Fatalf("unexpected reloaded local yjs snapshot hash: %q", reloaded.SnapshotHash)
 	}
 
 	sender := &yjsConn{id: "sender", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
@@ -2046,13 +2052,16 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	if string(store.storedSnapshot) != "redis-snapshot" {
 		t.Fatalf("unexpected redis-backed yjs snapshot: %q", string(store.storedSnapshot))
 	}
-	store.yjsDocument = cluster.YJSDocument{Snapshot: []byte("loaded")}
+	store.yjsDocument = cluster.YJSDocument{Snapshot: []byte("loaded"), SnapshotHash: cluster.YJSSnapshotHash([]byte("loaded"))}
 	loaded, err := service.loadYJSDocument("tenant-a:doc-redis")
 	if err != nil {
 		t.Fatalf("load redis-backed yjs document: %v", err)
 	}
 	if string(loaded.Snapshot) != "loaded" {
 		t.Fatalf("unexpected redis-backed yjs document: %+v", loaded)
+	}
+	if loaded.SnapshotHash != cluster.YJSSnapshotHash([]byte("loaded")) {
+		t.Fatalf("unexpected redis-backed yjs snapshot hash: %q", loaded.SnapshotHash)
 	}
 }
 
