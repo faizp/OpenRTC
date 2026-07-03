@@ -369,6 +369,53 @@ func TestEngineDisconnectPresenceFanouts(t *testing.T) {
 	}
 }
 
+func TestEngineDisconnectSessionIncludesCleanupIntent(t *testing.T) {
+	engine := New()
+	_, _ = engine.Join("conn-1", "room-b", 0)
+	_, _ = engine.Join("conn-1", "room-a", 0)
+	_, _ = engine.Join("conn-2", "room-a", 0)
+	_, _ = engine.Join("conn-3", "room-b", 0)
+	engine.SetPresence("conn-1", "room-a", json.RawMessage(`{"cursor":{"x":1}}`))
+	engine.SetPresence("conn-1", "room-b", json.RawMessage(`{"cursor":{"x":2}}`))
+
+	result := engine.DisconnectSession("conn-1", PresenceEventOptions{OriginNode: "node-a"})
+	if !reflect.DeepEqual(result.Rooms, []string{"room-a", "room-b"}) {
+		t.Fatalf("unexpected disconnected rooms: %#v", result.Rooms)
+	}
+	if result.Cleanup == nil || result.Cleanup.ConnID != "conn-1" {
+		t.Fatalf("unexpected cleanup intent: %+v", result.Cleanup)
+	}
+	if len(result.PresenceFanouts) != 2 {
+		t.Fatalf("expected two disconnect fanouts, got %#v", result.PresenceFanouts)
+	}
+	if result.PresenceFanouts[0].Event.Room != "room-a" || result.PresenceFanouts[0].Event.ConnID != "conn-1" || !result.PresenceFanouts[0].Event.Offline {
+		t.Fatalf("unexpected first disconnect fanout event: %+v", result.PresenceFanouts[0].Event)
+	}
+	if !reflect.DeepEqual(result.PresenceFanouts[0].TargetConnIDs, []string{"conn-2"}) {
+		t.Fatalf("unexpected room-a disconnect targets: %#v", result.PresenceFanouts[0].TargetConnIDs)
+	}
+	if result.PresenceFanouts[1].Event.Room != "room-b" || result.PresenceFanouts[1].Event.ConnID != "conn-1" || !result.PresenceFanouts[1].Event.Offline {
+		t.Fatalf("unexpected second disconnect fanout event: %+v", result.PresenceFanouts[1].Event)
+	}
+	if !reflect.DeepEqual(result.PresenceFanouts[1].TargetConnIDs, []string{"conn-3"}) {
+		t.Fatalf("unexpected room-b disconnect targets: %#v", result.PresenceFanouts[1].TargetConnIDs)
+	}
+	if got := engine.JoinedRooms("conn-1"); len(got) != 0 {
+		t.Fatalf("expected disconnected connection rooms to be cleared, got %#v", got)
+	}
+}
+
+func TestEngineDisconnectSessionCleanupWithoutRooms(t *testing.T) {
+	engine := New()
+	result := engine.DisconnectSession("conn-empty", PresenceEventOptions{OriginNode: "node-a"})
+	if len(result.Rooms) != 0 || len(result.PresenceFanouts) != 0 {
+		t.Fatalf("unexpected empty disconnect result: %+v", result)
+	}
+	if result.Cleanup == nil || result.Cleanup.ConnID != "conn-empty" {
+		t.Fatalf("expected cleanup intent for active connection metadata, got %+v", result.Cleanup)
+	}
+}
+
 func TestEngineEventAndStorageFanouts(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-sender", "room-a", 0)

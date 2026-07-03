@@ -1231,7 +1231,7 @@ func (s *Service) unregisterYJSConn(conn *yjsConn) {
 }
 
 func (s *Service) unregisterConn(conn *clientConn) {
-	fanouts := s.roomEngine().DisconnectPresenceFanouts(conn.id, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
+	disconnectResult := s.roomEngine().DisconnectSession(conn.id, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
 	s.mu.Lock()
 	delete(s.conns, conn.id)
 	s.syncStatsLocked()
@@ -1239,15 +1239,20 @@ func (s *Service) unregisterConn(conn *clientConn) {
 	s.metrics.ActiveConnections.Dec()
 	conn.close(websocket.CloseNormalClosure, "closing")
 
-	if s.store != nil {
-		_ = s.store.CleanupConnection(s.ctx, s.cfg.NodeID, conn.id)
-	}
-	for _, fanout := range fanouts {
+	s.applyConnectionCleanup(disconnectResult.Cleanup)
+	for _, fanout := range disconnectResult.PresenceFanouts {
 		_ = s.broadcastPresenceFanout(fanout)
 		if s.store != nil {
 			_ = s.store.PublishPresence(s.ctx, fanout.Event)
 		}
 	}
+}
+
+func (s *Service) applyConnectionCleanup(cleanup *roomengine.ConnectionCleanup) {
+	if s.store == nil || cleanup == nil {
+		return
+	}
+	_ = s.store.CleanupConnection(s.ctx, s.cfg.NodeID, cleanup.ConnID)
 }
 
 func (s *Service) yjsHeartbeatLoop(conn *yjsConn) {

@@ -65,6 +65,12 @@ type LeaveResult struct {
 	MembershipMutation *MembershipMutation
 }
 
+type DisconnectResult struct {
+	Rooms           []string
+	PresenceFanouts []PresenceFanout
+	Cleanup         *ConnectionCleanup
+}
+
 type Snapshot struct {
 	Members  []string
 	Presence map[string]json.RawMessage
@@ -74,6 +80,10 @@ type MembershipMutation struct {
 	Kind   string
 	ConnID string
 	Room   string
+}
+
+type ConnectionCleanup struct {
+	ConnID string
 }
 
 type SnapshotPageOptions struct {
@@ -224,6 +234,15 @@ func (e *Engine) Disconnect(connID string) []string {
 func (e *Engine) DisconnectPresenceFanouts(connID string, options PresenceEventOptions) []PresenceFanout {
 	_, fanouts := e.disconnect(connID, options, true)
 	return fanouts
+}
+
+func (e *Engine) DisconnectSession(connID string, options PresenceEventOptions) DisconnectResult {
+	rooms, fanouts := e.disconnect(connID, options, true)
+	return DisconnectResult{
+		Rooms:           rooms,
+		PresenceFanouts: fanouts,
+		Cleanup:         newConnectionCleanup(connID),
+	}
 }
 
 func (e *Engine) disconnect(connID string, options PresenceEventOptions, includeFanouts bool) ([]string, []PresenceFanout) {
@@ -736,6 +755,10 @@ func newMembershipMutation(kind string, connID string, room string) *MembershipM
 		ConnID: connID,
 		Room:   room,
 	}
+}
+
+func newConnectionCleanup(connID string) *ConnectionCleanup {
+	return &ConnectionCleanup{ConnID: connID}
 }
 
 func cloneStorageOperations(operations []cluster.JSONPatchOperation) []cluster.JSONPatchOperation {
