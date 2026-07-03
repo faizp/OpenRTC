@@ -452,6 +452,18 @@ export interface OpenRTCPermissionMatrix {
   feeds?: OpenRTCAccessLevel;
 }
 
+export interface OpenRTCRoomAccessMatrix {
+  default?: OpenRTCPermissionMatrix;
+  users?: Record<string, OpenRTCPermissionMatrix>;
+  groups?: Record<string, OpenRTCPermissionMatrix>;
+}
+
+export interface OpenRTCRoomAccesses {
+  defaultAccesses?: OpenRTCRoomPermission[];
+  usersAccesses?: Record<string, OpenRTCRoomPermission[]>;
+  groupsAccesses?: Record<string, OpenRTCRoomPermission[]>;
+}
+
 export interface OpenRTCPresenceUpdate {
   room: string;
   connId: string;
@@ -639,6 +651,22 @@ export function accessMatrixScope(matrix: OpenRTCPermissionMatrix, roomPattern: 
   return accessMatrixScopes(matrix, roomPattern).join(" ");
 }
 
+export function accessMatrixRoomAccesses(matrix: OpenRTCRoomAccessMatrix): OpenRTCRoomAccesses {
+  const accesses: OpenRTCRoomAccesses = {};
+  if (matrix.default !== undefined) {
+    accesses.defaultAccesses = accessMatrixPermissions(matrix.default);
+  }
+  const usersAccesses = accessMatrixPermissionRecord(matrix.users);
+  if (usersAccesses) {
+    accesses.usersAccesses = usersAccesses;
+  }
+  const groupsAccesses = accessMatrixPermissionRecord(matrix.groups);
+  if (groupsAccesses) {
+    accesses.groupsAccesses = groupsAccesses;
+  }
+  return accesses;
+}
+
 function addMatrixPermission(
   permissions: OpenRTCRoomPermission[],
   level: OpenRTCAccessLevel | undefined,
@@ -660,6 +688,19 @@ function normalizeScopeRoomPattern(roomPattern: string): string {
     throw new Error("OpenRTC scope room pattern cannot contain whitespace");
   }
   return roomPattern;
+}
+
+function accessMatrixPermissionRecord(
+  record: Record<string, OpenRTCPermissionMatrix> | undefined,
+): Record<string, OpenRTCRoomPermission[]> | undefined {
+  if (!record) {
+    return undefined;
+  }
+  const out: Record<string, OpenRTCRoomPermission[]> = {};
+  for (const [id, matrix] of Object.entries(record)) {
+    out[id] = accessMatrixPermissions(matrix);
+  }
+  return out;
 }
 
 export interface OpenRTCAdminRoomInput {

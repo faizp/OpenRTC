@@ -9,6 +9,7 @@ import {
   OPENRTC_NOTIFICATION_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
+  accessMatrixRoomAccesses,
   accessMatrixScope,
   accessMatrixScopes,
   createOpenRTCDevAdminClient,
@@ -69,6 +70,43 @@ assert.equal(
   accessMatrixScope({ room: "read", storage: "write", comments: "write" }, "tenant-a:canvas-1"),
   "room:read:tenant-a:canvas-1 storage:write:tenant-a:canvas-1 comments:write:tenant-a:canvas-1",
 );
+assert.deepEqual(accessMatrixRoomAccesses({
+  default: {
+    room: "read",
+    storage: "read",
+  },
+  users: {
+    "user-denied": {
+      room: "none",
+      storage: "none",
+      comments: "none",
+      feeds: "none",
+    },
+    "user-storage": {
+      storage: "write",
+    },
+  },
+  groups: {
+    editors: {
+      room: "write",
+      storage: "write",
+      comments: "write",
+    },
+  },
+}), {
+  defaultAccesses: [OPENRTC_ROOM_PERMISSIONS.roomRead, OPENRTC_ROOM_PERMISSIONS.storageRead],
+  usersAccesses: {
+    "user-denied": [],
+    "user-storage": [OPENRTC_ROOM_PERMISSIONS.storageWrite],
+  },
+  groupsAccesses: {
+    editors: [
+      OPENRTC_ROOM_PERMISSIONS.roomWrite,
+      OPENRTC_ROOM_PERMISSIONS.storageWrite,
+      OPENRTC_ROOM_PERMISSIONS.commentsWrite,
+    ],
+  },
+});
 assert.throws(() => accessMatrixScopes({ room: "read" }, ""), /non-empty string/);
 assert.throws(() => accessMatrixScope({ room: "read" }, "tenant-a:* storage:*"), /cannot contain whitespace/);
 
