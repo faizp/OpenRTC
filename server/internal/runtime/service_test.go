@@ -944,6 +944,49 @@ func TestRuntimeHandleJoinLocalBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeJoinReplaysPublishedEventsAfterSequence(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	store := &fakeRuntimeStore{
+		publishedEvents: []cluster.PublishedEvent{
+			{Room: "tenant-a:room-1", Event: "before", Payload: json.RawMessage(`{"n":1}`), Sequence: 1, OriginNode: "node-b"},
+			{Room: "tenant-a:room-1", Event: "after", Payload: json.RawMessage(`{"n":2}`), Sequence: 2, OriginNode: "node-b", TraceID: "trace-after"},
+			{Room: "tenant-a:room-1", Event: storageClusterEvent, Payload: json.RawMessage(`{"kind":"set"}`), Sequence: 3, OriginNode: "node-b"},
+			{Room: "tenant-a:room-2", Event: "other-room", Payload: json.RawMessage(`{"n":4}`), Sequence: 4, OriginNode: "node-b"},
+		},
+	}
+	service.store = store
+	conn := runtimeTestConn(service, "conn-catchup", &auth.Claims{
+		Tenant: "tenant-a",
+		Join:   []string{"tenant-a:*"},
+	}, 4)
+
+	if err := service.handleJoin(conn, protocol.Message{
+		ID:       "join-catchup",
+		Room:     "tenant-a:room-1",
+		JoinMeta: &protocol.JoinMeta{AfterSequence: 1},
+	}); err != nil {
+		t.Fatalf("join catchup: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.ID != "join-catchup" {
+		t.Fatalf("expected joined before catch-up events, got %+v", got)
+	}
+	got := readRuntimeOutbound(t, conn)
+	if got.T != "EVENT" || got.Event != "after" || got.Room != "tenant-a:room-1" {
+		t.Fatalf("expected replayed room event, got %+v", got)
+	}
+	meta, ok := got.Meta.(map[string]any)
+	if !ok || meta["seq"] != uint64(2) || meta["trace_id"] != "trace-after" {
+		t.Fatalf("unexpected replay event meta: %#v", got.Meta)
+	}
+	select {
+	case got := <-conn.send:
+		t.Fatalf("expected storage/internal events to be skipped, got %+v", got)
+	default:
+	}
+}
+
 func TestRuntimeStoreErrorBranches(t *testing.T) {
 	expected := errors.New("store failed")
 	claims := &auth.Claims{
@@ -984,6 +1027,26 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
 		if err := service.handleJoin(conn, protocol.Message{ID: "join", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected duplicate join snapshot error, got %v", err)
+		}
+	})
+
+	t.Run("join event catchup", func(t *testing.T) {
+		service := newRuntimeUnitService(t)
+		defer service.Close()
+		store := &fakeRuntimeStore{listPublishedEventsErr: expected}
+		service.store = store
+		conn := runtimeTestConn(service, "conn-join-catchup", claims, 2)
+		if err := service.handleJoin(conn, protocol.Message{
+			ID:       "join",
+			Room:     "tenant-a:room-1",
+			JoinMeta: &protocol.JoinMeta{AfterSequence: 1},
+		}); !errors.Is(err, expected) {
+			t.Fatalf("expected join catchup error, got %v", err)
+		}
+		select {
+		case got := <-conn.send:
+			t.Fatalf("expected no partial join response after catchup failure, got %+v", got)
+		default:
 		}
 	})
 
@@ -2270,6 +2333,7 @@ type fakeRuntimeStore struct {
 	publishEventErr        error
 	publishedEvents        []cluster.PublishedEvent
 	nextPublishedSequence  uint64
+	listPublishedEventsErr error
 	publishPresenceErr     error
 	publishedPresence      []cluster.PresenceEvent
 	joinErr                error
@@ -2317,8 +2381,21 @@ func (s *fakeRuntimeStore) PublishEvent(_ context.Context, event cluster.Publish
 	return event, nil
 }
 
-func (s *fakeRuntimeStore) ListPublishedEvents(context.Context, string, uint64, int) (cluster.PublishedEventList, error) {
-	return cluster.PublishedEventList{Events: append([]cluster.PublishedEvent(nil), s.publishedEvents...)}, nil
+func (s *fakeRuntimeStore) ListPublishedEvents(_ context.Context, room string, afterSequence uint64, limit int) (cluster.PublishedEventList, error) {
+	if s.listPublishedEventsErr != nil {
+		return cluster.PublishedEventList{}, s.listPublishedEventsErr
+	}
+	events := make([]cluster.PublishedEvent, 0, len(s.publishedEvents))
+	for _, event := range s.publishedEvents {
+		if event.Room != room || event.Sequence <= afterSequence {
+			continue
+		}
+		events = append(events, event)
+		if limit > 0 && len(events) >= limit {
+			break
+		}
+	}
+	return cluster.PublishedEventList{Events: events}, nil
 }
 
 func (s *fakeRuntimeStore) Subscribe(context.Context, func(cluster.PublishedEvent)) error {

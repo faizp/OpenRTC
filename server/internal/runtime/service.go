@@ -48,6 +48,7 @@ var (
 
 const (
 	defaultJoinLimit            = 100
+	eventCatchupMaxEvents       = 1000
 	maxStoragePatchOperations   = 100
 	storageClusterEvent         = cluster.EventStorageUpdate
 	notificationInboxCreated    = "openrtc.notifications.inbox.created"
@@ -595,8 +596,12 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 	if err != nil {
 		return err
 	}
+	replayEvents, err := s.replayablePublishedEvents(conn, message)
+	if err != nil {
+		return err
+	}
 
-	return conn.enqueue(outboundMessage{
+	if err := conn.enqueue(outboundMessage{
 		T:    "JOINED",
 		ID:   message.ID,
 		Room: message.Room,
@@ -605,7 +610,10 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 			"presence":    roomPresence,
 			"next_cursor": nextCursor,
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	return s.sendReplayEvents(conn, replayEvents)
 }
 
 func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error {
@@ -802,6 +810,33 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
 }
 
+func (s *Service) replayablePublishedEvents(conn *clientConn, message protocol.Message) ([]cluster.PublishedEvent, error) {
+	if s.store == nil || message.JoinMeta == nil || message.JoinMeta.AfterSequence == 0 {
+		return nil, nil
+	}
+	list, err := s.store.ListPublishedEvents(s.ctx, message.Room, message.JoinMeta.AfterSequence, eventCatchupMaxEvents)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]cluster.PublishedEvent, 0, len(list.Events))
+	for _, event := range list.Events {
+		if event.Event == storageClusterEvent || isNotificationEvent(event.Event) || event.ExcludeSenderConnID == conn.id {
+			continue
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (s *Service) sendReplayEvents(conn *clientConn, events []cluster.PublishedEvent) error {
+	for _, event := range events {
+		if err := conn.enqueue(eventOutboundMessage(event)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 	if event.OriginNode == s.cfg.NodeID {
 		return
@@ -849,19 +884,7 @@ func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool)
 	s.mu.RUnlock()
 
 	for _, target := range targets {
-		meta := map[string]any{
-			"trace_id": event.TraceID,
-		}
-		if event.Sequence > 0 {
-			meta["seq"] = event.Sequence
-		}
-		if err := target.enqueue(outboundMessage{
-			T:       "EVENT",
-			Room:    event.Room,
-			Event:   event.Event,
-			Payload: event.Payload,
-			Meta:    meta,
-		}); err != nil {
+		if err := target.enqueue(eventOutboundMessage(event)); err != nil {
 			return err
 		}
 	}
@@ -941,6 +964,26 @@ func (s *Service) broadcastPresenceEvent(event cluster.PresenceEvent) error {
 	}
 
 	return nil
+}
+
+func eventOutboundMessage(event cluster.PublishedEvent) outboundMessage {
+	meta := map[string]any{}
+	if event.TraceID != "" {
+		meta["trace_id"] = event.TraceID
+	}
+	if event.Sequence > 0 {
+		meta["seq"] = event.Sequence
+	}
+	message := outboundMessage{
+		T:       "EVENT",
+		Room:    event.Room,
+		Event:   event.Event,
+		Payload: event.Payload,
+	}
+	if len(meta) > 0 {
+		message.Meta = meta
+	}
+	return message
 }
 
 func (s *Service) broadcastStorageUpdate(room string, update roomengine.StorageMutation, excludeConnID string) error {

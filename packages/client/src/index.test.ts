@@ -721,6 +721,18 @@ const fastLostEvents: string[] = [];
 const offFastLost = reconnectRoom.subscribe("lost-connection", (event) => {
   fastLostEvents.push(event);
 });
+const reconnectEvents: OpenRTCEvent[] = [];
+const offReconnectEvents = reconnectRoom.subscribe("event", (event) => {
+  reconnectEvents.push(event);
+});
+reconnectSocketA.receive({
+  t: "EVENT",
+  room: "tenant-a:reconnect",
+  event: "before-close",
+  payload: { ok: true },
+  meta: { seq: 9 },
+});
+assert.equal(reconnectEvents.at(-1)?.sequence, 9);
 reconnectSocketA.close();
 assert.equal(reconnectClient.status, "reconnecting");
 await waitFor(() => FakeWebSocket.instances.length === 2, "expected reconnect socket");
@@ -734,7 +746,7 @@ reconnectSocketB.receive({
 assert.deepEqual(
   reconnectSocketB.sent.map((item) => JSON.parse(item) as Record<string, unknown>),
   [
-    { t: "JOIN", id: "join-5", room: "tenant-a:reconnect" },
+    { t: "JOIN", id: "join-5", room: "tenant-a:reconnect", meta: { after_seq: 9 } },
     {
       t: "PRESENCE_SET",
       id: "presence-6",
@@ -764,6 +776,24 @@ reconnectSocketB.receive({
 });
 assert.equal(reconnectClient.status, "open");
 reconnectSocketB.receive({
+  t: "EVENT",
+  room: "tenant-a:reconnect",
+  event: "before-close",
+  payload: { duplicate: true },
+  meta: { seq: 9 },
+});
+reconnectSocketB.receive({
+  t: "EVENT",
+  room: "tenant-a:reconnect",
+  event: "after-reconnect",
+  payload: { ok: true },
+  meta: { seq: 10 },
+});
+assert.deepEqual(
+  reconnectEvents.map((event) => event.event),
+  ["before-close", "after-reconnect"],
+);
+reconnectSocketB.receive({
   t: "STORAGE_SNAPSHOT",
   id: "storage-get-7",
   room: "tenant-a:reconnect",
@@ -775,6 +805,7 @@ assert.deepEqual(reconnectRoom.getOthers(), [{ connId: "peer-b", state: { cursor
 await wait(1050);
 assert.deepEqual(fastLostEvents, []);
 offFastLost();
+offReconnectEvents();
 leaveReconnectRoom();
 reconnectClient.close();
 

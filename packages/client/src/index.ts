@@ -91,6 +91,7 @@ export interface OpenRTCAdminClientOptions {
 export interface JoinOptions {
   limit?: number;
   cursor?: string;
+  afterSequence?: number;
 }
 
 export interface EnterRoomOptions extends JoinOptions {
@@ -597,6 +598,7 @@ export class OpenRTCClient {
   private roomHandles = new Map<string, OpenRTCRoomHandle>();
   private activeRooms = new Map<string, ActiveRoomEntry>();
   private roomRetainCounts = new Map<string, number>();
+  private lastEventSequenceByRoom = new Map<string, number>();
   private manualClose = false;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -737,6 +739,10 @@ export class OpenRTCClient {
     }
     if (options.cursor !== undefined) {
       meta["cursor"] = options.cursor;
+    }
+    const afterSequence = this.lastEventSequenceByRoom.get(room) ?? options.afterSequence;
+    if (afterSequence !== undefined && afterSequence > 0) {
+      meta["after_seq"] = afterSequence;
     }
     if (this.canSend()) {
       this.send({
@@ -1589,8 +1595,16 @@ export class OpenRTCClient {
       const meta = asRecord(message["meta"]);
       const traceId = optionalString(meta["trace_id"]);
       const sequence = optionalSequence(meta["seq"]);
+      const room = asString(message["room"]);
+      if (sequence !== undefined) {
+        const previousSequence = this.lastEventSequenceByRoom.get(room) ?? 0;
+        if (sequence <= previousSequence) {
+          return;
+        }
+        this.lastEventSequenceByRoom.set(room, sequence);
+      }
       const event: OpenRTCEvent = {
-        room: asString(message["room"]),
+        room,
         event: asString(message["event"]),
         payload: message["payload"],
         ...(traceId ? { traceId } : {}),
@@ -1865,6 +1879,7 @@ export class OpenRTCClient {
             ...this.storageByRoom.keys(),
             ...this.storageStatusByRoom.keys(),
             ...this.storageRequestedRooms.keys(),
+            ...this.lastEventSequenceByRoom.keys(),
           ],
     );
     for (const room of rooms) {
@@ -1873,6 +1888,7 @@ export class OpenRTCClient {
       this.nextCursorByRoom.delete(room);
       if (!options.preserveLocal) {
         this.localPresenceByRoom.delete(room);
+        this.lastEventSequenceByRoom.delete(room);
         this.storageByRoom.delete(room);
         this.storageRequestedRooms.delete(room);
         this.rejectStorageGetWaiters(room, new Error(`Room ${room} was left before storage request completed`));
@@ -2990,6 +3006,7 @@ function compactJoinOptions(options: JoinOptions): JoinOptions {
   return {
     ...(options.limit !== undefined ? { limit: options.limit } : {}),
     ...(options.cursor !== undefined ? { cursor: options.cursor } : {}),
+    ...(options.afterSequence !== undefined ? { afterSequence: options.afterSequence } : {}),
   };
 }
 

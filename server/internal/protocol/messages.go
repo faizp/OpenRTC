@@ -31,8 +31,9 @@ const (
 )
 
 type JoinMeta struct {
-	Limit  int    `json:"limit,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
+	Cursor        string `json:"cursor,omitempty"`
+	AfterSequence uint64 `json:"after_seq,omitempty"`
 }
 
 type EmitMeta struct {
@@ -140,7 +141,7 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 				return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Meta must be an object when present"}
 			}
 			for key := range joinMeta {
-				if key != "limit" && key != "cursor" {
+				if key != "limit" && key != "cursor" && key != "after_seq" {
 					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "JOIN meta includes unsupported fields"}
 				}
 			}
@@ -153,6 +154,11 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 			if cursorRaw, ok := joinMeta["cursor"]; ok {
 				if err := json.Unmarshal(cursorRaw, &parsed.Cursor); err != nil || parsed.Cursor == "" {
 					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "JOIN meta.cursor must be a non-empty string"}
+				}
+			}
+			if afterSequenceRaw, ok := joinMeta["after_seq"]; ok {
+				if err := json.Unmarshal(afterSequenceRaw, &parsed.AfterSequence); err != nil {
+					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "JOIN meta.after_seq must be an integer greater than or equal to 0"}
 				}
 			}
 			message.JoinMeta = parsed

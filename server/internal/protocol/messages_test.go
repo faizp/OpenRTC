@@ -8,14 +8,14 @@ import (
 )
 
 func TestParseJoinMessage(t *testing.T) {
-	message, err := ParseClientMessage([]byte(`{"t":"JOIN","id":"req-1","room":"tenant-a:room-1","meta":{"limit":50}}`), ParseOptions{
+	message, err := ParseClientMessage([]byte(`{"t":"JOIN","id":"req-1","room":"tenant-a:room-1","meta":{"limit":50,"after_seq":42}}`), ParseOptions{
 		TenantPrefix: "tenant-a:",
 	})
 	if err != nil {
 		t.Fatalf("parse message: %v", err)
 	}
 
-	if message.Type != TypeJoin || message.JoinMeta == nil || message.JoinMeta.Limit != 50 {
+	if message.Type != TypeJoin || message.JoinMeta == nil || message.JoinMeta.Limit != 50 || message.JoinMeta.AfterSequence != 42 {
 		t.Fatalf("unexpected message: %+v", message)
 	}
 }
@@ -216,6 +216,11 @@ func TestParseRejectsInvalidMessageShapes(t *testing.T) {
 		{
 			name: "join meta empty cursor",
 			raw:  []byte(`{"t":"JOIN","id":"req-1","room":"tenant-a:room-1","meta":{"cursor":""}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "join meta bad after sequence",
+			raw:  []byte(`{"t":"JOIN","id":"req-1","room":"tenant-a:room-1","meta":{"after_seq":-1}}`),
 			want: openrtcerr.CodeBadRequest,
 		},
 		{
