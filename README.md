@@ -143,6 +143,11 @@ for reconnect diagnostics. For browser offline starts, pass
 Yjs updates are replayed before the websocket opens, and local/remote updates
 are appended to the cache without changing server durability semantics.
 
+For rich-text editors, `packages/rich-text/README.md` has Tiptap, Lexical, and
+BlockNote recipes that wire `OpenRTCClient`, `OpenRTCYjsProvider`, Yjs document
+bindings, editor selection presence, and cleanup without adding editor
+dependencies to the OpenRTC package itself.
+
 The React package exposes the same lifecycle through `useEnterRoom`,
 `usePresence`, `useOthers`, `useOthersMapped`, `useOthersConnectionIds`,
 `useCursors`, `useOtherCursors`, `useCursorsMapped`, `useOther`, `useSelf`,
