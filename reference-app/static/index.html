@@ -1343,7 +1343,7 @@
         <div class="hero-terminal">
           <div class="hero-terminal-row">
             <div><span>Connected clients</span><b id="hero-clients">0</b></div>
-            <span class="badge info" id="hero-room">demo:general</span>
+            <span class="badge info" id="hero-room">demo:room-1</span>
           </div>
           <div class="hero-terminal-row">
             <div><span>Last presence echo</span><b id="hero-latency">0 ms</b></div>
@@ -1383,7 +1383,7 @@
               </label>
             </div>
             <label>Room
-              <input id="room" value="demo:general" autocomplete="off" oninput="syncRoomFields()">
+              <input id="room" value="demo:room-1" autocomplete="off" oninput="syncRoomFields()">
             </label>
             <label>Client access
               <select id="client-access">
@@ -1512,8 +1512,8 @@
                   <tr>
                     <td>Durable JSON and typed storage</td>
                     <td><span class="badge ok">implemented</span></td>
-                    <td class="mono">/v1/rooms/{room}/storage</td>
-                    <td>Get, put, delete, JSON Patch</td>
+                    <td class="mono">/v1/rooms/{room}/storage, STORAGE_*</td>
+                    <td>Admin get/put/patch/delete plus realtime get/set/patch</td>
                   </tr>
                   <tr>
                     <td>Threads and comments</td>
@@ -1790,6 +1790,21 @@
             <h3>Storage Result</h3>
             <div class="output" style="margin-top: 8px;"><pre id="storage-output"></pre></div>
           </div>
+          <div class="section">
+            <div class="panel-header">
+              <div>
+                <h3>Realtime Storage</h3>
+                <p>Runtime WebSocket storage snapshots, acks, and peer updates.</p>
+              </div>
+              <div class="button-row">
+                <button type="button" class="primary" onclick="runAction('storage-realtime-log', realtimeStorageGet)">WS get</button>
+                <button type="button" onclick="runAction('storage-realtime-log', realtimeStorageSet)">WS set</button>
+                <button type="button" onclick="runAction('storage-realtime-log', realtimeStoragePatch)">WS patch</button>
+              </div>
+            </div>
+            <div class="output" style="margin-top: 8px;"><pre id="storage-realtime-output"></pre></div>
+            <div class="log" id="storage-realtime-log" style="margin-top: 8px;"></div>
+          </div>
         </section>
 
         <section class="panel" id="tab-threads">
@@ -1969,13 +1984,16 @@
       yjs: null,
       username: "",
       tenant: "demo",
-      room: "demo:general",
+      room: "demo:room-1",
       connId: "",
       members: new Set(),
       presence: new Map(),
       syntheticClients: new Map(),
       pendingPresenceByRoom: new Map(),
       pendingTraces: new Map(),
+      storageDocument: null,
+      storageStatus: "not-loaded",
+      storageMessages: [],
       latencySamples: [],
       diagnostics: [],
       cursorFrame: 0,
@@ -2294,6 +2312,9 @@
       state.presence.clear();
       state.connId = "";
       state.room = currentRoom();
+      state.storageDocument = null;
+      state.storageStatus = "not-loaded";
+      state.storageMessages = [];
       state.ws = new WebSocket(state.config.wsURL + "?token=" + encodeURIComponent(token));
       const socket = state.ws;
       setDot("ws-dot", "warn");
@@ -2377,6 +2398,11 @@
           break;
         case "EVENT":
           state.counters.events += 1;
+          break;
+        case "STORAGE_SNAPSHOT":
+        case "STORAGE_ACK":
+        case "STORAGE_UPDATE":
+          handleRealtimeStorageMessage(message);
           break;
         case "LEFT":
           state.members.delete(state.connId);
@@ -2962,6 +2988,95 @@
       setOutput("storage-output", result.body || { deleted: currentRoom(), status: result.status });
     }
 
+    async function realtimeStorageGet() {
+      await connectAndJoin();
+      const id = requestID("storage-get");
+      state.storageStatus = "loading";
+      sendWS({
+        t: "STORAGE_GET",
+        id,
+        room: currentRoom(),
+      });
+      return waitForStorageMessage(id, ["STORAGE_SNAPSHOT"]);
+    }
+
+    async function realtimeStorageSet() {
+      await ensureRealtimeStorageReady();
+      const id = requestID("storage-set");
+      const opID = requestID("op-set");
+      state.storageStatus = "mutating";
+      sendWS({
+        t: "STORAGE_SET",
+        id,
+        room: currentRoom(),
+        payload: jsonFrom("storage-body"),
+        meta: { op_id: opID },
+      });
+      return waitForStorageMessage(id, ["STORAGE_ACK"]);
+    }
+
+    async function realtimeStoragePatch() {
+      await ensureRealtimeStorageReady();
+      const id = requestID("storage-patch");
+      const opID = requestID("op-patch");
+      state.storageStatus = "mutating";
+      sendWS({
+        t: "STORAGE_PATCH",
+        id,
+        room: currentRoom(),
+        payload: jsonFrom("storage-patch-body"),
+        meta: { op_id: opID },
+      });
+      return waitForStorageMessage(id, ["STORAGE_ACK"]);
+    }
+
+    async function ensureRealtimeStorageReady() {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.members.has(state.connId)) {
+        await connectAndJoin();
+      }
+    }
+
+    function handleRealtimeStorageMessage(message) {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      if (payload.document !== undefined) {
+        state.storageDocument = parseMaybeJSON(payload.document);
+      }
+      if (message.t === "STORAGE_SNAPSHOT" || message.t === "STORAGE_ACK" || message.t === "STORAGE_UPDATE") {
+        state.storageStatus = "synchronized";
+      }
+      const entry = {
+        t: message.t,
+        id: message.id || "",
+        room: message.room,
+        kind: payload.kind || "",
+        opId: payload.op_id || "",
+        sequence: message.meta && message.meta.seq ? message.meta.seq : undefined,
+        document: state.storageDocument,
+      };
+      state.storageMessages.unshift(entry);
+      state.storageMessages = state.storageMessages.slice(0, 20);
+      renderRealtimeStorage();
+      log("storage-realtime-log", entry, message.t === "ERROR" ? "err" : "ok", message.t);
+    }
+
+    function renderRealtimeStorage() {
+      setOutput("storage-realtime-output", {
+        room: currentRoom(),
+        status: state.storageStatus,
+        document: state.storageDocument,
+        messages: state.storageMessages,
+      });
+    }
+
+    function waitForStorageMessage(requestIDValue, types) {
+      return waitUntil(() => {
+        const match = state.storageMessages.find((message) => {
+          return message.id === requestIDValue && types.includes(message.t);
+        });
+        return match || false;
+      }, 5000, types.join("/") + " for " + requestIDValue);
+    }
+
     async function listThreads() {
       const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", {}, "probe-log");
       setOutput("threads-output", result.body);
@@ -3348,6 +3463,14 @@
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage/json-patch", { method: "PATCH", body: samples.storagePatch() }, "probe-log");
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "DELETE" }, "probe-log");
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/storage", { method: "PUT", body: samples.storage() }, "probe-log");
+        await realtimeStorageGet();
+        await realtimeStorageSet();
+        await realtimeStoragePatch();
+        log("probe-log", {
+          room: currentRoom(),
+          status: state.storageStatus,
+          lastMessage: state.storageMessages[0] ? state.storageMessages[0].t : "",
+        }, "ok", "realtime storage");
 
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads", { method: "POST", body: samples.threadCreate() }, "probe-log");
         await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/threads/thread-1/comments", { method: "POST", body: samples.commentCreate() }, "probe-log");

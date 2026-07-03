@@ -10,7 +10,8 @@ browser UI for probing the implemented protocol surfaces.
 - JSON WebSocket room join, leave, events, and presence.
 - Admin event publish and admin-side presence writes.
 - Room CRUD, metadata, access grants, and active-user reads.
-- Durable room storage, typed storage roots, and JSON Patch.
+- Durable room storage, typed storage roots, JSON Patch, and realtime
+  `STORAGE_GET` / `STORAGE_SET` / `STORAGE_PATCH` WebSocket probes.
 - Durable threads, comments, inbox notifications, notification settings, and
   room subscription settings.
 - Yjs binary endpoint connect, update write, replay, and client snapshot
@@ -70,6 +71,7 @@ go run ./cmd/server
 2. Open `Realtime`, click `Connect + join`, then send events or presence.
 3. Open another browser tab with the same room to watch fan-out and presence.
 4. Use `Rooms`, `Storage`, `Threads`, and `Notifications` to inspect local
-   dev state.
+   dev state. The `Storage` tab covers both admin REST storage and runtime
+   WebSocket storage snapshots, acks, and updates.
 5. Use `Yjs` to connect to the binary endpoint, send an update frame, reconnect,
    and verify replay.
