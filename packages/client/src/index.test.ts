@@ -9,6 +9,7 @@ import {
   OPENRTC_NOTIFICATION_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
+  createOpenRTCDevAdminClient,
   createOpenRTCDevClient,
   fetchOpenRTCDevToken,
   getCursorPeers,
@@ -1195,6 +1196,61 @@ assert.equal(devSocket.url, "ws://127.0.0.1:8080/ws?token=dev-token-2");
 devSocket.open();
 await devClientConnected;
 devClient.client.close();
+
+const devAdmin = await createOpenRTCDevAdminClient({
+  baseURL: "http://127.0.0.1:3000",
+  scope: "rooms:* storage:*",
+  fetch: async (input, init) => {
+    if (input.includes("/dev/token")) {
+      const url = new URL(input);
+      assert.equal(url.searchParams.get("kind"), "admin");
+      assert.equal(url.searchParams.get("scope"), "rooms:* storage:*");
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          token: "dev-admin-token",
+          kind: "admin",
+          username: "anon-admin",
+          tenant: "demo",
+          groups: [],
+          expiresAt: "2026-07-04T00:00:00Z",
+          config: devConfig,
+        }),
+      );
+    }
+    assert.equal(input, "http://127.0.0.1:8090/v1/stats");
+    assert.equal(init?.headers?.Authorization, "Bearer dev-admin-token");
+    return fakeResponse(200, JSON.stringify({ activeConnections: 2 }));
+  },
+});
+assert.equal(devAdmin.auth.kind, "admin");
+assert.equal(devAdmin.config.adminURL, "http://127.0.0.1:8090");
+assert.deepEqual(await devAdmin.admin.stats(), { activeConnections: 2 });
+
+const devAdminProxy = await createOpenRTCDevAdminClient({
+  baseURL: "http://127.0.0.1:3000",
+  useProxy: true,
+  fetch: async (input, init) => {
+    if (input.includes("/dev/token")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          token: "dev-admin-proxy-token",
+          kind: "admin",
+          username: "anon-admin",
+          tenant: "demo",
+          groups: [],
+          expiresAt: "2026-07-04T00:00:00Z",
+          config: devConfig,
+        }),
+      );
+    }
+    assert.equal(input, "/admin/v1/stats");
+    assert.equal(init?.headers?.Authorization, "Bearer dev-admin-proxy-token");
+    return fakeResponse(200, JSON.stringify({ activeConnections: 3 }));
+  },
+});
+assert.deepEqual(await devAdminProxy.admin.stats(), { activeConnections: 3 });
 
 await assert.rejects(
   async () => {

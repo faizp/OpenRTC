@@ -59,11 +59,14 @@ For a zero-config local client, let the SDK fetch the dev token response and
 use its embedded config:
 
 ```ts
-import { createOpenRTCDevClient } from "@openrtc/client";
+import { createOpenRTCDevAdminClient, createOpenRTCDevClient } from "@openrtc/client";
 
 const { client, room } = await createOpenRTCDevClient();
 await client.connect();
 client.enterRoom(room);
+
+const { admin } = await createOpenRTCDevAdminClient({ useProxy: true });
+await admin.stats();
 ```
 
 ## Client presence integration

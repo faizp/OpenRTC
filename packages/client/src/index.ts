@@ -135,9 +135,22 @@ export interface OpenRTCDevClientOptions
   extends Omit<OpenRTCDevTokenOptions, "kind" | "scope">,
     Omit<OpenRTCClientOptions, "url" | "token"> {}
 
+export interface OpenRTCDevAdminClientOptions
+  extends Omit<OpenRTCDevTokenOptions, "kind" | "access" | "fetch">,
+    Omit<OpenRTCAdminClientOptions, "url" | "token" | "fetch"> {
+  fetch?: OpenRTCFetch;
+  useProxy?: boolean;
+}
+
 export interface OpenRTCDevClient {
   client: OpenRTCClient;
   room: string;
+  auth: OpenRTCDevTokenResponse;
+  config: OpenRTCDevClientConfig;
+}
+
+export interface OpenRTCDevAdminClient {
+  admin: OpenRTCAdminClient;
   auth: OpenRTCDevTokenResponse;
   config: OpenRTCDevClientConfig;
 }
@@ -677,6 +690,21 @@ export async function createOpenRTCDevClient(options: OpenRTCDevClientOptions = 
   }
   const client = new OpenRTCClient(clientOptions);
   return { client, room, auth, config: auth.config };
+}
+
+export async function createOpenRTCDevAdminClient(
+  options: OpenRTCDevAdminClientOptions = {},
+): Promise<OpenRTCDevAdminClient> {
+  const auth = await fetchOpenRTCDevToken({ ...options, kind: "admin" });
+  const adminOptions: OpenRTCAdminClientOptions = {
+    url: options.useProxy ? auth.config.adminProxyURL : auth.config.adminURL,
+    token: auth.token,
+  };
+  if (options.fetch) {
+    adminOptions.fetch = options.fetch;
+  }
+  const admin = new OpenRTCAdminClient(adminOptions);
+  return { admin, auth, config: auth.config };
 }
 
 export class OpenRTCClient {

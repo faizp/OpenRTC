@@ -21,8 +21,8 @@ Open `http://127.0.0.1:3000`. Use
 `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous local client
 tokens. The token response also includes the local `config` object and default
 `room`, so browser clients can connect without hard-coding dev URLs; the
-`@openrtc/client` `createOpenRTCDevClient()` helper consumes this response
-directly. Use
+`@openrtc/client` `createOpenRTCDevClient()` and
+`createOpenRTCDevAdminClient()` helpers consume this response directly. Use
 `http://127.0.0.1:3000/dev/status` to verify Redis, runtime/admin,
 seeded-room, and endpoint readiness. Use
 `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect room active
