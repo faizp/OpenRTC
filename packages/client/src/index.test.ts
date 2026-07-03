@@ -591,6 +591,9 @@ assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
   document: { title: "Patched", version: 3 },
   source: "rollback",
+  kind: "patch",
+  opId: "op-fail-1",
+  operations: [{ op: "replace", path: "/version", value: 4 }],
 });
 
 const typedItems = liveList(["a"]);
@@ -706,6 +709,32 @@ roomSocket.receive({
 });
 assert.deepEqual(await typedUpdate, typedPublished);
 
+const autoOpSet = room.setStorage({ title: "Auto Op", version: 30 });
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_SET",
+    id: "storage-set-12",
+    room: "tenant-a:room-api",
+    payload: { title: "Auto Op", version: 30 },
+    meta: { op_id: "storage-set-12" },
+  }),
+);
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Auto Op", version: 30 },
+  source: "optimistic",
+  kind: "set",
+  opId: "storage-set-12",
+});
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-set-12",
+  room: "tenant-a:room-api",
+  payload: { kind: "set", op_id: "storage-set-12", document: { title: "Auto Op", version: 31 } },
+});
+assert.deepEqual(await autoOpSet, { title: "Auto Op", version: 31 });
+
 offOthers();
 offMyPresence();
 offEvents();
@@ -722,7 +751,7 @@ const offRoomReset = roomClient.on("room", (state) => {
 leave();
 assert.equal(
   roomSocket.sent.at(-1),
-  JSON.stringify({ t: "LEAVE", id: "leave-12", room: "tenant-a:room-api" }),
+  JSON.stringify({ t: "LEAVE", id: "leave-13", room: "tenant-a:room-api" }),
 );
 assert.equal(sawClosedRoomReset, true);
 roomSocket.close();

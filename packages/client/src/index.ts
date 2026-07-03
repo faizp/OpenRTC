@@ -609,6 +609,9 @@ interface PendingStorageGet {
 
 interface PendingStorageMutation extends PendingStorageGet {
   room: string;
+  kind: OpenRTCStorageMutationKind;
+  opId: string;
+  operations?: JSONPatchOperation[];
   hadPreviousDocument: boolean;
   previousDocument?: unknown;
 }
@@ -1471,7 +1474,7 @@ export class OpenRTCClient {
     options: OpenRTCStorageMutationOptions,
   ): Promise<TDocument> {
     const id = this.nextID(kind === "set" ? "storage-set" : "storage-patch");
-    const opId = options.opId;
+    const opId = normalizeStorageOpID(options.opId, id);
     const operations = kind === "patch" ? asJSONPatchOperations(payload) : undefined;
     if (kind === "patch" && !operations) {
       return Promise.reject(new Error("Storage patch must be a valid JSON Patch operation array"));
@@ -1498,12 +1501,15 @@ export class OpenRTCClient {
       id,
       room,
       payload: kind === "patch" ? operations : payload,
-      ...(opId ? { meta: { op_id: opId } } : {}),
+      meta: { op_id: opId },
     };
 
     return new Promise<TDocument>((resolve, reject) => {
       this.pendingStorageMutations.set(id, {
         room,
+        kind,
+        opId,
+        ...(kind === "patch" && operations ? { operations } : {}),
         hadPreviousDocument,
         ...(hadPreviousDocument ? { previousDocument } : {}),
         resolve: (document) => {
@@ -1517,7 +1523,7 @@ export class OpenRTCClient {
         this.applyStorageMessage(room, optimisticDocument, {
           source: "optimistic",
           kind,
-          ...(opId ? { opId } : {}),
+          opId,
           ...(kind === "patch" && operations ? { operations } : {}),
         });
       }
@@ -1949,8 +1955,14 @@ export class OpenRTCClient {
   }
 
   private rollbackStorageMutation(mutation: PendingStorageMutation): void {
+    const event = {
+      source: "rollback" as const,
+      kind: mutation.kind,
+      opId: mutation.opId,
+      ...(mutation.operations ? { operations: mutation.operations } : {}),
+    };
     if (mutation.hadPreviousDocument) {
-      this.applyStorageMessage(mutation.room, cloneStorageDocument(mutation.previousDocument), { source: "rollback" });
+      this.applyStorageMessage(mutation.room, cloneStorageDocument(mutation.previousDocument), event);
       return;
     }
     this.storageByRoom.delete(mutation.room);
@@ -1958,7 +1970,7 @@ export class OpenRTCClient {
     this.emit("storage", {
       room: mutation.room,
       document: undefined,
-      source: "rollback",
+      ...event,
     });
   }
 
@@ -2905,6 +2917,13 @@ function asString(value: unknown): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function normalizeStorageOpID(opId: string | undefined, fallback: string): string {
+  if (typeof opId === "string" && opId.trim() !== "") {
+    return opId;
+  }
+  return fallback;
 }
 
 function optionalSequence(value: unknown): number | undefined {

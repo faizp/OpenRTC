@@ -152,8 +152,10 @@ after a hard failure. Room storage uses the runtime `STORAGE_GET`,
 snapshot in memory, emits `storage` / `storage-status` updates, and requests a
 fresh snapshot when an active room reconnects. `setStorage` and loaded
 `patchStorage` calls apply optimistic local updates, then replace local state
-with the authoritative server ack or roll back on failure. Typed storage helpers
-build Liveblocks-style `LiveObject`, `LiveList`, and `LiveMap` envelopes and
+with the authoritative server ack or roll back on failure. Storage mutations
+send an `op_id` automatically when one is not provided, so optimistic, ack, and
+rollback events can be correlated. Typed storage helpers build Liveblocks-style
+`LiveObject`, `LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
 reserved envelope JSON. `liveMapPatch`, `liveListAppend`, `liveListInsert`,
 `liveListReplace`, `liveListRemove`, and `liveListMove` generate nested
