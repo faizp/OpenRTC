@@ -142,6 +142,13 @@ function StorageIntegrationTypes() {
   const roomId = "tenant-a:canvas-1";
   expectType<CanvasStorage | undefined>(useStorage<CanvasStorage>(roomId));
   expectType<string>(useStorageSelector<CanvasStorage, string>(roomId, (storage) => storage?.title ?? "Untitled"));
+  expectType<string>(
+    useStorageSelector<CanvasStorage, string>(
+      roomId,
+      (storage) => storage?.title ?? "Untitled",
+      { isEqual: (previous, next) => previous === next },
+    ),
+  );
   expectType<OpenRTCStorageStatus>(useStorageStatus(roomId));
   expectType<OpenRTCStoragePendingMutation[]>(useStoragePendingMutations(roomId));
 

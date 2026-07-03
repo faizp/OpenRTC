@@ -205,7 +205,8 @@ resolved `user`, `color`, and `mode` fields, and accept a `presenceKey` for apps
 with multiple cursor layers in one room. Broadcast hooks accept the same string
 or object-shaped events as room handles. Storage hooks retain the room, request
 the latest storage snapshot, subscribe to realtime updates, expose storage
-status, and provide stable set/patch mutation callbacks. Room hooks use shared
+status, support selector equality for avoiding unrelated storage updates, and
+provide stable set/patch mutation callbacks. Room hooks use shared
 entry tracking, so multiple components can subscribe to the same room without
 one cleanup leaving the room for the others. `initialPresence` is captured once
 per room entry, so inline initial presence objects do not cause accidental

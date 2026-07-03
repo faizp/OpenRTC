@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type DependencyList,
   type PointerEvent as ReactPointerEvent,
@@ -54,6 +55,11 @@ export type CursorSelector<T> = (cursor: OpenRTCCursorPeer) => T;
 export type SelfSelector<T> = (self: PresencePeer) => T;
 export type MyPresenceSelector<T> = (presence: PresenceState) => T;
 export type StorageSelector<TDocument, TSelected> = (document: TDocument | undefined) => TSelected;
+export type StorageSelectorEquality<TSelected> = (previous: TSelected, next: TSelected) => boolean;
+
+export interface StorageSelectorOptions<TSelected> extends JoinOptions {
+  isEqual?: StorageSelectorEquality<TSelected>;
+}
 
 export interface StorageMutationContext<TDocument = unknown> {
   storage: TDocument | undefined;
@@ -420,11 +426,54 @@ export function useStorage<TDocument = unknown>(room: string, options: JoinOptio
 export function useStorageSelector<TDocument, TSelected>(
   room: string,
   selector: StorageSelector<TDocument, TSelected>,
-  options: JoinOptions = {},
+  options: StorageSelectorOptions<TSelected> = {},
 ): TSelected {
-  const storage = useStorage<TDocument>(room, options);
+  const client = useOpenRTC();
+  const roomHandle = useRoomHandle(room);
+  const selectorRef = useRef(selector);
+  const isEqualRef = useRef<StorageSelectorEquality<TSelected>>(Object.is);
+  const selectedRef = useRef<{
+    room: string;
+    document: TDocument | undefined;
+    selector: StorageSelector<TDocument, TSelected>;
+    value: TSelected;
+  } | null>(null);
+  selectorRef.current = selector;
+  isEqualRef.current = options.isEqual ?? Object.is;
+  const limit = options.limit;
+  const cursor = options.cursor;
 
-  return useMemo(() => selector(storage), [storage, selector]);
+  useEffect(() => {
+    const entered = client.enterRoom(room, {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    void roomHandle.getStorage<TDocument>().catch(() => undefined);
+    return entered.leave;
+  }, [client, roomHandle, room, limit, cursor]);
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => roomHandle.subscribe("storage", onStoreChange),
+    [roomHandle],
+  );
+
+  const getSnapshot = useCallback(() => {
+    const document = roomHandle.getStorageSnapshot<TDocument>();
+    const currentSelector = selectorRef.current;
+    const previous = selectedRef.current;
+    if (previous?.room === room && previous.document === document && previous.selector === currentSelector) {
+      return previous.value;
+    }
+    const next = currentSelector(document);
+    if (previous?.room === room && isEqualRef.current(previous.value, next)) {
+      selectedRef.current = { room, document, selector: currentSelector, value: previous.value };
+      return previous.value;
+    }
+    selectedRef.current = { room, document, selector: currentSelector, value: next };
+    return next;
+  }, [roomHandle, room]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 export function useStorageStatus(room: string): OpenRTCStorageStatus {
