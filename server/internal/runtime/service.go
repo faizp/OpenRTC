@@ -1081,7 +1081,8 @@ func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) ([]stri
 		return s.snapshotStoreRoom(room, joinMeta)
 	}
 
-	return paginateRoomSnapshot(s.roomEngine().Snapshot(room), joinMeta)
+	page := pageRoomSnapshot(s.roomEngine().Snapshot(room), joinMeta)
+	return page.Members, page.Presence, page.NextCursor, nil
 }
 
 func (s *Service) snapshotJoinedRoom(room string, joinMeta *protocol.JoinMeta, localSnapshot roomengine.Snapshot) ([]string, map[string]json.RawMessage, string, error) {
@@ -1089,7 +1090,8 @@ func (s *Service) snapshotJoinedRoom(room string, joinMeta *protocol.JoinMeta, l
 		return s.snapshotStoreRoom(room, joinMeta)
 	}
 
-	return paginateRoomSnapshot(localSnapshot, joinMeta)
+	page := pageRoomSnapshot(localSnapshot, joinMeta)
+	return page.Members, page.Presence, page.NextCursor, nil
 }
 
 func (s *Service) snapshotStoreRoom(room string, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
@@ -1097,13 +1099,14 @@ func (s *Service) snapshotStoreRoom(room string, joinMeta *protocol.JoinMeta) ([
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return paginateRoomSnapshot(roomengine.Snapshot{
+	page := pageRoomSnapshot(roomengine.Snapshot{
 		Members:  snapshot.Members,
 		Presence: snapshot.Presence,
 	}, joinMeta)
+	return page.Members, page.Presence, page.NextCursor, nil
 }
 
-func paginateRoomSnapshot(snapshot roomengine.Snapshot, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
+func pageRoomSnapshot(snapshot roomengine.Snapshot, joinMeta *protocol.JoinMeta) roomengine.SnapshotPage {
 	limit := defaultJoinLimit
 	cursor := ""
 	if joinMeta != nil {
@@ -1113,8 +1116,10 @@ func paginateRoomSnapshot(snapshot roomengine.Snapshot, joinMeta *protocol.JoinM
 		cursor = joinMeta.Cursor
 	}
 
-	page, pagePresence, nextCursor := protocol.PaginateMembers(snapshot.Members, snapshot.Presence, limit, cursor)
-	return page, pagePresence, nextCursor, nil
+	return roomengine.PageSnapshot(snapshot, roomengine.SnapshotPageOptions{
+		Limit:  limit,
+		Cursor: cursor,
+	})
 }
 
 func (s *Service) getStorage(room string) (json.RawMessage, error) {

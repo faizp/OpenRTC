@@ -98,6 +98,40 @@ func TestEngineJoinResultSnapshotCopiesRoomState(t *testing.T) {
 	}
 }
 
+func TestPageSnapshot(t *testing.T) {
+	presenceState := json.RawMessage(`{"online":true}`)
+	page := PageSnapshot(Snapshot{
+		Members: []string{"c3", "c1", "c2"},
+		Presence: map[string]json.RawMessage{
+			"c1": presenceState,
+			"c2": json.RawMessage(`{"online":false}`),
+		},
+	}, SnapshotPageOptions{Limit: 2})
+	if !reflect.DeepEqual(page.Members, []string{"c1", "c2"}) || page.NextCursor != "c2" {
+		t.Fatalf("unexpected page: %#v next=%q", page.Members, page.NextCursor)
+	}
+	if len(page.Presence) != 2 {
+		t.Fatalf("expected presence subset, got %#v", page.Presence)
+	}
+	page.Presence["c1"][10] = 'f'
+	if string(presenceState) != `{"online":true}` {
+		t.Fatalf("page presence should be copied, source has %s", presenceState)
+	}
+
+	page = PageSnapshot(Snapshot{
+		Members: []string{"c3", "c1", "c2"},
+		Presence: map[string]json.RawMessage{
+			"c3": json.RawMessage(`{"online":true}`),
+		},
+	}, SnapshotPageOptions{Cursor: "c2"})
+	if !reflect.DeepEqual(page.Members, []string{"c3"}) || page.NextCursor != "" {
+		t.Fatalf("unexpected cursor page: %#v next=%q", page.Members, page.NextCursor)
+	}
+	if len(page.Presence) != 1 || string(page.Presence["c3"]) != `{"online":true}` {
+		t.Fatalf("unexpected cursor presence: %#v", page.Presence)
+	}
+}
+
 func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-1", "room-a", 0)

@@ -54,6 +54,17 @@ type Snapshot struct {
 	Presence map[string]json.RawMessage
 }
 
+type SnapshotPageOptions struct {
+	Limit  int
+	Cursor string
+}
+
+type SnapshotPage struct {
+	Members    []string
+	Presence   map[string]json.RawMessage
+	NextCursor string
+}
+
 type PresenceEventOptions struct {
 	OriginNode string
 }
@@ -273,6 +284,49 @@ func (e *Engine) Snapshot(room string) Snapshot {
 	defer e.mu.RUnlock()
 
 	return e.snapshotLocked(room)
+}
+
+func PageSnapshot(snapshot Snapshot, options SnapshotPageOptions) SnapshotPage {
+	sortedMembers := append([]string(nil), snapshot.Members...)
+	sort.Strings(sortedMembers)
+
+	start := 0
+	if options.Cursor != "" {
+		for index, member := range sortedMembers {
+			if member == options.Cursor {
+				start = index + 1
+				break
+			}
+		}
+	}
+
+	limit := options.Limit
+	if limit <= 0 || limit > len(sortedMembers) {
+		limit = len(sortedMembers)
+	}
+	end := start + limit
+	if end > len(sortedMembers) {
+		end = len(sortedMembers)
+	}
+
+	members := append([]string(nil), sortedMembers[start:end]...)
+	presence := make(map[string]json.RawMessage, len(members))
+	for _, member := range members {
+		if state, ok := snapshot.Presence[member]; ok {
+			presence[member] = append(json.RawMessage(nil), state...)
+		}
+	}
+
+	nextCursor := ""
+	if end < len(sortedMembers) {
+		nextCursor = sortedMembers[end-1]
+	}
+
+	return SnapshotPage{
+		Members:    members,
+		Presence:   presence,
+		NextCursor: nextCursor,
+	}
 }
 
 func (e *Engine) snapshotLocked(room string) Snapshot {

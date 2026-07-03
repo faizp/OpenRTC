@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/json"
 	"testing"
 
 	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
@@ -351,28 +350,5 @@ func TestValidateConnectionID(t *testing.T) {
 	}
 	if err := ValidateConnectionID(string(make([]byte, MaxConnectionIDBytes+1))); err == nil {
 		t.Fatalf("expected oversized connection id rejection")
-	}
-}
-
-func TestPaginateMembers(t *testing.T) {
-	members, presence, next := PaginateMembers([]string{"c3", "c1", "c2"}, map[string]json.RawMessage{
-		"c1": json.RawMessage(`{"online":true}`),
-		"c2": json.RawMessage(`{"online":false}`),
-	}, 2, "")
-	if len(members) != 2 || members[0] != "c1" || next != "c2" {
-		t.Fatalf("unexpected page: %#v %s", members, next)
-	}
-	if len(presence) != 2 {
-		t.Fatalf("expected presence subset")
-	}
-
-	members, presence, next = PaginateMembers([]string{"c3", "c1", "c2"}, map[string]json.RawMessage{
-		"c3": json.RawMessage(`{"online":true}`),
-	}, 0, "c2")
-	if len(members) != 1 || members[0] != "c3" || next != "" {
-		t.Fatalf("unexpected cursor page: %#v %s", members, next)
-	}
-	if len(presence) != 1 || string(presence["c3"]) != `{"online":true}` {
-		t.Fatalf("unexpected cursor presence: %#v", presence)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
 )
@@ -312,42 +311,4 @@ func isSafeIdentifier(value string) bool {
 		}
 	}
 	return true
-}
-
-func PaginateMembers(members []string, presence map[string]json.RawMessage, limit int, cursor string) ([]string, map[string]json.RawMessage, string) {
-	sortedMembers := append([]string(nil), members...)
-	sort.Strings(sortedMembers)
-
-	start := 0
-	if cursor != "" {
-		for index, member := range sortedMembers {
-			if member == cursor {
-				start = index + 1
-				break
-			}
-		}
-	}
-
-	if limit <= 0 || limit > len(sortedMembers) {
-		limit = len(sortedMembers)
-	}
-	end := start + limit
-	if end > len(sortedMembers) {
-		end = len(sortedMembers)
-	}
-
-	page := sortedMembers[start:end]
-	pagePresence := make(map[string]json.RawMessage, len(page))
-	for _, member := range page {
-		if state, ok := presence[member]; ok {
-			pagePresence[member] = state
-		}
-	}
-
-	nextCursor := ""
-	if end < len(sortedMembers) {
-		nextCursor = sortedMembers[end-1]
-	}
-
-	return page, pagePresence, nextCursor
 }
