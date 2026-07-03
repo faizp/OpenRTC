@@ -142,6 +142,11 @@ type EventOptions struct {
 	ExcludeSenderConnID string
 }
 
+type StorageEventOptions struct {
+	OriginNode          string
+	ExcludeSenderConnID string
+}
+
 type PresenceFanout struct {
 	Event         cluster.PresenceEvent
 	TargetConnIDs []string
@@ -427,6 +432,20 @@ func NewEvent(room string, eventName string, payload json.RawMessage, options Ev
 		TraceID:             options.TraceID,
 		OriginNode:          options.OriginNode,
 	}
+}
+
+func NewStorageEvent(room string, update StorageMutation, options StorageEventOptions) (cluster.PublishedEvent, error) {
+	payload, err := json.Marshal(cloneStorageMutation(update))
+	if err != nil {
+		return cluster.PublishedEvent{}, err
+	}
+	return cluster.PublishedEvent{
+		Room:                room,
+		Event:               cluster.EventStorageUpdate,
+		Payload:             payload,
+		ExcludeSenderConnID: options.ExcludeSenderConnID,
+		OriginNode:          options.OriginNode,
+	}, nil
 }
 
 func (e *Engine) Snapshot(room string) Snapshot {

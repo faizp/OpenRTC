@@ -2033,16 +2033,13 @@ func (s *Service) publishStorageMutation(ctx context.Context, room string, kind 
 	if err != nil {
 		return err
 	}
-	raw, err := json.Marshal(mutation)
+	event, err := roomengine.NewStorageEvent(room, mutation, roomengine.StorageEventOptions{
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
 	if err != nil {
 		return err
 	}
-	_, err = s.store.PublishEvent(ctx, cluster.PublishedEvent{
-		Room:       room,
-		Event:      cluster.EventStorageUpdate,
-		Payload:    raw,
-		OriginNode: "admin:" + s.cfg.NodeID,
-	})
+	_, err = s.store.PublishEvent(ctx, event)
 	return err
 }
 

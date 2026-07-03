@@ -787,3 +787,41 @@ func TestEngineStorageMutations(t *testing.T) {
 		t.Fatalf("expected invalid constructor mutation kind error, got %v", err)
 	}
 }
+
+func TestNewStorageEvent(t *testing.T) {
+	update := StorageMutation{
+		Kind:         StorageMutationPatch,
+		OpID:         "op-patch",
+		OriginConnID: "conn-1",
+		Operations: []cluster.JSONPatchOperation{
+			{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+		},
+		Document: json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Published"}}`),
+	}
+	event, err := NewStorageEvent("room-a", update, StorageEventOptions{
+		OriginNode:          "node-a",
+		ExcludeSenderConnID: "conn-1",
+	})
+	if err != nil {
+		t.Fatalf("new storage event: %v", err)
+	}
+	if event.Room != "room-a" || event.Event != cluster.EventStorageUpdate || event.OriginNode != "node-a" || event.ExcludeSenderConnID != "conn-1" {
+		t.Fatalf("unexpected storage event envelope: %+v", event)
+	}
+
+	update.Document[0] = '['
+	update.Operations[0].Value = json.RawMessage(`"Changed"`)
+	var decoded StorageMutation
+	if err := json.Unmarshal(event.Payload, &decoded); err != nil {
+		t.Fatalf("decode storage event payload: %v", err)
+	}
+	if decoded.Kind != StorageMutationPatch || decoded.OpID != "op-patch" || decoded.OriginConnID != "conn-1" {
+		t.Fatalf("unexpected storage event metadata: %+v", decoded)
+	}
+	if len(decoded.Operations) != 1 || decoded.Operations[0].Op != "replace" || string(decoded.Operations[0].Value) != `"Published"` {
+		t.Fatalf("unexpected storage event operations: %+v", decoded.Operations)
+	}
+	if string(decoded.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Published"}}` {
+		t.Fatalf("unexpected storage event document: %s", decoded.Document)
+	}
+}

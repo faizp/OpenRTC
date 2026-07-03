@@ -1141,17 +1141,14 @@ func (s *Service) publishStorageUpdate(room string, update roomengine.StorageMut
 	if s.store == nil {
 		return nil
 	}
-	payload, err := json.Marshal(update)
+	event, err := roomengine.NewStorageEvent(room, update, roomengine.StorageEventOptions{
+		OriginNode:          s.cfg.NodeID,
+		ExcludeSenderConnID: excludeConnID,
+	})
 	if err != nil {
 		return err
 	}
-	_, err = s.store.PublishEvent(s.ctx, cluster.PublishedEvent{
-		Room:                room,
-		Event:               storageClusterEvent,
-		Payload:             payload,
-		ExcludeSenderConnID: excludeConnID,
-		OriginNode:          s.cfg.NodeID,
-	})
+	_, err = s.store.PublishEvent(s.ctx, event)
 	return err
 }
 
