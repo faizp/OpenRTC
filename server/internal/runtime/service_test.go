@@ -921,12 +921,12 @@ func TestRuntimeHandleJoinLocalBranches(t *testing.T) {
 	if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.Room != "tenant-a:room-1" {
 		t.Fatalf("unexpected joined response: %+v", got)
 	} else {
-		payload, ok := got.Payload.(map[string]any)
+		payload, ok := got.Payload.(roomengine.SnapshotPage)
 		if !ok {
 			t.Fatalf("unexpected joined payload type: %#v", got.Payload)
 		}
-		if members, ok := payload["members"].([]string); !ok || !reflect.DeepEqual(members, []string{"conn-1"}) {
-			t.Fatalf("unexpected joined members: %#v", payload["members"])
+		if !reflect.DeepEqual(payload.Members, []string{"conn-1"}) {
+			t.Fatalf("unexpected joined members: %#v", payload.Members)
 		}
 	}
 
@@ -1267,12 +1267,12 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 	setRuntimePresence(service, sender, "tenant-a:room-1", json.RawMessage(`{"cursor":{"x":1}}`))
 	setRuntimePresence(service, receiver, "tenant-a:room-1", json.RawMessage(`{"cursor":{"x":2}}`))
 
-	members, presence, nextCursor, err := service.snapshotRoom("tenant-a:room-1", &protocol.JoinMeta{Limit: 1})
+	snapshot, err := service.snapshotRoom("tenant-a:room-1", &protocol.JoinMeta{Limit: 1})
 	if err != nil {
 		t.Fatalf("snapshot room: %v", err)
 	}
-	if len(members) != 1 || nextCursor == "" || len(presence) != 1 {
-		t.Fatalf("expected paginated snapshot with presence, members=%v presence=%v next=%q", members, presence, nextCursor)
+	if len(snapshot.Members) != 1 || snapshot.NextCursor == "" || len(snapshot.Presence) != 1 {
+		t.Fatalf("expected paginated snapshot with presence, members=%v presence=%v next=%q", snapshot.Members, snapshot.Presence, snapshot.NextCursor)
 	}
 
 	if err := service.broadcastEvent(cluster.PublishedEvent{

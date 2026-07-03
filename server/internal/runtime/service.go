@@ -590,7 +590,7 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		return err
 	}
 
-	roomMembers, roomPresence, nextCursor, err := s.snapshotJoinedRoom(message.Room, message.JoinMeta, joinResult.Snapshot)
+	roomSnapshot, err := s.snapshotJoinedRoom(message.Room, message.JoinMeta, joinResult)
 	if err != nil {
 		return err
 	}
@@ -600,14 +600,10 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 	}
 
 	if err := conn.enqueue(outboundMessage{
-		T:    "JOINED",
-		ID:   message.ID,
-		Room: message.Room,
-		Payload: map[string]any{
-			"members":     roomMembers,
-			"presence":    roomPresence,
-			"next_cursor": nextCursor,
-		},
+		T:       "JOINED",
+		ID:      message.ID,
+		Room:    message.Room,
+		Payload: roomSnapshot,
 	}); err != nil {
 		return err
 	}
@@ -1086,37 +1082,34 @@ func (s *Service) broadcastYJSFanout(fanout roomengine.YJSFanout) error {
 	return nil
 }
 
-func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
+func (s *Service) snapshotRoom(room string, joinMeta *protocol.JoinMeta) (roomengine.SnapshotPage, error) {
 	if s.store != nil {
 		return s.snapshotStoreRoom(room, joinMeta)
 	}
 
-	page := pageRoomSnapshot(s.roomEngine().Snapshot(room), joinMeta)
-	return page.Members, page.Presence, page.NextCursor, nil
+	return roomengine.PageSnapshot(s.roomEngine().Snapshot(room), snapshotPageOptions(joinMeta)), nil
 }
 
-func (s *Service) snapshotJoinedRoom(room string, joinMeta *protocol.JoinMeta, localSnapshot roomengine.Snapshot) ([]string, map[string]json.RawMessage, string, error) {
+func (s *Service) snapshotJoinedRoom(room string, joinMeta *protocol.JoinMeta, joinResult roomengine.JoinResult) (roomengine.SnapshotPage, error) {
 	if s.store != nil {
 		return s.snapshotStoreRoom(room, joinMeta)
 	}
 
-	page := pageRoomSnapshot(localSnapshot, joinMeta)
-	return page.Members, page.Presence, page.NextCursor, nil
+	return joinResult.PageSnapshot(snapshotPageOptions(joinMeta)), nil
 }
 
-func (s *Service) snapshotStoreRoom(room string, joinMeta *protocol.JoinMeta) ([]string, map[string]json.RawMessage, string, error) {
+func (s *Service) snapshotStoreRoom(room string, joinMeta *protocol.JoinMeta) (roomengine.SnapshotPage, error) {
 	snapshot, err := s.store.SnapshotRoom(s.ctx, room)
 	if err != nil {
-		return nil, nil, "", err
+		return roomengine.SnapshotPage{}, err
 	}
-	page := pageRoomSnapshot(roomengine.Snapshot{
+	return roomengine.PageSnapshot(roomengine.Snapshot{
 		Members:  snapshot.Members,
 		Presence: snapshot.Presence,
-	}, joinMeta)
-	return page.Members, page.Presence, page.NextCursor, nil
+	}, snapshotPageOptions(joinMeta)), nil
 }
 
-func pageRoomSnapshot(snapshot roomengine.Snapshot, joinMeta *protocol.JoinMeta) roomengine.SnapshotPage {
+func snapshotPageOptions(joinMeta *protocol.JoinMeta) roomengine.SnapshotPageOptions {
 	limit := defaultJoinLimit
 	cursor := ""
 	if joinMeta != nil {
@@ -1126,10 +1119,10 @@ func pageRoomSnapshot(snapshot roomengine.Snapshot, joinMeta *protocol.JoinMeta)
 		cursor = joinMeta.Cursor
 	}
 
-	return roomengine.PageSnapshot(snapshot, roomengine.SnapshotPageOptions{
+	return roomengine.SnapshotPageOptions{
 		Limit:  limit,
 		Cursor: cursor,
-	})
+	}
 }
 
 func (s *Service) getStorage(room string) (json.RawMessage, error) {

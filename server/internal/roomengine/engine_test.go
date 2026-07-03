@@ -98,6 +98,10 @@ func TestEngineJoinResultSnapshotCopiesRoomState(t *testing.T) {
 	if string(result.Snapshot.Presence["conn-1"]) != `{"cursor":{"x":1}}` {
 		t.Fatalf("unexpected join snapshot presence: %s", result.Snapshot.Presence["conn-1"])
 	}
+	page := result.PageSnapshot(SnapshotPageOptions{Limit: 1})
+	if !reflect.DeepEqual(page.Members, []string{"conn-1"}) || page.NextCursor != "conn-1" {
+		t.Fatalf("unexpected join result snapshot page: %#v next=%q", page.Members, page.NextCursor)
+	}
 
 	result.Snapshot.Members[0] = "changed"
 	result.Snapshot.Presence["conn-1"][12] = '9'
@@ -124,6 +128,23 @@ func TestPageSnapshot(t *testing.T) {
 	}
 	if len(page.Presence) != 2 {
 		t.Fatalf("expected presence subset, got %#v", page.Presence)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatalf("marshal page: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal page payload: %v", err)
+	}
+	if _, ok := payload["members"]; !ok {
+		t.Fatalf("page should serialize members with wire key, got %s", encoded)
+	}
+	if _, ok := payload["next_cursor"]; !ok {
+		t.Fatalf("page should serialize next cursor with wire key, got %s", encoded)
+	}
+	if _, ok := payload["NextCursor"]; ok {
+		t.Fatalf("page should not serialize Go field names, got %s", encoded)
 	}
 	page.Presence["c1"][10] = 'f'
 	if string(presenceState) != `{"online":true}` {

@@ -71,9 +71,9 @@ type SnapshotPageOptions struct {
 }
 
 type SnapshotPage struct {
-	Members    []string
-	Presence   map[string]json.RawMessage
-	NextCursor string
+	Members    []string                   `json:"members"`
+	Presence   map[string]json.RawMessage `json:"presence"`
+	NextCursor string                     `json:"next_cursor"`
 }
 
 type PresenceEventOptions struct {
@@ -301,6 +301,10 @@ func (e *Engine) Snapshot(room string) Snapshot {
 	defer e.mu.RUnlock()
 
 	return e.snapshotLocked(room)
+}
+
+func (result JoinResult) PageSnapshot(options SnapshotPageOptions) SnapshotPage {
+	return PageSnapshot(result.Snapshot, options)
 }
 
 func PageSnapshot(snapshot Snapshot, options SnapshotPageOptions) SnapshotPage {
