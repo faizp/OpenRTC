@@ -44,7 +44,8 @@ type JoinResult struct {
 }
 
 type LeaveResult struct {
-	Left bool
+	Left           bool
+	PresenceFanout *PresenceFanout
 }
 
 type Snapshot struct {
@@ -54,6 +55,11 @@ type Snapshot struct {
 
 type PresenceEventOptions struct {
 	OriginNode string
+}
+
+type PresenceFanout struct {
+	Event         cluster.PresenceEvent
+	TargetConnIDs []string
 }
 
 type StorageMutationOptions struct {
@@ -108,6 +114,14 @@ func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, er
 }
 
 func (e *Engine) Leave(connID string, room string) LeaveResult {
+	return e.leave(connID, room, PresenceEventOptions{}, false)
+}
+
+func (e *Engine) LeaveWithPresenceFanout(connID string, room string, options PresenceEventOptions) LeaveResult {
+	return e.leave(connID, room, options, true)
+}
+
+func (e *Engine) leave(connID string, room string, options PresenceEventOptions, includeFanout bool) LeaveResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -121,10 +135,28 @@ func (e *Engine) Leave(connID string, room string) LeaveResult {
 	}
 	e.removeRoomMemberLocked(connID, room)
 	e.removePresenceLocked(connID, room)
-	return LeaveResult{Left: true}
+	result := LeaveResult{Left: true}
+	if includeFanout {
+		fanout := PresenceFanout{
+			Event:         NewOfflinePresenceEvent(connID, room, options),
+			TargetConnIDs: e.memberIDsLocked(room, ""),
+		}
+		result.PresenceFanout = &fanout
+	}
+	return result
 }
 
 func (e *Engine) Disconnect(connID string) []string {
+	rooms, _ := e.disconnect(connID, PresenceEventOptions{}, false)
+	return rooms
+}
+
+func (e *Engine) DisconnectPresenceFanouts(connID string, options PresenceEventOptions) []PresenceFanout {
+	_, fanouts := e.disconnect(connID, options, true)
+	return fanouts
+}
+
+func (e *Engine) disconnect(connID string, options PresenceEventOptions, includeFanouts bool) ([]string, []PresenceFanout) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -132,18 +164,32 @@ func (e *Engine) Disconnect(connID string) []string {
 	rooms := make([]string, 0, len(joinedRooms))
 	for room := range joinedRooms {
 		rooms = append(rooms, room)
+	}
+	sort.Strings(rooms)
+
+	fanouts := make([]PresenceFanout, 0, len(rooms))
+	for _, room := range rooms {
 		e.removeRoomMemberLocked(connID, room)
 		e.removePresenceLocked(connID, room)
+		if includeFanouts {
+			fanouts = append(fanouts, PresenceFanout{
+				Event:         NewOfflinePresenceEvent(connID, room, options),
+				TargetConnIDs: e.memberIDsLocked(room, ""),
+			})
+		}
 	}
 	delete(e.connRooms, connID)
-	sort.Strings(rooms)
-	return rooms
+	return rooms, fanouts
 }
 
 func (e *Engine) SetPresence(connID string, room string, payload json.RawMessage) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	e.setPresenceLocked(connID, room, payload)
+}
+
+func (e *Engine) setPresenceLocked(connID string, room string, payload json.RawMessage) {
 	roomPresence := e.presence[room]
 	if roomPresence == nil {
 		roomPresence = make(map[string]json.RawMessage)
@@ -153,8 +199,28 @@ func (e *Engine) SetPresence(connID string, room string, payload json.RawMessage
 }
 
 func (e *Engine) SetPresenceEvent(connID string, room string, payload json.RawMessage, options PresenceEventOptions) cluster.PresenceEvent {
-	e.SetPresence(connID, room, payload)
-	return NewPresenceEvent(connID, room, payload, options)
+	return e.SetPresenceFanout(connID, room, payload, options).Event
+}
+
+func (e *Engine) SetPresenceFanout(connID string, room string, payload json.RawMessage, options PresenceEventOptions) PresenceFanout {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.setPresenceLocked(connID, room, payload)
+	return PresenceFanout{
+		Event:         NewPresenceEvent(connID, room, payload, options),
+		TargetConnIDs: e.memberIDsLocked(room, ""),
+	}
+}
+
+func (e *Engine) PresenceFanout(event cluster.PresenceEvent) PresenceFanout {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return PresenceFanout{
+		Event:         clonePresenceEvent(event),
+		TargetConnIDs: e.memberIDsLocked(event.Room, ""),
+	}
 }
 
 func NewPresenceEvent(connID string, room string, payload json.RawMessage, options PresenceEventOptions) cluster.PresenceEvent {
@@ -200,6 +266,10 @@ func (e *Engine) MemberIDs(room string, excludeConnID string) []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	return e.memberIDsLocked(room, excludeConnID)
+}
+
+func (e *Engine) memberIDsLocked(room string, excludeConnID string) []string {
 	members := make([]string, 0, len(e.rooms[room]))
 	for connID := range e.rooms[room] {
 		if excludeConnID != "" && connID == excludeConnID {
@@ -434,6 +504,11 @@ func cloneStorageOperations(operations []cluster.JSONPatchOperation) []cluster.J
 		cloned[i].Value = append(json.RawMessage(nil), operation.Value...)
 	}
 	return cloned
+}
+
+func clonePresenceEvent(event cluster.PresenceEvent) cluster.PresenceEvent {
+	event.State = append(json.RawMessage(nil), event.State...)
+	return event
 }
 
 func compactJSON(raw json.RawMessage) (json.RawMessage, error) {

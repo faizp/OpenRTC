@@ -66,9 +66,13 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	_, _ = engine.Join("conn-2", "room-a", 0)
 
 	payload := json.RawMessage(`{"cursor":{"x":1}}`)
-	event := engine.SetPresenceEvent("conn-1", "room-a", payload, PresenceEventOptions{OriginNode: "node-a"})
+	fanout := engine.SetPresenceFanout("conn-1", "room-a", payload, PresenceEventOptions{OriginNode: "node-a"})
+	event := fanout.Event
 	if event.Room != "room-a" || event.ConnID != "conn-1" || event.OriginNode != "node-a" || event.Offline {
 		t.Fatalf("unexpected presence event metadata: %+v", event)
+	}
+	if !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("unexpected presence fanout targets: %#v", fanout.TargetConnIDs)
 	}
 	payload[12] = '9'
 	if string(event.State) != `{"cursor":{"x":1}}` {
@@ -91,14 +95,71 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	if got := engine.MemberIDs("room-a", "conn-1"); !reflect.DeepEqual(got, []string{"conn-2"}) {
 		t.Fatalf("unexpected target ids: %#v", got)
 	}
-	offline := NewOfflinePresenceEvent("conn-1", "room-a", PresenceEventOptions{OriginNode: "node-a"})
+	remotePayload := json.RawMessage(`{"remote":true}`)
+	remoteFanout := engine.PresenceFanout(cluster.PresenceEvent{
+		Room:       "room-a",
+		ConnID:     "remote-1",
+		State:      remotePayload,
+		OriginNode: "node-b",
+	})
+	if !reflect.DeepEqual(remoteFanout.TargetConnIDs, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("unexpected remote presence fanout targets: %#v", remoteFanout.TargetConnIDs)
+	}
+	remotePayload[10] = 'f'
+	if string(remoteFanout.Event.State) != `{"remote":true}` {
+		t.Fatalf("remote fanout event state should be copied, got %s", remoteFanout.Event.State)
+	}
+
+	left := engine.LeaveWithPresenceFanout("conn-1", "room-a", PresenceEventOptions{OriginNode: "node-a"})
+	if !left.Left || left.PresenceFanout == nil {
+		t.Fatalf("expected leave presence fanout, got %+v", left)
+	}
+	offline := left.PresenceFanout.Event
 	if offline.Room != "room-a" || offline.ConnID != "conn-1" || offline.OriginNode != "node-a" || !offline.Offline || len(offline.State) != 0 {
 		t.Fatalf("unexpected offline presence event: %+v", offline)
 	}
-	engine.Leave("conn-1", "room-a")
+	if !reflect.DeepEqual(left.PresenceFanout.TargetConnIDs, []string{"conn-2"}) {
+		t.Fatalf("unexpected offline fanout targets: %#v", left.PresenceFanout.TargetConnIDs)
+	}
 	snapshot = engine.Snapshot("room-a")
 	if _, ok := snapshot.Presence["conn-1"]; ok {
 		t.Fatalf("presence should be removed after leave")
+	}
+}
+
+func TestEngineDisconnectPresenceFanouts(t *testing.T) {
+	engine := New()
+	_, _ = engine.Join("conn-1", "room-b", 0)
+	_, _ = engine.Join("conn-1", "room-a", 0)
+	_, _ = engine.Join("conn-2", "room-a", 0)
+	_, _ = engine.Join("conn-3", "room-b", 0)
+	engine.SetPresence("conn-1", "room-a", json.RawMessage(`{"cursor":{"x":1}}`))
+	engine.SetPresence("conn-1", "room-b", json.RawMessage(`{"cursor":{"x":2}}`))
+
+	fanouts := engine.DisconnectPresenceFanouts("conn-1", PresenceEventOptions{OriginNode: "node-a"})
+	if len(fanouts) != 2 {
+		t.Fatalf("expected two disconnect fanouts, got %#v", fanouts)
+	}
+	if fanouts[0].Event.Room != "room-a" || fanouts[0].Event.ConnID != "conn-1" || !fanouts[0].Event.Offline {
+		t.Fatalf("unexpected first disconnect fanout event: %+v", fanouts[0].Event)
+	}
+	if !reflect.DeepEqual(fanouts[0].TargetConnIDs, []string{"conn-2"}) {
+		t.Fatalf("unexpected room-a disconnect targets: %#v", fanouts[0].TargetConnIDs)
+	}
+	if fanouts[1].Event.Room != "room-b" || fanouts[1].Event.ConnID != "conn-1" || !fanouts[1].Event.Offline {
+		t.Fatalf("unexpected second disconnect fanout event: %+v", fanouts[1].Event)
+	}
+	if !reflect.DeepEqual(fanouts[1].TargetConnIDs, []string{"conn-3"}) {
+		t.Fatalf("unexpected room-b disconnect targets: %#v", fanouts[1].TargetConnIDs)
+	}
+	if got := engine.JoinedRooms("conn-1"); len(got) != 0 {
+		t.Fatalf("expected disconnected connection rooms to be cleared, got %#v", got)
+	}
+	if _, ok := engine.Snapshot("room-a").Presence["conn-1"]; ok {
+		t.Fatalf("expected room-a presence to be removed")
+	}
+	if _, ok := engine.Snapshot("room-b").Presence["conn-1"]; ok {
+		t.Fatalf("expected room-b presence to be removed")
 	}
 }
 
