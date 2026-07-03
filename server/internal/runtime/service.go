@@ -790,10 +790,11 @@ func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 }
 
 func (s *Service) handleClusterPresence(event cluster.PresenceEvent) {
-	if event.OriginNode == s.cfg.NodeID {
+	plan := roomengine.NewClusterPresencePlan(event, s.cfg.NodeID)
+	if !plan.Deliver {
 		return
 	}
-	_ = s.broadcastPresenceFanout(s.roomEngine().PresenceFanout(event))
+	_ = s.broadcastPresenceFanout(s.roomEngine().PresenceFanout(plan.Event))
 }
 
 func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool) error {
@@ -952,10 +953,11 @@ func (s *Service) broadcastStorageFanout(fanout roomengine.StorageFanout) error 
 }
 
 func (s *Service) handleClusterYJSEvent(event cluster.YJSEvent) {
-	if event.OriginNode == s.cfg.NodeID {
+	plan := roomengine.NewClusterYJSEventPlan(event, s.cfg.NodeID)
+	if !plan.Deliver {
 		return
 	}
-	_ = s.broadcastYJSEvent(event)
+	_ = s.broadcastYJSEvent(plan.Event)
 }
 
 func (s *Service) loadYJSDocument(room string) (cluster.YJSDocument, error) {

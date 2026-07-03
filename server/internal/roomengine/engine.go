@@ -168,6 +168,16 @@ type ClusterEventPlan struct {
 	Kind  ClusterEventKind
 }
 
+type ClusterPresencePlan struct {
+	Event   cluster.PresenceEvent
+	Deliver bool
+}
+
+type ClusterYJSEventPlan struct {
+	Event   cluster.YJSEvent
+	Deliver bool
+}
+
 type YJSEventOptions struct {
 	OriginNode   string
 	OriginConnID string
@@ -515,6 +525,20 @@ func IsNotificationEvent(eventName string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func NewClusterPresencePlan(event cluster.PresenceEvent, localNode string) ClusterPresencePlan {
+	return ClusterPresencePlan{
+		Event:   clonePresenceEvent(event),
+		Deliver: event.OriginNode != localNode,
+	}
+}
+
+func NewClusterYJSEventPlan(event cluster.YJSEvent, localNode string) ClusterYJSEventPlan {
+	return ClusterYJSEventPlan{
+		Event:   cloneYJSEvent(event),
+		Deliver: event.OriginNode != localNode,
 	}
 }
 

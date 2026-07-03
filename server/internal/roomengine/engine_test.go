@@ -564,6 +564,63 @@ func TestNewClusterEventPlan(t *testing.T) {
 	}
 }
 
+func TestNewClusterPresenceAndYJSPlans(t *testing.T) {
+	presenceState := json.RawMessage(`{"cursor":{"x":1}}`)
+	presence := cluster.PresenceEvent{
+		Room:       "room-a",
+		ConnID:     "conn-1",
+		State:      presenceState,
+		OriginNode: "node-b",
+	}
+	presencePlan := NewClusterPresencePlan(presence, "node-a")
+	if !presencePlan.Deliver {
+		t.Fatalf("remote presence should be delivered")
+	}
+	if presencePlan.Event.Room != "room-a" || presencePlan.Event.ConnID != "conn-1" || presencePlan.Event.OriginNode != "node-b" {
+		t.Fatalf("unexpected presence plan event: %+v", presencePlan.Event)
+	}
+	presenceState[0] = '['
+	if string(presencePlan.Event.State) != `{"cursor":{"x":1}}` {
+		t.Fatalf("presence plan state should be copied, got %s", presencePlan.Event.State)
+	}
+	sameNodePresence := NewClusterPresencePlan(cluster.PresenceEvent{
+		Room:       "room-a",
+		ConnID:     "conn-1",
+		OriginNode: "node-a",
+	}, "node-a")
+	if sameNodePresence.Deliver {
+		t.Fatalf("same-node presence should not be delivered")
+	}
+
+	yjsUpdate := []byte("subdoc-update")
+	yjsPlan := NewClusterYJSEventPlan(cluster.YJSEvent{
+		Room:         "room-a",
+		Kind:         cluster.YJSEventSubdocUpdate,
+		Update:       yjsUpdate,
+		OriginNode:   "node-b",
+		OriginConnID: "conn-1",
+		Sequence:     12,
+	}, "node-a")
+	if !yjsPlan.Deliver {
+		t.Fatalf("remote yjs event should be delivered")
+	}
+	if yjsPlan.Event.Kind != cluster.YJSEventSubdocUpdate || yjsPlan.Event.Sequence != 12 || yjsPlan.Event.OriginConnID != "conn-1" {
+		t.Fatalf("unexpected yjs plan event: %+v", yjsPlan.Event)
+	}
+	yjsUpdate[0] = 'X'
+	if string(yjsPlan.Event.Update) != "subdoc-update" {
+		t.Fatalf("yjs plan update should be copied, got %q", yjsPlan.Event.Update)
+	}
+	sameNodeYJS := NewClusterYJSEventPlan(cluster.YJSEvent{
+		Room:       "room-a",
+		Kind:       cluster.YJSEventUpdate,
+		OriginNode: "node-a",
+	}, "node-a")
+	if sameNodeYJS.Deliver {
+		t.Fatalf("same-node yjs event should not be delivered")
+	}
+}
+
 func TestEngineNotificationFanoutTargetsSessionsBySubject(t *testing.T) {
 	engine := New()
 	touch := engine.RegisterSession(SessionInfo{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"})
