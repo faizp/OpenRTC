@@ -46,6 +46,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 
 - `http://127.0.0.1:3000/jwks` for local token verification.
 - `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous client JWTs.
+- `http://127.0.0.1:3000/dev/status` for Redis, runtime/admin, seeded-room, and endpoint readiness.
 - `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
 - `http://127.0.0.1:8090` for the admin API.
 - `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.

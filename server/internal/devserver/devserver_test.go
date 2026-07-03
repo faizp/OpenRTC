@@ -226,6 +226,83 @@ func TestSeedRoomsReportsStorageErrors(t *testing.T) {
 	}
 }
 
+func TestHandleStatusReportsHealthyDevStack(t *testing.T) {
+	store := newFakeSeedStore()
+	if err := seedRooms(context.Background(), store, []string{"demo:room-1"}); err != nil {
+		t.Fatalf("seed rooms: %v", err)
+	}
+	opts := options{
+		host:        "127.0.0.1",
+		appPort:     3000,
+		runtimePort: 8080,
+		adminPort:   8090,
+		seedRooms:   []string{"demo:room-1"},
+	}
+	handler := handleStatus(opts, store, runningManagedService("runtime"), runningManagedService("admin"))
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/status", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devStatusSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if body.Status != "ok" || !body.Redis.Healthy || !body.Runtime.Running || !body.Admin.Running {
+		t.Fatalf("unexpected healthy status: %+v", body)
+	}
+	if len(body.SeedRooms) != 1 || body.SeedRooms[0].Room != "demo:room-1" || !body.SeedRooms[0].Exists || !body.SeedRooms[0].StorageFound {
+		t.Fatalf("unexpected seed room status: %+v", body.SeedRooms)
+	}
+	if body.Endpoints.Token != "http://127.0.0.1:3000/dev/token?pubkey=pk_localdev" ||
+		body.Endpoints.RuntimeWS != "ws://127.0.0.1:8080/ws" ||
+		body.Endpoints.Storage != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" {
+		t.Fatalf("unexpected endpoints: %+v", body.Endpoints)
+	}
+}
+
+func TestHandleStatusReportsDegradedDevStack(t *testing.T) {
+	store := newFakeSeedStore()
+	store.healthyErr = context.Canceled
+	store.rooms["demo:room-1"] = cluster.RoomRecord{ID: "demo:room-1"}
+	opts := options{
+		host:        "127.0.0.1",
+		appPort:     3000,
+		runtimePort: 8080,
+		adminPort:   8090,
+		seedRooms:   []string{"demo:room-1", "demo:missing"},
+	}
+	handler := handleStatus(opts, store, &managedService{name: "runtime"}, nil)
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/status", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devStatusSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if body.Status != "degraded" || body.Redis.Healthy || body.Runtime.Running || body.Admin.Running {
+		t.Fatalf("unexpected degraded status: %+v", body)
+	}
+	if body.Redis.Error == "" {
+		t.Fatalf("expected redis error in degraded status")
+	}
+	if len(body.SeedRooms) != 2 || !body.SeedRooms[0].Exists || body.SeedRooms[0].StorageFound || body.SeedRooms[1].Exists {
+		t.Fatalf("unexpected degraded seed room status: %+v", body.SeedRooms)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/status", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+}
+
 func TestHandleSocketsReportsRuntimeSnapshot(t *testing.T) {
 	service := &runtimeapp.Service{}
 	handler := handleSockets(func() *runtimeapp.Service { return service })
@@ -445,7 +522,9 @@ func stringSliceClaim(value any) []string {
 type fakeSeedStore struct {
 	rooms         map[string]cluster.RoomRecord
 	storage       map[string]json.RawMessage
+	healthyErr    error
 	createRoomErr error
+	getRoomErr    error
 	getStorageErr error
 	setStorageErr error
 }
@@ -466,6 +545,21 @@ func (s *fakeSeedStore) CreateRoom(_ context.Context, room cluster.RoomRecord) (
 	}
 	s.rooms[room.ID] = room
 	return room, nil
+}
+
+func (s *fakeSeedStore) Healthy(context.Context) error {
+	return s.healthyErr
+}
+
+func (s *fakeSeedStore) GetRoom(_ context.Context, room string) (cluster.RoomRecord, error) {
+	if s.getRoomErr != nil {
+		return cluster.RoomRecord{}, s.getRoomErr
+	}
+	record, ok := s.rooms[room]
+	if !ok {
+		return cluster.RoomRecord{}, cluster.ErrRoomNotFound
+	}
+	return record, nil
 }
 
 func (s *fakeSeedStore) GetStorage(_ context.Context, room string) (json.RawMessage, error) {
@@ -491,6 +585,10 @@ func (s *fakeSeedStore) SetStorage(_ context.Context, room string, document json
 	}
 	s.storage[room] = append(json.RawMessage(nil), document...)
 	return document, nil
+}
+
+func runningManagedService(name string) *managedService {
+	return &managedService{name: name, server: &http.Server{}}
 }
 
 type fakeDevStorageStore struct {

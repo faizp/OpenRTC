@@ -50,6 +50,7 @@ The dev server starts:
 - OpenRTC admin API at `http://127.0.0.1:8090`
 - Same-origin admin proxy at `http://127.0.0.1:3000/admin`
 - Same-origin runtime proxy at `http://127.0.0.1:3000/runtime`
+- Dev stack status at `http://127.0.0.1:3000/dev/status`
 - Active-user reads at `http://127.0.0.1:3000/dev/connections?room=demo:room-1`
 - Local runtime socket reads at `http://127.0.0.1:3000/dev/sockets`
 - Seeded typed storage reads at `http://127.0.0.1:3000/dev/storage?room=demo:room-1`

@@ -71,6 +71,12 @@ type seedStore interface {
 	SetStorage(ctx context.Context, room string, document json.RawMessage) (json.RawMessage, error)
 }
 
+type devStatusStore interface {
+	Healthy(ctx context.Context) error
+	GetRoom(ctx context.Context, room string) (cluster.RoomRecord, error)
+	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
+}
+
 type storageGetter interface {
 	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
 }
@@ -95,6 +101,52 @@ type devEventsSnapshot struct {
 	AfterSequence uint64                   `json:"after_seq"`
 	Limit         int                      `json:"limit"`
 	Events        []cluster.PublishedEvent `json:"events"`
+}
+
+type devStatusSnapshot struct {
+	Status    string                  `json:"status"`
+	Redis     devDependencyStatus     `json:"redis"`
+	Runtime   devManagedServiceStatus `json:"runtime"`
+	Admin     devManagedServiceStatus `json:"admin"`
+	SeedRooms []devSeedRoomStatus     `json:"seed_rooms"`
+	Endpoints devEndpointSnapshot     `json:"endpoints"`
+}
+
+type devDependencyStatus struct {
+	Healthy bool   `json:"healthy"`
+	Error   string `json:"error,omitempty"`
+}
+
+type devManagedServiceStatus struct {
+	Running bool   `json:"running"`
+	URL     string `json:"url"`
+	Health  string `json:"healthz"`
+	Ready   string `json:"readyz"`
+}
+
+type devSeedRoomStatus struct {
+	Room         string `json:"room"`
+	Exists       bool   `json:"exists"`
+	StorageFound bool   `json:"storage_found"`
+	Error        string `json:"error,omitempty"`
+}
+
+type devEndpointSnapshot struct {
+	App          string `json:"app"`
+	Config       string `json:"config"`
+	JWKS         string `json:"jwks"`
+	Token        string `json:"token"`
+	RuntimeWS    string `json:"runtime_ws"`
+	RuntimeYJS   string `json:"runtime_yjs"`
+	RuntimeProxy string `json:"runtime_proxy"`
+	AdminAPI     string `json:"admin_api"`
+	AdminProxy   string `json:"admin_proxy"`
+	Connections  string `json:"connections"`
+	Sockets      string `json:"sockets"`
+	Storage      string `json:"storage"`
+	Events       string `json:"events"`
+	CrashRuntime string `json:"crash_runtime"`
+	CrashAdmin   string `json:"crash_admin"`
 }
 
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -234,6 +286,7 @@ func run(ctx context.Context, opts options) error {
 	mux.HandleFunc("/dev/token", handleToken)
 	mux.HandleFunc("/dev/config", handleDevConfig(opts))
 	mux.HandleFunc("/config", handleDevConfig(opts))
+	mux.HandleFunc("/dev/status", handleStatus(opts, store, runtimeSvc, adminSvc))
 	mux.HandleFunc("/dev/connections", handleConnections(store))
 	mux.HandleFunc("/dev/sockets", handleSockets(currentRuntimeService))
 	mux.HandleFunc("/dev/storage", handleStorage(store, currentRuntimeService))
@@ -321,6 +374,12 @@ func (s *managedService) stop(ctx context.Context) {
 func (s *managedService) restart() error {
 	s.stop(context.Background())
 	return s.start()
+}
+
+func (s *managedService) running() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.server != nil
 }
 
 func devConfig(nodeID string, host string, port int, wsPath string, allowedOrigin string, redisURL string, jwksURL string) (config.RuntimeConfig, error) {
@@ -496,6 +555,121 @@ func handleDevConfig(opts options) http.HandlerFunc {
 			"seedRooms":       opts.seedRooms,
 		})
 	}
+}
+
+func handleStatus(opts options, store devStatusStore, runtimeSvc *managedService, adminSvc *managedService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+
+		snapshot := devStatusSnapshot{
+			Status:    "ok",
+			Redis:     devDependencyStatus{Healthy: true},
+			Runtime:   managedServiceStatus(runtimeSvc, devHTTPURL(opts.host, opts.runtimePort, "")),
+			Admin:     managedServiceStatus(adminSvc, devHTTPURL(opts.host, opts.adminPort, "")),
+			SeedRooms: seedRoomStatuses(r.Context(), store, opts.seedRooms),
+			Endpoints: devEndpoints(opts),
+		}
+		if err := store.Healthy(r.Context()); err != nil {
+			snapshot.Redis.Healthy = false
+			snapshot.Redis.Error = err.Error()
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if !devStatusHealthy(snapshot) {
+			snapshot.Status = "degraded"
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(w).Encode(snapshot)
+	}
+}
+
+func managedServiceStatus(service *managedService, baseURL string) devManagedServiceStatus {
+	return devManagedServiceStatus{
+		Running: service != nil && service.running(),
+		URL:     baseURL,
+		Health:  baseURL + "/healthz",
+		Ready:   baseURL + "/readyz",
+	}
+}
+
+func seedRoomStatuses(ctx context.Context, store devStatusStore, rooms []string) []devSeedRoomStatus {
+	statuses := make([]devSeedRoomStatus, 0, len(rooms))
+	for _, room := range rooms {
+		if room == "" {
+			continue
+		}
+		status := devSeedRoomStatus{Room: room}
+		if _, err := store.GetRoom(ctx, room); err != nil {
+			status.Error = err.Error()
+		} else {
+			status.Exists = true
+		}
+		if _, err := store.GetStorage(ctx, room); err != nil {
+			if !errors.Is(err, cluster.ErrStorageNotFound) {
+				status.Error = joinErrors(status.Error, err.Error())
+			}
+		} else {
+			status.StorageFound = true
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+func devStatusHealthy(snapshot devStatusSnapshot) bool {
+	if !snapshot.Redis.Healthy || !snapshot.Runtime.Running || !snapshot.Admin.Running {
+		return false
+	}
+	for _, room := range snapshot.SeedRooms {
+		if !room.Exists || !room.StorageFound || room.Error != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func joinErrors(existing string, next string) string {
+	if existing == "" {
+		return next
+	}
+	if next == "" {
+		return existing
+	}
+	return existing + "; " + next
+}
+
+func devEndpoints(opts options) devEndpointSnapshot {
+	firstRoom := firstSeedRoom(opts.seedRooms)
+	appURL := devHTTPURL(opts.host, opts.appPort, "")
+	adminURL := devHTTPURL(opts.host, opts.adminPort, "")
+	return devEndpointSnapshot{
+		App:          appURL,
+		Config:       appURL + "/dev/config",
+		JWKS:         appURL + "/jwks",
+		Token:        appURL + "/dev/token?pubkey=" + localPublicKey,
+		RuntimeWS:    devWSURL(opts.host, opts.runtimePort, "/ws"),
+		RuntimeYJS:   devWSURL(opts.host, opts.runtimePort, "/yjs/"+firstRoom),
+		RuntimeProxy: appURL + "/runtime",
+		AdminAPI:     adminURL,
+		AdminProxy:   appURL + "/admin",
+		Connections:  appURL + "/dev/connections?room=" + firstRoom,
+		Sockets:      appURL + "/dev/sockets",
+		Storage:      appURL + "/dev/storage?room=" + firstRoom,
+		Events:       appURL + "/dev/events?room=" + firstRoom,
+		CrashRuntime: appURL + "/dev/crash/runtime",
+		CrashAdmin:   appURL + "/dev/crash/admin",
+	}
+}
+
+func devHTTPURL(host string, port int, path string) string {
+	return fmt.Sprintf("http://%s:%d%s", host, port, path)
+}
+
+func devWSURL(host string, port int, path string) string {
+	return fmt.Sprintf("ws://%s:%d%s", host, port, path)
 }
 
 func handleConnections(store cluster.Store) http.HandlerFunc {

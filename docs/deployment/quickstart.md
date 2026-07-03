@@ -19,9 +19,11 @@ go run ./server/cmd/openrtc dev
 
 Open `http://127.0.0.1:3000`. Use
 `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous local client
-tokens and `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect
-room active users. Use `http://127.0.0.1:3000/dev/sockets` to inspect the
-actual local runtime WebSocket and Yjs sockets, and
+tokens and `http://127.0.0.1:3000/dev/status` to verify Redis, runtime/admin,
+seeded-room, and endpoint readiness. Use
+`http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect room active
+users, `http://127.0.0.1:3000/dev/sockets` to inspect the actual local runtime
+WebSocket and Yjs sockets, and
 `http://127.0.0.1:3000/dev/events?room=demo:room-1` to inspect the bounded room
 event log that powers join catch-up. The Ops tab includes a runtime reconnect
 drill that restarts the local runtime and verifies reconnect plus presence echo.
