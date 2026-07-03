@@ -167,6 +167,11 @@ type YJSPersistencePlan struct {
 	Mode  string
 }
 
+type YJSFrame struct {
+	Kind   cluster.YJSEventKind
+	Update []byte
+}
+
 type PresenceFanout struct {
 	Event         cluster.PresenceEvent
 	TargetConnIDs []string
@@ -504,6 +509,31 @@ func (plan YJSPersistencePlan) WithSequence(sequence int64) cluster.YJSEvent {
 	event := cloneYJSEvent(plan.Event)
 	event.Sequence = sequence
 	return event
+}
+
+func NewYJSDocumentFrames(document cluster.YJSDocument) []YJSFrame {
+	frameCount := len(document.Updates)
+	if len(document.Snapshot) > 0 {
+		frameCount++
+	}
+	frames := make([]YJSFrame, 0, frameCount)
+	if len(document.Snapshot) > 0 {
+		frames = append(frames, YJSFrame{
+			Kind:   cluster.YJSEventSnapshot,
+			Update: append([]byte(nil), document.Snapshot...),
+		})
+	}
+	for index, update := range document.Updates {
+		kind := cluster.YJSEventUpdate
+		if len(document.UpdateKinds) == len(document.Updates) {
+			kind = document.UpdateKinds[index]
+		}
+		frames = append(frames, YJSFrame{
+			Kind:   kind,
+			Update: append([]byte(nil), update...),
+		})
+	}
+	return frames
 }
 
 func (e *Engine) Snapshot(room string) Snapshot {

@@ -781,6 +781,44 @@ func TestNewYJSPersistencePlan(t *testing.T) {
 	}
 }
 
+func TestNewYJSDocumentFrames(t *testing.T) {
+	document := cluster.YJSDocument{
+		Snapshot:    []byte("snapshot"),
+		Updates:     [][]byte{[]byte("update"), []byte("subdoc-update")},
+		UpdateKinds: []cluster.YJSEventKind{cluster.YJSEventUpdate, cluster.YJSEventSubdocUpdate},
+	}
+	frames := NewYJSDocumentFrames(document)
+	if len(frames) != 3 {
+		t.Fatalf("expected three frames, got %#v", frames)
+	}
+	if frames[0].Kind != cluster.YJSEventSnapshot || string(frames[0].Update) != "snapshot" {
+		t.Fatalf("unexpected snapshot frame: %+v", frames[0])
+	}
+	if frames[1].Kind != cluster.YJSEventUpdate || string(frames[1].Update) != "update" {
+		t.Fatalf("unexpected update frame: %+v", frames[1])
+	}
+	if frames[2].Kind != cluster.YJSEventSubdocUpdate || string(frames[2].Update) != "subdoc-update" {
+		t.Fatalf("unexpected subdoc frame: %+v", frames[2])
+	}
+	document.Snapshot[0] = 'X'
+	document.Updates[0][0] = 'X'
+	if string(frames[0].Update) != "snapshot" || string(frames[1].Update) != "update" {
+		t.Fatalf("document frames should copy source bytes: %#v", frames)
+	}
+
+	fallbackFrames := NewYJSDocumentFrames(cluster.YJSDocument{
+		Updates:     [][]byte{[]byte("legacy")},
+		UpdateKinds: []cluster.YJSEventKind{cluster.YJSEventSubdocUpdate, cluster.YJSEventUpdate},
+	})
+	if len(fallbackFrames) != 1 || fallbackFrames[0].Kind != cluster.YJSEventUpdate || string(fallbackFrames[0].Update) != "legacy" {
+		t.Fatalf("unexpected fallback frame: %#v", fallbackFrames)
+	}
+
+	if frames := NewYJSDocumentFrames(cluster.YJSDocument{}); len(frames) != 0 {
+		t.Fatalf("empty document should produce no frames, got %#v", frames)
+	}
+}
+
 func TestEngineStorageSetGetAndPatch(t *testing.T) {
 	engine := New()
 	if _, err := engine.GetStorage("room-a"); !errors.Is(err, cluster.ErrStorageNotFound) {

@@ -473,17 +473,8 @@ func (s *Service) handleClientMessage(conn *clientConn, payload []byte) error {
 }
 
 func sendYJSDocument(conn *yjsConn, document cluster.YJSDocument) error {
-	if len(document.Snapshot) > 0 {
-		if err := conn.enqueueFrame(yjsFrameSnapshot, document.Snapshot); err != nil {
-			return err
-		}
-	}
-	for index, update := range document.Updates {
-		kind := yjsFrameUpdate
-		if len(document.UpdateKinds) == len(document.Updates) {
-			kind = byte(document.UpdateKinds[index])
-		}
-		if err := conn.enqueueFrame(kind, update); err != nil {
+	for _, frame := range roomengine.NewYJSDocumentFrames(document) {
+		if err := conn.enqueueFrame(byte(frame.Kind), frame.Update); err != nil {
 			return err
 		}
 	}
