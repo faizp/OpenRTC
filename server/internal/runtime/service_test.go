@@ -1228,6 +1228,9 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		if service.stats.PresenceUpdatesTotal != 0 || service.metrics.PresenceUpdatesTotal.Load() != 0 {
 			t.Fatalf("presence stats/metrics should not increment after publish failure")
 		}
+		if _, ok := service.roomEngine().Snapshot("tenant-a:room-1").Presence[conn.id]; ok {
+			t.Fatalf("presence publish failure should not apply local presence")
+		}
 	})
 }
 

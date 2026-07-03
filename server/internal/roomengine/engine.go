@@ -235,6 +235,10 @@ type PresenceFanout struct {
 	TargetConnIDs []string
 }
 
+type PresenceSetPlan struct {
+	Fanout PresenceFanout
+}
+
 type EventFanout struct {
 	Event         cluster.PublishedEvent
 	TargetConnIDs []string
@@ -492,14 +496,28 @@ func (e *Engine) SetPresenceEvent(connID string, room string, payload json.RawMe
 }
 
 func (e *Engine) SetPresenceFanout(connID string, room string, payload json.RawMessage, options PresenceEventOptions) PresenceFanout {
+	plan := e.NewPresenceSetPlan(connID, room, payload, options)
+	return e.ApplyPresenceSetPlan(plan)
+}
+
+func (e *Engine) NewPresenceSetPlan(connID string, room string, payload json.RawMessage, options PresenceEventOptions) PresenceSetPlan {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return PresenceSetPlan{
+		Fanout: PresenceFanout{
+			Event:         NewPresenceEvent(connID, room, payload, options),
+			TargetConnIDs: e.memberIDsLocked(room, ""),
+		},
+	}
+}
+
+func (e *Engine) ApplyPresenceSetPlan(plan PresenceSetPlan) PresenceFanout {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.setPresenceLocked(connID, room, payload)
-	return PresenceFanout{
-		Event:         NewPresenceEvent(connID, room, payload, options),
-		TargetConnIDs: e.memberIDsLocked(room, ""),
-	}
+	e.setPresenceLocked(plan.Fanout.Event.ConnID, plan.Fanout.Event.Room, plan.Fanout.Event.State)
+	return plan.Fanout
 }
 
 func (e *Engine) PresenceFanout(event cluster.PresenceEvent) PresenceFanout {

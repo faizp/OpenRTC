@@ -639,16 +639,17 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 		})
 	}
 
-	fanout := s.roomEngine().SetPresenceFanout(conn.id, message.Room, message.Payload, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
+	plan := s.roomEngine().NewPresenceSetPlan(conn.id, message.Room, message.Payload, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
 	if s.store != nil {
 		if err := s.store.SetPresence(s.ctx, conn.id, message.Room, message.Payload); err != nil {
 			return err
 		}
 	}
 
-	if err := s.publishPresenceFanout(fanout); err != nil {
+	if err := s.publishPresenceFanout(plan.Fanout); err != nil {
 		return err
 	}
+	fanout := s.roomEngine().ApplyPresenceSetPlan(plan)
 	if err := s.broadcastPresenceFanout(fanout); err != nil {
 		return err
 	}

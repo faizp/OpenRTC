@@ -333,6 +333,34 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	}
 }
 
+func TestEnginePresenceSetPlanAppliesAfterSideEffects(t *testing.T) {
+	engine := New()
+	_, _ = engine.Join("conn-1", "room-a", 0)
+	_, _ = engine.Join("conn-2", "room-a", 0)
+
+	payload := json.RawMessage(`{"n":1}`)
+	plan := engine.NewPresenceSetPlan("conn-1", "room-a", payload, PresenceEventOptions{OriginNode: "node-a"})
+	if _, ok := engine.Snapshot("room-a").Presence["conn-1"]; ok {
+		t.Fatalf("presence set plan should not mutate presence before apply")
+	}
+	if !reflect.DeepEqual(plan.Fanout.TargetConnIDs, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("unexpected planned presence fanout targets: %#v", plan.Fanout.TargetConnIDs)
+	}
+	payload[len(payload)-2] = '9'
+	if string(plan.Fanout.Event.State) != `{"n":1}` {
+		t.Fatalf("presence plan state should be copied, got %s", plan.Fanout.Event.State)
+	}
+
+	fanout := engine.ApplyPresenceSetPlan(plan)
+	if !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-1", "conn-2"}) {
+		t.Fatalf("unexpected applied presence fanout targets: %#v", fanout.TargetConnIDs)
+	}
+	snapshot := engine.Snapshot("room-a")
+	if string(snapshot.Presence["conn-1"]) != `{"n":1}` {
+		t.Fatalf("presence should apply from planned state, got %s", snapshot.Presence["conn-1"])
+	}
+}
+
 func TestEngineDisconnectPresenceFanouts(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-1", "room-b", 0)
