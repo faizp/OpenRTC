@@ -865,7 +865,12 @@ func (s *Service) handleClusterPresence(event cluster.PresenceEvent) {
 }
 
 func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool) error {
-	targetIDs := s.roomEngine().MemberIDs(event.Room, event.ExcludeSenderConnID)
+	return s.broadcastEventFanout(s.roomEngine().EventFanout(event), countMetric)
+}
+
+func (s *Service) broadcastEventFanout(fanout roomengine.EventFanout, countMetric bool) error {
+	event := fanout.Event
+	targetIDs := fanout.TargetConnIDs
 	s.mu.RLock()
 	targets := make([]*clientConn, 0, len(targetIDs))
 	for _, connID := range targetIDs {
@@ -984,7 +989,11 @@ func eventOutboundMessage(event cluster.PublishedEvent) outboundMessage {
 }
 
 func (s *Service) broadcastStorageUpdate(room string, update roomengine.StorageMutation, excludeConnID string) error {
-	targetIDs := s.roomEngine().MemberIDs(room, excludeConnID)
+	return s.broadcastStorageFanout(s.roomEngine().StorageFanout(room, update, excludeConnID))
+}
+
+func (s *Service) broadcastStorageFanout(fanout roomengine.StorageFanout) error {
+	targetIDs := fanout.TargetConnIDs
 	s.mu.RLock()
 	targets := make([]*clientConn, 0, len(targetIDs))
 	for _, connID := range targetIDs {
@@ -997,8 +1006,8 @@ func (s *Service) broadcastStorageUpdate(room string, update roomengine.StorageM
 	for _, target := range targets {
 		if err := target.enqueue(outboundMessage{
 			T:       "STORAGE_UPDATE",
-			Room:    room,
-			Payload: update,
+			Room:    fanout.Room,
+			Payload: fanout.Update,
 		}); err != nil {
 			return err
 		}

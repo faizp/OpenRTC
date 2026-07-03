@@ -62,6 +62,11 @@ type PresenceFanout struct {
 	TargetConnIDs []string
 }
 
+type EventFanout struct {
+	Event         cluster.PublishedEvent
+	TargetConnIDs []string
+}
+
 type StorageMutationOptions struct {
 	MaxBytes     int
 	OpID         string
@@ -74,6 +79,12 @@ type StorageMutation struct {
 	OriginConnID string                       `json:"origin_conn_id,omitempty"`
 	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
 	Document     json.RawMessage              `json:"document"`
+}
+
+type StorageFanout struct {
+	Room          string
+	Update        StorageMutation
+	TargetConnIDs []string
 }
 
 func New() *Engine {
@@ -220,6 +231,16 @@ func (e *Engine) PresenceFanout(event cluster.PresenceEvent) PresenceFanout {
 	return PresenceFanout{
 		Event:         clonePresenceEvent(event),
 		TargetConnIDs: e.memberIDsLocked(event.Room, ""),
+	}
+}
+
+func (e *Engine) EventFanout(event cluster.PublishedEvent) EventFanout {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return EventFanout{
+		Event:         clonePublishedEvent(event),
+		TargetConnIDs: e.memberIDsLocked(event.Room, event.ExcludeSenderConnID),
 	}
 }
 
@@ -471,6 +492,17 @@ func NewStorageMutation(kind string, document json.RawMessage, operations []clus
 	return newStorageMutation(kind, document, operations, options), nil
 }
 
+func (e *Engine) StorageFanout(room string, update StorageMutation, excludeConnID string) StorageFanout {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return StorageFanout{
+		Room:          room,
+		Update:        cloneStorageMutation(update),
+		TargetConnIDs: e.memberIDsLocked(room, excludeConnID),
+	}
+}
+
 func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 	if members := e.rooms[room]; members != nil {
 		delete(members, connID)
@@ -506,8 +538,23 @@ func cloneStorageOperations(operations []cluster.JSONPatchOperation) []cluster.J
 	return cloned
 }
 
+func cloneStorageMutation(update StorageMutation) StorageMutation {
+	return StorageMutation{
+		Kind:         update.Kind,
+		OpID:         update.OpID,
+		OriginConnID: update.OriginConnID,
+		Operations:   cloneStorageOperations(update.Operations),
+		Document:     append(json.RawMessage(nil), update.Document...),
+	}
+}
+
 func clonePresenceEvent(event cluster.PresenceEvent) cluster.PresenceEvent {
 	event.State = append(json.RawMessage(nil), event.State...)
+	return event
+}
+
+func clonePublishedEvent(event cluster.PublishedEvent) cluster.PublishedEvent {
+	event.Payload = append(json.RawMessage(nil), event.Payload...)
 	return event
 }
 

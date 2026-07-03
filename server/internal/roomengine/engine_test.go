@@ -163,6 +163,59 @@ func TestEngineDisconnectPresenceFanouts(t *testing.T) {
 	}
 }
 
+func TestEngineEventAndStorageFanouts(t *testing.T) {
+	engine := New()
+	_, _ = engine.Join("conn-sender", "room-a", 0)
+	_, _ = engine.Join("conn-b", "room-a", 0)
+	_, _ = engine.Join("conn-a", "room-a", 0)
+
+	payload := json.RawMessage(`{"ok":true}`)
+	eventFanout := engine.EventFanout(cluster.PublishedEvent{
+		Room:                "room-a",
+		Event:               "doc.update",
+		Payload:             payload,
+		ExcludeSenderConnID: "conn-sender",
+		OriginNode:          "node-a",
+		TraceID:             "trace-1",
+		Sequence:            7,
+	})
+	if !reflect.DeepEqual(eventFanout.TargetConnIDs, []string{"conn-a", "conn-b"}) {
+		t.Fatalf("unexpected event fanout targets: %#v", eventFanout.TargetConnIDs)
+	}
+	if eventFanout.Event.Event != "doc.update" || eventFanout.Event.TraceID != "trace-1" || eventFanout.Event.Sequence != 7 {
+		t.Fatalf("unexpected event fanout metadata: %+v", eventFanout.Event)
+	}
+	payload[0] = '['
+	if string(eventFanout.Event.Payload) != `{"ok":true}` {
+		t.Fatalf("event fanout payload should be copied, got %s", eventFanout.Event.Payload)
+	}
+
+	update := StorageMutation{
+		Kind:         StorageMutationPatch,
+		OpID:         "op-patch",
+		OriginConnID: "conn-sender",
+		Operations: []cluster.JSONPatchOperation{
+			{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+		},
+		Document: json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Published"}}`),
+	}
+	storageFanout := engine.StorageFanout("room-a", update, "conn-sender")
+	if storageFanout.Room != "room-a" || !reflect.DeepEqual(storageFanout.TargetConnIDs, []string{"conn-a", "conn-b"}) {
+		t.Fatalf("unexpected storage fanout: %+v", storageFanout)
+	}
+	if storageFanout.Update.Kind != StorageMutationPatch || storageFanout.Update.OpID != "op-patch" || len(storageFanout.Update.Operations) != 1 {
+		t.Fatalf("unexpected storage fanout update: %+v", storageFanout.Update)
+	}
+	update.Document[0] = '['
+	update.Operations[0].Value[1] = 'X'
+	if string(storageFanout.Update.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Published"}}` {
+		t.Fatalf("storage fanout document should be copied, got %s", storageFanout.Update.Document)
+	}
+	if string(storageFanout.Update.Operations[0].Value) != `"Published"` {
+		t.Fatalf("storage fanout operations should be copied, got %#v", storageFanout.Update.Operations)
+	}
+}
+
 func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	engine := New()
 	engine.RegisterYJSConn("conn-1", "room-a")
