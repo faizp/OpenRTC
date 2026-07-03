@@ -55,7 +55,7 @@ The dev server starts:
 - Local runtime socket reads at `http://127.0.0.1:3000/dev/sockets`
 - Seeded typed storage reads at `http://127.0.0.1:3000/dev/storage?room=demo:room-1`
 - Bounded room event-log reads at `http://127.0.0.1:3000/dev/events?room=demo:room-1`
-- Ops reconnect drill that restarts the local runtime and verifies reconnect plus presence echo
+- Ops dev status, socket/event inspection, and reconnect drill
 
 The older reference server entrypoint still works from this directory:
 

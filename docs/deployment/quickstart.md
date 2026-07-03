@@ -25,8 +25,9 @@ seeded-room, and endpoint readiness. Use
 users, `http://127.0.0.1:3000/dev/sockets` to inspect the actual local runtime
 WebSocket and Yjs sockets, and
 `http://127.0.0.1:3000/dev/events?room=demo:room-1` to inspect the bounded room
-event log that powers join catch-up. The Ops tab includes a runtime reconnect
-drill that restarts the local runtime and verifies reconnect plus presence echo.
+event log that powers join catch-up. The Ops tab includes dev status,
+socket/event inspection, and a runtime reconnect drill that restarts the local
+runtime and verifies reconnect plus presence echo.
 Seeded rooms include a small typed `LiveObject` storage document unless storage
 already exists, so `http://127.0.0.1:3000/dev/storage?room=demo:room-1` is useful
 immediately after startup.

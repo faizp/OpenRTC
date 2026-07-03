@@ -1927,6 +1927,7 @@
               <button type="button" onclick="runAction('ops-output', checkHealth)">Health</button>
               <button type="button" onclick="runAction('probe-log', loadStats)">Stats</button>
               <button type="button" onclick="runAction('ops-output', loadMetrics)">Metrics</button>
+              <button type="button" onclick="runAction('ops-output', loadDevStatus)">Dev status</button>
               <button type="button" onclick="runAction('ops-output', loadDevSockets)">Dev sockets</button>
               <button type="button" onclick="runAction('ops-output', loadDevEvents)">Dev events</button>
             </div>
@@ -3221,6 +3222,12 @@
       byId("ops-output").textContent = chunks.join("\n\n");
     }
 
+    async function loadDevStatus() {
+      const snapshot = await readDevStatus("ops-output", { allowDegraded: true });
+      setOutput("ops-output", snapshot);
+      return snapshot;
+    }
+
     async function loadDevSockets() {
       const snapshot = await readDevSockets(currentRoom(), "ops-output");
       setOutput("ops-output", snapshot);
@@ -3304,6 +3311,7 @@
         await ensureConfig();
         await issueTokens();
         await checkHealth();
+        await readDevStatus("probe-log", { allowUnavailable: true });
         await adminJSON("/v1/rooms", { method: "POST", body: samples.roomCreate() }, "probe-log");
         await adminJSON("/v1/rooms/" + enc(currentRoom()), {}, "probe-log");
         await adminJSON("/v1/rooms/" + enc(currentRoom()), { method: "PATCH", body: samples.roomUpdate() }, "probe-log");
@@ -3400,6 +3408,25 @@
       return { status: response.status, body };
     }
 
+    async function readDevStatus(logID = "ops-output", options = {}) {
+      const allowedStatuses = [];
+      if (options.allowUnavailable) {
+        allowedStatuses.push(404, 503);
+      } else if (options.allowDegraded) {
+        allowedStatuses.push(503);
+      }
+      const result = await devJSON("/dev/status", {}, logID, { allowStatuses: allowedStatuses });
+      if (result.status === 404) {
+        return {
+          unavailable: true,
+          status: result.status,
+          message: "Dev stack status requires openrtc dev",
+        };
+      }
+      updateDevStatusIndicators(result.body);
+      return result.body;
+    }
+
     async function readDevSockets(room = "", logID = "ops-output", options = {}) {
       const path = "/dev/sockets" + (room ? "?room=" + encodeURIComponent(room) : "");
       const extra = options.allowUnavailable ? { allowStatuses: [404, 503] } : {};
@@ -3430,6 +3457,20 @@
         };
       }
       return result.body;
+    }
+
+    function updateDevStatusIndicators(snapshot) {
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+        return;
+      }
+      if (snapshot.runtime && typeof snapshot.runtime === "object") {
+        setDot("runtime-dot", snapshot.runtime.running ? "ok" : "err");
+        byId("runtime-status").textContent = snapshot.runtime.running ? "Runtime running" : "Runtime stopped";
+      }
+      if (snapshot.admin && typeof snapshot.admin === "object") {
+        setDot("admin-dot", snapshot.admin.running ? "ok" : "err");
+        byId("admin-status").textContent = snapshot.admin.running ? "Admin running" : "Admin stopped";
+      }
     }
 
     async function waitForHTTPReady(path, timeoutMs, label) {
