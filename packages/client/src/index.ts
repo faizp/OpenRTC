@@ -272,6 +272,10 @@ export interface OpenRTCStorageMutationOptions {
   opId?: string;
 }
 
+export interface OpenRTCLiveNodePatchOptions {
+  basePath?: string;
+}
+
 export interface OpenRTCStorageEvent<TDocument = unknown> {
   room: string;
   document: TDocument | undefined;
@@ -2472,7 +2476,7 @@ export function isLiveStorageNode(value: unknown, type?: OpenRTCLiveStorageType)
 
 export function liveObjectPatch<TData extends Record<string, unknown>>(
   patch: Partial<TData>,
-  options: { basePath?: string } = {},
+  options: OpenRTCLiveNodePatchOptions = {},
 ): JSONPatchOperation[] {
   assertLiveRecordData(patch, "LiveObject patch");
   const entries = Object.entries(patch);
@@ -2485,6 +2489,87 @@ export function liveObjectPatch<TData extends Record<string, unknown>>(
     path: joinJSONPointer(basePath, key),
     value,
   }));
+}
+
+export function liveMapPatch<TData extends Record<string, unknown>>(
+  patch: Partial<TData>,
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  assertLiveRecordData(patch, "LiveMap patch");
+  const entries = Object.entries(patch);
+  if (entries.length === 0) {
+    throw new Error("LiveMap patch must contain at least one field");
+  }
+  const basePath = options.basePath ?? "/data";
+  return entries.map(([key, value]) => ({
+    op: "add",
+    path: joinJSONPointer(basePath, key),
+    value,
+  }));
+}
+
+export function liveListAppend<TItem = unknown>(
+  value: TItem,
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  return [
+    {
+      op: "add",
+      path: joinJSONPointer(options.basePath ?? "/data", "-"),
+      value,
+    },
+  ];
+}
+
+export function liveListInsert<TItem = unknown>(
+  index: number,
+  value: TItem,
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  return [
+    {
+      op: "add",
+      path: liveListIndexPath(index, options),
+      value,
+    },
+  ];
+}
+
+export function liveListReplace<TItem = unknown>(
+  index: number,
+  value: TItem,
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  return [
+    {
+      op: "replace",
+      path: liveListIndexPath(index, options),
+      value,
+    },
+  ];
+}
+
+export function liveListRemove(index: number, options: OpenRTCLiveNodePatchOptions = {}): JSONPatchOperation[] {
+  return [
+    {
+      op: "remove",
+      path: liveListIndexPath(index, options),
+    },
+  ];
+}
+
+export function liveListMove(
+  fromIndex: number,
+  toIndex: number,
+  options: OpenRTCLiveNodePatchOptions = {},
+): JSONPatchOperation[] {
+  return [
+    {
+      op: "move",
+      from: liveListIndexPath(fromIndex, options),
+      path: liveListIndexPath(toIndex, options),
+    },
+  ];
 }
 
 export function isOpenRTCCursor(value: unknown): value is OpenRTCCursor {
@@ -2806,6 +2891,13 @@ function assertLiveRecordData(value: unknown, typeName: string): asserts value i
   if (!isRecordObject(value)) {
     throw new Error(`${typeName} data must be a JSON object`);
   }
+}
+
+function liveListIndexPath(index: number, options: OpenRTCLiveNodePatchOptions): string {
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error("LiveList index must be a non-negative integer");
+  }
+  return joinJSONPointer(options.basePath ?? "/data", String(index));
 }
 
 function assertPatchValue(operation: JSONPatchOperation): void {

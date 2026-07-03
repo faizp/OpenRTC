@@ -16,6 +16,12 @@ import {
   isLiveMap,
   isLiveObject,
   isLiveStorageNode,
+  liveListAppend,
+  liveListInsert,
+  liveListMove,
+  liveListRemove,
+  liveListReplace,
+  liveMapPatch,
   liveList,
   liveMap,
   liveObject,
@@ -592,6 +598,26 @@ assert.equal(isLiveStorageNode(typedRoot, "LiveObject"), true);
 assert.deepEqual(liveObjectPatch({ "a/b": 1 }, { basePath: "/data/props/data" }), [
   { op: "add", path: "/data/props/data/a~1b", value: 1 },
 ]);
+assert.deepEqual(liveMapPatch({ "a/b": false }, { basePath: "/data/props/data" }), [
+  { op: "add", path: "/data/props/data/a~1b", value: false },
+]);
+assert.deepEqual(liveListAppend("b", { basePath: "/data/items/data" }), [
+  { op: "add", path: "/data/items/data/-", value: "b" },
+]);
+assert.deepEqual(liveListInsert(0, "z", { basePath: "/data/items/data" }), [
+  { op: "add", path: "/data/items/data/0", value: "z" },
+]);
+assert.deepEqual(liveListReplace(1, "B", { basePath: "/data/items/data" }), [
+  { op: "replace", path: "/data/items/data/1", value: "B" },
+]);
+assert.deepEqual(liveListRemove(2, { basePath: "/data/items/data" }), [
+  { op: "remove", path: "/data/items/data/2" },
+]);
+assert.deepEqual(liveListMove(0, 1, { basePath: "/data/items/data" }), [
+  { op: "move", from: "/data/items/data/0", path: "/data/items/data/1" },
+]);
+assert.throws(() => liveMapPatch({}, { basePath: "/data/props/data" }), /LiveMap patch must contain/);
+assert.throws(() => liveListInsert(-1, "x", { basePath: "/data/items/data" }), /non-negative integer/);
 
 const typedSet = room.setLiveStorage(
   { title: "Typed Draft", items: typedItems, props: typedProps },
@@ -616,6 +642,37 @@ roomSocket.receive({
 });
 assert.deepEqual(await typedSet, typedRoot);
 
+const typedCollectionUpdate = room.patchStorage([
+  ...liveListAppend("b", { basePath: "/data/items/data" }),
+  ...liveMapPatch({ visible: false }, { basePath: "/data/props/data" }),
+], { opId: "typed-collections-1" });
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_PATCH",
+    id: "storage-patch-10",
+    room: "tenant-a:room-api",
+    payload: [
+      { op: "add", path: "/data/items/data/-", value: "b" },
+      { op: "add", path: "/data/props/data/visible", value: false },
+    ],
+    meta: { op_id: "typed-collections-1" },
+  }),
+);
+const typedCollections = liveObject({
+  title: "Typed Draft",
+  items: liveList(["a", "b"]),
+  props: liveMap({ visible: false }),
+});
+assert.deepEqual(room.getStorageSnapshot(), typedCollections);
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-patch-10",
+  room: "tenant-a:room-api",
+  payload: { kind: "patch", op_id: "typed-collections-1", document: typedCollections },
+});
+assert.deepEqual(await typedCollectionUpdate, typedCollections);
+
 const typedUpdate = room.updateLiveStorage<{ title: string; items: unknown; props: unknown }>(
   { title: "Typed Published" },
   { opId: "typed-update-1" },
@@ -624,17 +681,21 @@ assert.equal(
   roomSocket.sent.at(-1),
   JSON.stringify({
     t: "STORAGE_PATCH",
-    id: "storage-patch-10",
+    id: "storage-patch-11",
     room: "tenant-a:room-api",
     payload: [{ op: "add", path: "/data/title", value: "Typed Published" }],
     meta: { op_id: "typed-update-1" },
   }),
 );
-const typedPublished = liveObject({ title: "Typed Published", items: typedItems, props: typedProps });
+const typedPublished = liveObject({
+  title: "Typed Published",
+  items: liveList(["a", "b"]),
+  props: liveMap({ visible: false }),
+});
 assert.deepEqual(room.getStorageSnapshot(), typedPublished);
 roomSocket.receive({
   t: "STORAGE_ACK",
-  id: "storage-patch-10",
+  id: "storage-patch-11",
   room: "tenant-a:room-api",
   payload: { kind: "patch", op_id: "typed-update-1", document: typedPublished },
 });
@@ -656,7 +717,7 @@ const offRoomReset = roomClient.on("room", (state) => {
 leave();
 assert.equal(
   roomSocket.sent.at(-1),
-  JSON.stringify({ t: "LEAVE", id: "leave-11", room: "tenant-a:room-api" }),
+  JSON.stringify({ t: "LEAVE", id: "leave-12", room: "tenant-a:room-api" }),
 );
 assert.equal(sawClosedRoomReset, true);
 roomSocket.close();

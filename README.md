@@ -62,7 +62,7 @@ room handle for app integrations that need ephemeral presence, live cursors,
 debuggable broadcast events, and realtime room storage.
 
 ```ts
-import { OpenRTCClient, liveList, liveMap, liveObject } from "@openrtc/client";
+import { OpenRTCClient, liveList, liveListAppend, liveMap, liveMapPatch, liveObject } from "@openrtc/client";
 
 const client = new OpenRTCClient({
   url: "https://openrtc.example.com/ws",
@@ -113,6 +113,10 @@ const typedRoot = liveObject({
 });
 await room.setLiveStorage(typedRoot, { opId: "typed-init-1" });
 await room.updateLiveStorage({ title: "Typed Review" }, { opId: "typed-title-1" });
+await room.patchStorage([
+  ...liveListAppend("next", { basePath: "/data/items/data" }),
+  ...liveMapPatch({ visible: false }, { basePath: "/data/props/data" }),
+], { opId: "typed-nested-1" });
 
 unsubscribe();
 unsubscribeLostConnection();
@@ -136,7 +140,10 @@ fresh snapshot when an active room reconnects. `setStorage` and loaded
 with the authoritative server ack or roll back on failure. Typed storage helpers
 build Liveblocks-style `LiveObject`, `LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
-reserved envelope JSON. Collaborative text remains owned by the Yjs provider.
+reserved envelope JSON. `liveMapPatch`, `liveListAppend`, `liveListInsert`,
+`liveListReplace`, `liveListRemove`, and `liveListMove` generate nested
+typed-node JSON Patch operations for `room.patchStorage`. Collaborative text
+remains owned by the Yjs provider.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
