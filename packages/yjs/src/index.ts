@@ -18,6 +18,8 @@ export interface OpenRTCYjsProviderOptions {
   token: string | (() => string | Promise<string>);
   doc: Y.Doc;
   WebSocket?: YJSWebSocketConstructor;
+  autoReconnect?: boolean;
+  reconnect?: OpenRTCYjsReconnectOptions;
   offlineStore?: OpenRTCYjsOfflineStore;
   snapshotIntervalMs?: number;
   stateVectorSync?: boolean;
@@ -29,8 +31,15 @@ export interface OpenRTCYjsProviderOptions {
   awarenessOptions?: OpenRTCAwarenessBridgeOptions;
 }
 
-export type YjsConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
-export type YjsSyncStatus = "idle" | "connecting" | "syncing" | "synced" | "closed" | "error";
+export interface OpenRTCYjsReconnectOptions {
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  maxAttempts?: number;
+  jitterRatio?: number;
+}
+
+export type YjsConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "error";
+export type YjsSyncStatus = "idle" | "connecting" | "reconnecting" | "syncing" | "synced" | "closed" | "error";
 export type YjsSyncedFrameKind = "update" | "snapshot" | "state-vector-diff" | "subdoc-update" | "subdoc-state-vector-diff";
 export type YjsOfflineUpdateSource = "local" | "remote";
 
@@ -73,6 +82,10 @@ export interface OpenRTCYjsSyncState {
   offlineBytesLoaded: number;
   offlineUpdatesStored: number;
   offlineBytesStored: number;
+  pendingLocalSync: boolean;
+  reconnectAttempts: number;
+  nextReconnectAt?: number;
+  lastDisconnectedAt?: number;
 }
 
 export interface OpenRTCYjsProviderEventMap {
@@ -98,6 +111,13 @@ const DEFAULT_INDEXEDDB_STORE = "updates";
 const MAX_SUBDOC_GUID_BYTES = 0xffff;
 export const OPENRTC_AWARENESS_PRESENCE_KEY = "__openrtc_yjs_awareness";
 
+interface NormalizedYjsReconnectOptions {
+  initialDelayMs: number;
+  maxDelayMs: number;
+  maxAttempts: number;
+  jitterRatio: number;
+}
+
 interface YjsSubdocEvent {
   added: Set<Y.Doc>;
   loaded: Set<Y.Doc>;
@@ -118,6 +138,8 @@ export class OpenRTCYjsProvider {
   private readonly url: string;
   private readonly token: OpenRTCYjsProviderOptions["token"];
   private readonly WebSocketCtor: YJSWebSocketConstructor;
+  private readonly autoReconnect: boolean;
+  private readonly reconnectOptions: NormalizedYjsReconnectOptions;
   private readonly offlineStore: OpenRTCYjsOfflineStore | undefined;
   private readonly snapshotIntervalMs: number | undefined;
   private readonly stateVectorSync: boolean;
@@ -129,6 +151,7 @@ export class OpenRTCYjsProvider {
   private syncStatusValue: YjsSyncStatus = "idle";
   private snapshotTimer: ReturnType<typeof setInterval> | undefined;
   private stateVectorTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private awarenessBridge: OpenRTCAwarenessBridge | undefined;
   private snapshotHash: string | undefined;
   private lastSyncedAt: number | undefined;
@@ -149,6 +172,11 @@ export class OpenRTCYjsProvider {
   private offlineBytesLoaded = 0;
   private offlineUpdatesStored = 0;
   private offlineBytesStored = 0;
+  private manualClose = false;
+  private pendingLocalSync = false;
+  private reconnectAttempts = 0;
+  private nextReconnectAt: number | undefined;
+  private lastDisconnectedAt: number | undefined;
   private handlers = new Map<keyof OpenRTCYjsProviderEventMap, Set<Handler<OpenRTCYjsProviderEventMap[keyof OpenRTCYjsProviderEventMap]>>>();
 
   constructor(options: OpenRTCYjsProviderOptions) {
@@ -156,6 +184,8 @@ export class OpenRTCYjsProvider {
     this.room = options.room;
     this.token = options.token;
     this.doc = options.doc;
+    this.autoReconnect = options.autoReconnect ?? true;
+    this.reconnectOptions = normalizeYjsReconnectOptions(options.reconnect);
     this.offlineStore = options.offlineStore;
     this.snapshotIntervalMs = options.snapshotIntervalMs;
     this.stateVectorSync = options.stateVectorSync ?? true;
@@ -199,8 +229,30 @@ export class OpenRTCYjsProvider {
     if (this.statusValue === "open" || this.statusValue === "connecting") {
       return;
     }
-    this.setStatus("connecting");
-    this.setSyncStatus("connecting");
+    this.manualClose = false;
+    this.clearReconnectTimer();
+    await this.openConnection({ reconnecting: false });
+  }
+
+  async reconnect(): Promise<void> {
+    this.manualClose = false;
+    this.clearReconnectTimer();
+    this.stopSnapshotTimer();
+    this.stopStateVectorTimer();
+    const socket = this.socket;
+    this.socket = undefined;
+    socket?.close();
+    this.setStatus("reconnecting");
+    this.setSyncStatus("reconnecting");
+    await this.openConnection({ reconnecting: true });
+  }
+
+  private async openConnection(options: { reconnecting: boolean }): Promise<void> {
+    if (this.statusValue === "open" || this.statusValue === "connecting") {
+      return;
+    }
+    this.setStatus(options.reconnecting ? "reconnecting" : "connecting");
+    this.setSyncStatus(options.reconnecting ? "reconnecting" : "connecting");
     await this.loadOfflineUpdates();
 
     const token = await this.resolveToken();
@@ -212,28 +264,33 @@ export class OpenRTCYjsProvider {
       void this.handleRemoteFrame(readMessageData(event));
     });
     socket.addEventListener("close", () => {
-      this.stopSnapshotTimer();
-      this.socket = undefined;
-      this.setStatus("closed");
-      this.setSyncStatus("closed");
+      this.handleSocketClosed(socket);
     });
     socket.addEventListener("error", () => {
-      this.setStatus("error");
-      this.setSyncStatus("error");
       this.emit("error", new Error("Yjs WebSocket error"));
     });
 
     await new Promise<void>((resolve, reject) => {
       const onOpen = (): void => {
         cleanup();
+        if (this.socket !== socket) {
+          reject(new Error("Yjs WebSocket connection was superseded"));
+          return;
+        }
+        this.reconnectAttempts = 0;
+        this.nextReconnectAt = undefined;
         this.setStatus("open");
         this.setSyncStatus("syncing");
         this.startSnapshotTimer();
+        this.flushPendingLocalSync();
         this.scheduleStateVectorSync();
         resolve();
       };
       const onError = (): void => {
         cleanup();
+        if (this.socket === socket) {
+          this.socket = undefined;
+        }
         this.setStatus("error");
         this.setSyncStatus("error");
         reject(new Error("Yjs WebSocket connection failed"));
@@ -248,6 +305,8 @@ export class OpenRTCYjsProvider {
   }
 
   disconnect(): void {
+    this.manualClose = true;
+    this.clearReconnectTimer();
     this.stopSnapshotTimer();
     this.stopStateVectorTimer();
     this.socket?.close();
@@ -323,7 +382,10 @@ export class OpenRTCYjsProvider {
       return;
     }
     this.persistOfflineUpdate(update, "local", "update");
-    this.sendFrame(FRAME_UPDATE, update);
+    if (!this.sendFrame(FRAME_UPDATE, update)) {
+      this.pendingLocalSync = true;
+      this.emitSyncStatus();
+    }
   };
 
   private handleSubdocs = (event: YjsSubdocEvent): void => {
@@ -534,6 +596,16 @@ export class OpenRTCYjsProvider {
     return true;
   }
 
+  private flushPendingLocalSync(): void {
+    if (!this.pendingLocalSync) {
+      return;
+    }
+    if (this.sendFrame(FRAME_UPDATE, Y.encodeStateAsUpdate(this.doc))) {
+      this.pendingLocalSync = false;
+      this.emitSyncStatus();
+    }
+  }
+
   private sendSubdocFrame(kind: number, guid: string, update: Uint8Array): boolean {
     try {
       return this.sendFrame(kind, encodeSubdocPayload(guid, update));
@@ -584,6 +656,59 @@ export class OpenRTCYjsProvider {
     }
   }
 
+  private handleSocketClosed(socket: YJSWebSocket): void {
+    if (this.socket !== socket) {
+      return;
+    }
+    this.stopSnapshotTimer();
+    this.stopStateVectorTimer();
+    this.socket = undefined;
+    this.lastDisconnectedAt = Date.now();
+    if (this.manualClose || !this.autoReconnect) {
+      this.setStatus("closed");
+      this.setSyncStatus("closed");
+      return;
+    }
+    this.setStatus("reconnecting");
+    this.setSyncStatus("reconnecting");
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.manualClose || !this.autoReconnect) {
+      return;
+    }
+    if (this.reconnectAttempts >= this.reconnectOptions.maxAttempts) {
+      const error = new Error("Yjs reconnect attempts exhausted");
+      this.setStatus("error");
+      this.setSyncStatus("error");
+      this.emit("error", error);
+      return;
+    }
+    this.reconnectAttempts++;
+    const delay = reconnectDelayMs(this.reconnectAttempts, this.reconnectOptions);
+    this.nextReconnectAt = Date.now() + delay;
+    this.emitSyncStatus();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.nextReconnectAt = undefined;
+      if (this.manualClose) {
+        return;
+      }
+      void this.openConnection({ reconnecting: true }).catch(() => {
+        this.scheduleReconnect();
+      });
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.nextReconnectAt = undefined;
+  }
+
   private async resolveToken(): Promise<string> {
     return typeof this.token === "function" ? this.token() : this.token;
   }
@@ -622,6 +747,10 @@ export class OpenRTCYjsProvider {
       offlineBytesLoaded: this.offlineBytesLoaded,
       offlineUpdatesStored: this.offlineUpdatesStored,
       offlineBytesStored: this.offlineBytesStored,
+      pendingLocalSync: this.pendingLocalSync,
+      reconnectAttempts: this.reconnectAttempts,
+      ...(this.nextReconnectAt !== undefined ? { nextReconnectAt: this.nextReconnectAt } : {}),
+      ...(this.lastDisconnectedAt !== undefined ? { lastDisconnectedAt: this.lastDisconnectedAt } : {}),
     };
   }
 
@@ -646,6 +775,9 @@ export class OpenRTCYjsProvider {
         Y.applyUpdate(this.doc, update, this);
         this.offlineUpdatesLoaded++;
         this.offlineBytesLoaded += update.byteLength;
+      }
+      if ((updates?.length ?? 0) > 0) {
+        this.pendingLocalSync = true;
       }
       this.offlineLoaded = true;
       this.emitSyncStatus();
@@ -686,6 +818,31 @@ export class OpenRTCYjsProvider {
       handler(event);
     }
   }
+}
+
+function normalizeYjsReconnectOptions(options: OpenRTCYjsReconnectOptions | undefined): NormalizedYjsReconnectOptions {
+  const initialDelayMs = positiveInteger(options?.initialDelayMs, 250);
+  const maxDelayMs = Math.max(initialDelayMs, positiveInteger(options?.maxDelayMs, 5000));
+  const maxAttempts = options?.maxAttempts === undefined ? Number.POSITIVE_INFINITY : positiveInteger(options.maxAttempts, 1);
+  const jitterRatio = Math.min(1, Math.max(0, options?.jitterRatio ?? 0.2));
+  return { initialDelayMs, maxDelayMs, maxAttempts, jitterRatio };
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function reconnectDelayMs(attempt: number, options: NormalizedYjsReconnectOptions): number {
+  const exponential = options.initialDelayMs * 2 ** Math.max(0, attempt - 1);
+  const capped = Math.min(options.maxDelayMs, exponential);
+  if (options.jitterRatio === 0) {
+    return capped;
+  }
+  const jitter = capped * options.jitterRatio;
+  return Math.max(0, Math.floor(capped - jitter + Math.random() * jitter * 2));
 }
 
 interface IndexedDBYjsUpdateRecord {

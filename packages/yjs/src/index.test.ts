@@ -398,6 +398,83 @@ assert.equal(offlineProvider.getSyncState().offlineUpdatesStored, 2);
 assert.equal(offlineProvider.getSyncState().offlineBytesStored > 0, true);
 offlineProvider.destroy();
 
+const reconnectDoc = new Y.Doc();
+const reconnectProvider = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:reconnect-doc",
+  token: () => `token-reconnect-${FakeYjsSocket.instances.length}`,
+  doc: reconnectDoc,
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  stateVectorSyncDelayMs: 0,
+  reconnect: { initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+});
+const reconnectStatuses: string[] = [];
+reconnectProvider.on("status", (status) => {
+  reconnectStatuses.push(status);
+});
+const reconnectSocketStart = FakeYjsSocket.instances.length;
+const reconnectConnect = reconnectProvider.connect();
+await waitForSocketCount(reconnectSocketStart + 1);
+const reconnectSocketA = FakeYjsSocket.instances[reconnectSocketStart];
+assert.ok(reconnectSocketA);
+reconnectSocketA.open();
+await reconnectConnect;
+reconnectDoc.getText("body").insert(0, "online");
+assert.equal(reconnectSocketA.sent.at(-1)?.[0], 1);
+
+reconnectSocketA.close();
+assert.equal(reconnectProvider.status, "reconnecting");
+assert.equal(reconnectProvider.getSyncState().status, "reconnecting");
+assert.equal(reconnectProvider.getSyncState().reconnectAttempts, 1);
+assert.equal(typeof reconnectProvider.getSyncState().lastDisconnectedAt, "number");
+reconnectDoc.getText("body").insert(6, " local");
+assert.equal(reconnectProvider.getSyncState().pendingLocalSync, true);
+
+await waitForSocketCount(reconnectSocketStart + 2);
+const reconnectSocketB = FakeYjsSocket.instances[reconnectSocketStart + 1];
+assert.ok(reconnectSocketB);
+reconnectSocketB.open();
+await waitFor(() => reconnectProvider.status === "open", "expected Yjs provider to reopen after reconnect");
+assert.equal(reconnectProvider.getSyncState().pendingLocalSync, false);
+assert.equal(reconnectProvider.getSyncState().reconnectAttempts, 0);
+assert.equal(reconnectSocketB.sent[0]?.[0], 1);
+await waitFor(() => reconnectSocketB.sent.some((sent) => sent[0] === 3), "expected state-vector sync after reconnect");
+assert.equal(reconnectStatuses.includes("reconnecting"), true);
+
+const explicitReconnectSocketStart = FakeYjsSocket.instances.length;
+const explicitReconnect = reconnectProvider.reconnect();
+await waitForSocketCount(explicitReconnectSocketStart + 1);
+const reconnectSocketC = FakeYjsSocket.instances[explicitReconnectSocketStart];
+assert.ok(reconnectSocketC);
+reconnectSocketC.open();
+await explicitReconnect;
+assert.equal(reconnectProvider.status, "open");
+await waitFor(() => reconnectSocketC.sent.some((sent) => sent[0] === 3), "expected state-vector sync after explicit reconnect");
+reconnectProvider.destroy();
+
+const noReconnectProvider = new OpenRTCYjsProvider({
+  url: "http://localhost:8080",
+  room: "tenant-a:no-reconnect-doc",
+  token: "token-no-reconnect",
+  doc: new Y.Doc(),
+  WebSocket: FakeYjsSocket,
+  connect: false,
+  autoReconnect: false,
+});
+const noReconnectSocketStart = FakeYjsSocket.instances.length;
+const noReconnectConnect = noReconnectProvider.connect();
+await waitForSocketCount(noReconnectSocketStart + 1);
+const noReconnectSocket = FakeYjsSocket.instances[noReconnectSocketStart];
+assert.ok(noReconnectSocket);
+noReconnectSocket.open();
+await noReconnectConnect;
+noReconnectSocket.close();
+await tick();
+assert.equal(noReconnectProvider.status, "closed");
+assert.equal(FakeYjsSocket.instances.length, noReconnectSocketStart + 1);
+noReconnectProvider.destroy();
+
 const awarenessA = new OpenRTCAwareness(new Y.Doc());
 const awarenessB = new OpenRTCAwareness(new Y.Doc());
 const presenceA = new FakePresenceClient("conn-a");
@@ -475,11 +552,15 @@ async function tick(): Promise<void> {
 }
 
 async function waitForSocketCount(count: number): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt++) {
-    if (FakeYjsSocket.instances.length >= count) {
+  await waitFor(() => FakeYjsSocket.instances.length >= count, `timed out waiting for ${count} fake Yjs sockets`);
+}
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (predicate()) {
       return;
     }
     await tick();
   }
-  assert.fail(`timed out waiting for ${count} fake Yjs sockets`);
+  assert.fail(message);
 }
