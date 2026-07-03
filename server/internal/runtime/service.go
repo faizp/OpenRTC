@@ -634,12 +634,7 @@ func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error 
 		}
 	}
 	if leaveResult.Left {
-		event := cluster.PresenceEvent{
-			Room:       message.Room,
-			ConnID:     conn.id,
-			Offline:    true,
-			OriginNode: s.cfg.NodeID,
-		}
+		event := roomengine.NewOfflinePresenceEvent(conn.id, message.Room, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
 		if err := s.broadcastPresenceEvent(event); err != nil {
 			return err
 		}
@@ -715,7 +710,7 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 		})
 	}
 
-	s.roomEngine().SetPresence(conn.id, message.Room, message.Payload)
+	event := s.roomEngine().SetPresenceEvent(conn.id, message.Room, message.Payload, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
 	s.mu.Lock()
 	s.stats.PresenceUpdatesTotal++
 	s.syncStatsLocked()
@@ -728,12 +723,6 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 		}
 	}
 
-	event := cluster.PresenceEvent{
-		Room:       message.Room,
-		ConnID:     conn.id,
-		State:      append(json.RawMessage(nil), message.Payload...),
-		OriginNode: s.cfg.NodeID,
-	}
 	if err := s.broadcastPresenceEvent(event); err != nil {
 		return err
 	}
@@ -1182,12 +1171,7 @@ func (s *Service) unregisterConn(conn *clientConn) {
 		_ = s.store.CleanupConnection(s.ctx, s.cfg.NodeID, conn.id)
 	}
 	for _, room := range rooms {
-		event := cluster.PresenceEvent{
-			Room:       room,
-			ConnID:     conn.id,
-			Offline:    true,
-			OriginNode: s.cfg.NodeID,
-		}
+		event := roomengine.NewOfflinePresenceEvent(conn.id, room, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
 		_ = s.broadcastPresenceEvent(event)
 		if s.store != nil {
 			_ = s.store.PublishPresence(s.ctx, event)

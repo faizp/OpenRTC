@@ -52,6 +52,10 @@ type Snapshot struct {
 	Presence map[string]json.RawMessage
 }
 
+type PresenceEventOptions struct {
+	OriginNode string
+}
+
 type StorageMutationOptions struct {
 	MaxBytes     int
 	OpID         string
@@ -146,6 +150,29 @@ func (e *Engine) SetPresence(connID string, room string, payload json.RawMessage
 		e.presence[room] = roomPresence
 	}
 	roomPresence[connID] = append(json.RawMessage(nil), payload...)
+}
+
+func (e *Engine) SetPresenceEvent(connID string, room string, payload json.RawMessage, options PresenceEventOptions) cluster.PresenceEvent {
+	e.SetPresence(connID, room, payload)
+	return NewPresenceEvent(connID, room, payload, options)
+}
+
+func NewPresenceEvent(connID string, room string, payload json.RawMessage, options PresenceEventOptions) cluster.PresenceEvent {
+	return cluster.PresenceEvent{
+		Room:       room,
+		ConnID:     connID,
+		State:      append(json.RawMessage(nil), payload...),
+		OriginNode: options.OriginNode,
+	}
+}
+
+func NewOfflinePresenceEvent(connID string, room string, options PresenceEventOptions) cluster.PresenceEvent {
+	return cluster.PresenceEvent{
+		Room:       room,
+		ConnID:     connID,
+		Offline:    true,
+		OriginNode: options.OriginNode,
+	}
 }
 
 func (e *Engine) Snapshot(room string) Snapshot {

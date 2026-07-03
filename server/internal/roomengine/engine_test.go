@@ -66,8 +66,14 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	_, _ = engine.Join("conn-2", "room-a", 0)
 
 	payload := json.RawMessage(`{"cursor":{"x":1}}`)
-	engine.SetPresence("conn-1", "room-a", payload)
+	event := engine.SetPresenceEvent("conn-1", "room-a", payload, PresenceEventOptions{OriginNode: "node-a"})
+	if event.Room != "room-a" || event.ConnID != "conn-1" || event.OriginNode != "node-a" || event.Offline {
+		t.Fatalf("unexpected presence event metadata: %+v", event)
+	}
 	payload[12] = '9'
+	if string(event.State) != `{"cursor":{"x":1}}` {
+		t.Fatalf("presence event state should be copied, got %s", event.State)
+	}
 
 	snapshot := engine.Snapshot("room-a")
 	if !reflect.DeepEqual(snapshot.Members, []string{"conn-1", "conn-2"}) {
@@ -84,6 +90,10 @@ func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 
 	if got := engine.MemberIDs("room-a", "conn-1"); !reflect.DeepEqual(got, []string{"conn-2"}) {
 		t.Fatalf("unexpected target ids: %#v", got)
+	}
+	offline := NewOfflinePresenceEvent("conn-1", "room-a", PresenceEventOptions{OriginNode: "node-a"})
+	if offline.Room != "room-a" || offline.ConnID != "conn-1" || offline.OriginNode != "node-a" || !offline.Offline || len(offline.State) != 0 {
+		t.Fatalf("unexpected offline presence event: %+v", offline)
 	}
 	engine.Leave("conn-1", "room-a")
 	snapshot = engine.Snapshot("room-a")
