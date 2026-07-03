@@ -611,6 +611,7 @@ interface PendingStorageMutation extends PendingStorageGet {
   room: string;
   kind: OpenRTCStorageMutationKind;
   opId: string;
+  document?: unknown;
   operations?: JSONPatchOperation[];
   hadPreviousDocument: boolean;
   previousDocument?: unknown;
@@ -1509,6 +1510,7 @@ export class OpenRTCClient {
         room,
         kind,
         opId,
+        ...(kind === "set" ? { document: cloneStorageDocument(payload) } : {}),
         ...(kind === "patch" && operations ? { operations } : {}),
         hadPreviousDocument,
         ...(hadPreviousDocument ? { previousDocument } : {}),
@@ -1778,7 +1780,7 @@ export class OpenRTCClient {
       if (requestId) {
         this.pendingStorageGets.delete(requestId);
       }
-      this.applyStorageMessage(room, document, { source: "snapshot" });
+      this.applyAuthoritativeStorageMessage(room, document, { source: "snapshot" });
       this.resolveStorageGetWaiters(room, document);
       return;
     }
@@ -1788,11 +1790,11 @@ export class OpenRTCClient {
       const document = payload["document"];
       const kind = asStorageMutationKind(payload["kind"]);
       const opId = optionalString(payload["op_id"]);
-      this.applyStorageMessage(room, document, {
+      const event = {
         source: "ack",
         ...(kind ? { kind } : {}),
         ...(opId ? { opId } : {}),
-      });
+      } as const;
       if (requestId) {
         const pending = this.pendingStorageMutations.get(requestId);
         if (pending) {
@@ -1800,6 +1802,7 @@ export class OpenRTCClient {
           pending.resolve(document);
         }
       }
+      this.applyAuthoritativeStorageMessage(room, document, event);
       return;
     }
 
@@ -1811,7 +1814,7 @@ export class OpenRTCClient {
       const originConnId = optionalString(payload["origin_conn_id"]);
       const operations = asJSONPatchOperations(payload["operations"]);
       this.storageRequestedRooms.add(room);
-      this.applyStorageMessage(room, document, {
+      this.applyAuthoritativeStorageMessage(room, document, {
         source: "remote",
         ...(kind ? { kind } : {}),
         ...(opId ? { opId } : {}),
@@ -1874,6 +1877,15 @@ export class OpenRTCClient {
     return pending;
   }
 
+  private applyAuthoritativeStorageMessage(
+    room: string,
+    document: unknown,
+    options: Omit<OpenRTCStorageEvent, "room" | "document">,
+  ): void {
+    this.applyStorageMessage(room, document, options);
+    this.reapplyPendingStorageMutations(room, document);
+  }
+
   private applyStorageMessage(
     room: string,
     document: unknown,
@@ -1890,6 +1902,43 @@ export class OpenRTCClient {
       document,
       ...options,
     });
+  }
+
+  private reapplyPendingStorageMutations(room: string, baseDocument: unknown): void {
+    const pending = [...this.pendingStorageMutations.entries()].filter(([, mutation]) => mutation.room === room);
+    if (pending.length === 0) {
+      return;
+    }
+
+    let document = cloneStorageDocument(baseDocument);
+    const rebased: Array<{
+      document: unknown;
+      options: Omit<OpenRTCStorageEvent, "room" | "document">;
+    }> = [];
+    for (const [id, mutation] of pending) {
+      try {
+        document = applyPendingStorageMutation(document, mutation);
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        this.pendingStorageMutations.delete(id);
+        mutation.reject(normalized);
+        this.emit("error", {
+          code: "STORAGE_REBASE_FAILED",
+          message: normalized.message,
+        });
+        this.setStorageStatus(room, "error");
+        return;
+      }
+      rebased.push({
+        document: cloneStorageDocument(document),
+        options: storageMutationEventOptions(mutation, "optimistic"),
+      });
+    }
+
+    for (const event of rebased) {
+      this.applyStorageMessage(room, event.document, event.options);
+    }
+    this.setStorageStatus(room, "synchronizing");
   }
 
   private hasPendingStorageGet(room: string): boolean {
@@ -1947,22 +1996,18 @@ export class OpenRTCClient {
     }
     this.pendingStorageGets.clear();
 
-    for (const pending of this.pendingStorageMutations.values()) {
+    for (const [id, pending] of [...this.pendingStorageMutations.entries()]) {
+      this.pendingStorageMutations.delete(id);
       this.rollbackStorageMutation(pending);
       pending.reject(error);
     }
-    this.pendingStorageMutations.clear();
   }
 
   private rollbackStorageMutation(mutation: PendingStorageMutation): void {
-    const event = {
-      source: "rollback" as const,
-      kind: mutation.kind,
-      opId: mutation.opId,
-      ...(mutation.operations ? { operations: mutation.operations } : {}),
-    };
+    const event = storageMutationEventOptions(mutation, "rollback");
     if (mutation.hadPreviousDocument) {
       this.applyStorageMessage(mutation.room, cloneStorageDocument(mutation.previousDocument), event);
+      this.reapplyPendingStorageMutations(mutation.room, this.storageByRoom.get(mutation.room));
       return;
     }
     this.storageByRoom.delete(mutation.room);
@@ -1972,6 +2017,7 @@ export class OpenRTCClient {
       document: undefined,
       ...event,
     });
+    this.reapplyPendingStorageMutations(mutation.room, undefined);
   }
 
   private getOrCreatePresence(room: string): Map<string, PresenceState> {
@@ -2924,6 +2970,28 @@ function normalizeStorageOpID(opId: string | undefined, fallback: string): strin
     return opId;
   }
   return fallback;
+}
+
+function applyPendingStorageMutation(document: unknown, mutation: PendingStorageMutation): unknown {
+  if (mutation.kind === "set") {
+    return cloneStorageDocument(mutation.document);
+  }
+  if (!mutation.operations) {
+    throw new Error("Pending storage patch is missing operations");
+  }
+  return applyJSONPatchOptimistic(document, mutation.operations);
+}
+
+function storageMutationEventOptions(
+  mutation: PendingStorageMutation,
+  source: Extract<OpenRTCStorageEventSource, "optimistic" | "rollback">,
+): Omit<OpenRTCStorageEvent, "room" | "document"> {
+  return {
+    source,
+    kind: mutation.kind,
+    opId: mutation.opId,
+    ...(mutation.operations ? { operations: mutation.operations } : {}),
+  };
 }
 
 function optionalSequence(value: unknown): number | undefined {

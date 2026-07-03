@@ -735,6 +735,56 @@ roomSocket.receive({
 });
 assert.deepEqual(await autoOpSet, { title: "Auto Op", version: 31 });
 
+const concurrentPatchA = room.patchStorage([{ op: "replace", path: "/version", value: 32 }], { opId: "concurrent-a" });
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_PATCH",
+    id: "storage-patch-13",
+    room: "tenant-a:room-api",
+    payload: [{ op: "replace", path: "/version", value: 32 }],
+    meta: { op_id: "concurrent-a" },
+  }),
+);
+const concurrentPatchB = room.patchStorage([{ op: "replace", path: "/title", value: "Still Local" }], { opId: "concurrent-b" });
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "STORAGE_PATCH",
+    id: "storage-patch-14",
+    room: "tenant-a:room-api",
+    payload: [{ op: "replace", path: "/title", value: "Still Local" }],
+    meta: { op_id: "concurrent-b" },
+  }),
+);
+assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 32 });
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-patch-13",
+  room: "tenant-a:room-api",
+  payload: { kind: "patch", op_id: "concurrent-a", document: { title: "Server Fixed", version: 32 } },
+});
+assert.deepEqual(await concurrentPatchA, { title: "Server Fixed", version: 32 });
+assert.equal(room.getStorageStatus(), "synchronizing");
+assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 32 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Still Local", version: 32 },
+  source: "optimistic",
+  kind: "patch",
+  opId: "concurrent-b",
+  operations: [{ op: "replace", path: "/title", value: "Still Local" }],
+});
+roomSocket.receive({
+  t: "STORAGE_ACK",
+  id: "storage-patch-14",
+  room: "tenant-a:room-api",
+  payload: { kind: "patch", op_id: "concurrent-b", document: { title: "Still Local", version: 33 } },
+});
+assert.deepEqual(await concurrentPatchB, { title: "Still Local", version: 33 });
+assert.equal(room.getStorageStatus(), "synchronized");
+assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 33 });
+
 offOthers();
 offMyPresence();
 offEvents();
@@ -751,7 +801,7 @@ const offRoomReset = roomClient.on("room", (state) => {
 leave();
 assert.equal(
   roomSocket.sent.at(-1),
-  JSON.stringify({ t: "LEAVE", id: "leave-13", room: "tenant-a:room-api" }),
+  JSON.stringify({ t: "LEAVE", id: "leave-15", room: "tenant-a:room-api" }),
 );
 assert.equal(sawClosedRoomReset, true);
 roomSocket.close();
