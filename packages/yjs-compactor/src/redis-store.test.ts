@@ -23,7 +23,7 @@ const update = new Uint8Array([4, 5, 6]);
 const subdocUpdate = new Uint8Array([7, 8, 9]);
 
 const loadClient = new ScriptedRedisClient([
-  JSON.stringify({ checkpoint_seq: 2, snapshot: encode(snapshot) }),
+  JSON.stringify({ checkpoint_seq: 2, snapshot: encode(snapshot), hash: hashBytes(snapshot) }),
   [],
   [
     JSON.stringify({ seq: 3, update: encode(update) }),
@@ -55,6 +55,14 @@ const invalidKindClient = new ScriptedRedisClient([
 ]);
 await assert.rejects(() => OpenRTCYjsRedisStore.fromClient(invalidKindClient).load("tenant-a:doc-invalid"), /invalid Yjs update kind/);
 
+const invalidSnapshotHashClient = new ScriptedRedisClient([
+  JSON.stringify({ checkpoint_seq: 2, snapshot: encode(snapshot), hash: "00000000" }),
+]);
+await assert.rejects(
+  () => OpenRTCYjsRedisStore.fromClient(invalidSnapshotHashClient).load("tenant-a:doc-invalid-hash"),
+  /invalid Yjs snapshot hash/,
+);
+
 const compactClient = new ScriptedRedisClient(["OK", "QUEUED", "QUEUED", ["OK", 2]]);
 await OpenRTCYjsRedisStore.fromClient(compactClient).compact("tenant-a:doc-1", 7, snapshot);
 assert.deepEqual(compactClient.commands[0], ["MULTI"]);
@@ -63,6 +71,7 @@ assert.equal(compactClient.commands[1]![1], "room:tenant-a:doc-1:yjs:snapshot:v2
 assert.deepEqual(JSON.parse(compactClient.commands[1]![2]!), {
   checkpoint_seq: 7,
   snapshot: encode(snapshot),
+  hash: hashBytes(snapshot),
 });
 assert.deepEqual(compactClient.commands[2], ["ZREMRANGEBYSCORE", "room:tenant-a:doc-1:yjs:updates:v2", "-inf", "7"]);
 assert.deepEqual(compactClient.commands[3], ["EXEC"]);
@@ -80,4 +89,13 @@ assert.deepEqual(scanClient.commands, [
 
 function encode(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  let hash = 0x811c9dc5;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }

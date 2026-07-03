@@ -19,6 +19,7 @@ interface YjsUpdateRecord {
 interface YjsSnapshotRecord {
   checkpoint_seq: number;
   snapshot: string;
+  hash?: string;
 }
 
 export interface RedisCommandClient {
@@ -78,6 +79,7 @@ export class OpenRTCYjsRedisStore implements YjsCompactionStore {
     const record = JSON.stringify({
       checkpoint_seq: checkpointSeq,
       snapshot: encodeBytes(snapshot),
+      hash: hashBytes(snapshot),
     } satisfies YjsSnapshotRecord);
 
     await this.client.sendCommand(["MULTI"]);
@@ -163,7 +165,12 @@ function decodeYJSSnapshotRecord(raw: unknown): { checkpointSeq: number; snapsho
   if (typeof parsed.checkpoint_seq !== "number" || parsed.checkpoint_seq < 0 || typeof parsed.snapshot !== "string") {
     throw new Error("invalid Yjs snapshot record");
   }
-  return { checkpointSeq: parsed.checkpoint_seq, snapshot: decodeBytes(parsed.snapshot) };
+  const snapshot = decodeBytes(parsed.snapshot);
+  const hash = hashBytes(snapshot);
+  if (parsed.hash !== undefined && parsed.hash !== hash) {
+    throw new Error("invalid Yjs snapshot hash");
+  }
+  return { checkpointSeq: parsed.checkpoint_seq, snapshot };
 }
 
 function decodeBulkString(value: unknown): string {
@@ -190,6 +197,15 @@ function decodeBytes(base64: string): Uint8Array {
 
 function encodeBytes(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  let hash = 0x811c9dc5;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function roomYJSSnapshotKey(room: string): string {
