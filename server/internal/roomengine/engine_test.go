@@ -562,6 +562,90 @@ func TestNewClusterEventPlan(t *testing.T) {
 	if IsNotificationEvent("doc.update") {
 		t.Fatalf("doc.update should not be treated as a notification event")
 	}
+	for _, eventName := range []string{CommentThreadCreated, CommentCreated, CommentUpdated} {
+		if !IsCommentEvent(eventName) {
+			t.Fatalf("expected comment event %q", eventName)
+		}
+	}
+	if IsCommentEvent("doc.update") {
+		t.Fatalf("doc.update should not be treated as a comment event")
+	}
+}
+
+func TestNewReservedEventBuilders(t *testing.T) {
+	thread := cluster.ThreadRecord{
+		ID:       "thread-1",
+		RoomID:   "room-a",
+		Metadata: json.RawMessage(`{"status":"open"}`),
+		Comments: []cluster.CommentRecord{{
+			ID:       "comment-1",
+			ThreadID: "thread-1",
+			RoomID:   "room-a",
+			UserID:   "user-1",
+			Body:     json.RawMessage(`{"text":"first"}`),
+			Metadata: json.RawMessage(`{"pinned":true}`),
+			Mentions: []string{"user-2"},
+		}},
+	}
+	comment := thread.Comments[0]
+	commentEvent, commentPayload, err := NewCommentEvent(CommentThreadCreated, thread, &comment, EventOptions{
+		OriginNode: "admin:node-a",
+		TraceID:    "trace-1",
+	})
+	if err != nil {
+		t.Fatalf("new comment event: %v", err)
+	}
+	if commentEvent.Room != "room-a" || commentEvent.Event != CommentThreadCreated || commentEvent.OriginNode != "admin:node-a" || commentEvent.TraceID != "trace-1" {
+		t.Fatalf("unexpected comment event envelope: %+v", commentEvent)
+	}
+	if commentPayload.Type != CommentEventTypeThreadCreated || commentPayload.RoomID != "room-a" || commentPayload.ThreadID != "thread-1" || commentPayload.CommentID != "comment-1" {
+		t.Fatalf("unexpected comment payload: %+v", commentPayload)
+	}
+
+	thread.Metadata[0] = '['
+	thread.Comments[0].Body = json.RawMessage(`{"text":"changed"}`)
+	comment.Body = json.RawMessage(`{"text":"changed"}`)
+	if string(commentPayload.Thread.Metadata) != `{"status":"open"}` || string(commentPayload.Comment.Body) != `{"text":"first"}` {
+		t.Fatalf("comment payload should be copied, got %+v", commentPayload)
+	}
+	var decodedCommentPayload CommentEventPayload
+	if err := json.Unmarshal(commentEvent.Payload, &decodedCommentPayload); err != nil {
+		t.Fatalf("decode comment event payload: %v", err)
+	}
+	if decodedCommentPayload.Type != CommentEventTypeThreadCreated || decodedCommentPayload.Comment == nil || string(decodedCommentPayload.Comment.Body) != `{"text":"first"}` {
+		t.Fatalf("unexpected serialized comment payload: %+v", decodedCommentPayload)
+	}
+
+	notification := cluster.InboxNotificationRecord{
+		ID:           "in_1",
+		UserID:       "user-1",
+		Kind:         "$custom",
+		ActivityData: json.RawMessage(`{"room":"room-a"}`),
+	}
+	notificationEvent, notificationPayload, err := NewNotificationEvent(NotificationInboxCreated, "", &notification, EventOptions{
+		OriginNode: "admin:node-a",
+	})
+	if err != nil {
+		t.Fatalf("new notification event: %v", err)
+	}
+	if notificationEvent.Room != NotificationEventRoom("user-1") || notificationEvent.Event != NotificationInboxCreated || notificationEvent.OriginNode != "admin:node-a" {
+		t.Fatalf("unexpected notification event envelope: %+v", notificationEvent)
+	}
+	if notificationPayload.Type != NotificationEventTypeInboxCreated || notificationPayload.UserID != "user-1" || notificationPayload.NotificationID != "in_1" {
+		t.Fatalf("unexpected notification payload: %+v", notificationPayload)
+	}
+	notification.ActivityData[0] = '['
+	if string(notificationPayload.Notification.ActivityData) != `{"room":"room-a"}` {
+		t.Fatalf("notification payload should be copied, got %+v", notificationPayload)
+	}
+
+	deleteAllEvent, deleteAllPayload, err := NewNotificationEvent(NotificationInboxDeletedAll, "user-1", nil, EventOptions{})
+	if err != nil {
+		t.Fatalf("new notification delete-all event: %v", err)
+	}
+	if deleteAllEvent.Room != NotificationEventRoom("user-1") || deleteAllPayload.Notification != nil || deleteAllPayload.NotificationID != "" {
+		t.Fatalf("unexpected delete-all notification payload: event=%+v payload=%+v", deleteAllEvent, deleteAllPayload)
+	}
 }
 
 func TestNewClusterPresenceAndYJSPlans(t *testing.T) {
@@ -1278,5 +1362,40 @@ func TestNewStorageEvent(t *testing.T) {
 	}
 	if string(decoded.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Published"}}` {
 		t.Fatalf("unexpected storage event document: %s", decoded.Document)
+	}
+
+	planDocument := json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Published"}}`)
+	planOperations := []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+	}
+	plan, err := NewStorageMutationEventPlan("room-a", StorageMutationPatch, planDocument, planOperations, StorageMutationOptions{
+		OpID:         "op-plan",
+		OriginConnID: "conn-plan",
+	}, StorageEventOptions{
+		OriginNode: "admin:node-a",
+	})
+	if err != nil {
+		t.Fatalf("new storage mutation event plan: %v", err)
+	}
+	if plan.Event.Room != "room-a" || plan.Event.Event != cluster.EventStorageUpdate || plan.Event.OriginNode != "admin:node-a" {
+		t.Fatalf("unexpected storage mutation event plan envelope: %+v", plan.Event)
+	}
+	if plan.Mutation.Kind != StorageMutationPatch || plan.Mutation.OpID != "op-plan" || plan.Mutation.OriginConnID != "conn-plan" {
+		t.Fatalf("unexpected storage mutation event plan mutation: %+v", plan.Mutation)
+	}
+	planDocument[0] = '['
+	planOperations[0].Value = json.RawMessage(`"Mutated"`)
+	if string(plan.Mutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Published"}}` || string(plan.Mutation.Operations[0].Value) != `"Published"` {
+		t.Fatalf("storage mutation event plan should copy inputs, got %+v", plan.Mutation)
+	}
+	var decodedPlanMutation StorageMutation
+	if err := json.Unmarshal(plan.Event.Payload, &decodedPlanMutation); err != nil {
+		t.Fatalf("decode storage mutation event plan payload: %v", err)
+	}
+	if string(decodedPlanMutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Published"}}` || string(decodedPlanMutation.Operations[0].Value) != `"Published"` {
+		t.Fatalf("unexpected storage mutation event plan payload: %+v", decodedPlanMutation)
+	}
+	if _, err := NewStorageMutationEventPlan("room-a", "unknown", json.RawMessage(`{}`), nil, StorageMutationOptions{}, StorageEventOptions{}); !errors.Is(err, ErrStorageMutationKind) {
+		t.Fatalf("unknown storage mutation kind error = %v", err)
 	}
 }

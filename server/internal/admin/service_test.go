@@ -1318,7 +1318,7 @@ func TestAdminThreadHandlers(t *testing.T) {
 	if len(store.createdThread.Comments[0].Mentions) != 1 || store.createdThread.Comments[0].Mentions[0] != "user-2" || len(store.createdThread.Comments[0].Reactions) != 1 {
 		t.Fatalf("expected mention/reaction capture: %+v", store.createdThread.Comments[0])
 	}
-	assertCommentEvent(t, store.publishedEvents, 0, commentEventThreadCreated, commentEventTypeThreadCreated, "thread-1", "comment-1")
+	assertCommentEvent(t, store.publishedEvents, 0, roomengine.CommentThreadCreated, roomengine.CommentEventTypeThreadCreated, "thread-1", "comment-1")
 
 	listResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads", "")
 	if listResp.Code != http.StatusOK {
@@ -1346,7 +1346,7 @@ func TestAdminThreadHandlers(t *testing.T) {
 	if len(updated.Comments) != 2 {
 		t.Fatalf("unexpected updated thread: %+v", updated)
 	}
-	assertCommentEvent(t, store.publishedEvents, 1, commentEventCommentCreated, commentEventTypeCommentCreated, "thread-1", "comment-2")
+	assertCommentEvent(t, store.publishedEvents, 1, roomengine.CommentCreated, roomengine.CommentEventTypeCommentCreated, "thread-1", "comment-2")
 
 	updateResp := performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"body":{"content":[{"type":"paragraph","text":"edited"}]},"metadata":{"status":"resolved"},"mentions":["user-2"],"reactions":[{"emoji":"+1","userId":"user-2"}]}`)
 	if updateResp.Code != http.StatusOK {
@@ -1374,7 +1374,7 @@ func TestAdminThreadHandlers(t *testing.T) {
 	if len(patched.Comments) != 1 || len(patched.Comments[0].Reactions) != 1 || patched.Comments[0].Mentions[0] != "user-2" {
 		t.Fatalf("unexpected patched thread response: %+v", patched)
 	}
-	assertCommentEvent(t, store.publishedEvents, 2, commentEventCommentUpdated, commentEventTypeCommentUpdated, "thread-1", "comment-1")
+	assertCommentEvent(t, store.publishedEvents, 2, roomengine.CommentUpdated, roomengine.CommentEventTypeCommentUpdated, "thread-1", "comment-1")
 
 	generatedStore := &fakeAdminStore{
 		addCommentThread: cluster.ThreadRecord{ID: "thread-1", RoomID: "tenant-a:room-1"},
@@ -1405,7 +1405,7 @@ func assertCommentEvent(t *testing.T, events []cluster.PublishedEvent, index int
 	if event.Room != "tenant-a:room-1" || event.Event != eventName || event.OriginNode != "admin:node-a" {
 		t.Fatalf("unexpected published comment event: %+v", event)
 	}
-	var payload commentEventPayload
+	var payload roomengine.CommentEventPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		t.Fatalf("decode comment event payload: %v", err)
 	}
@@ -1429,10 +1429,10 @@ func assertNotificationEvent(t *testing.T, events []cluster.PublishedEvent, inde
 		t.Fatalf("expected published notification event %d, got %d events", index, len(events))
 	}
 	event := events[index]
-	if event.Room != notificationEventRoom(userID) || event.Event != eventName || event.OriginNode != "admin:node-a" {
+	if event.Room != roomengine.NotificationEventRoom(userID) || event.Event != eventName || event.OriginNode != "admin:node-a" {
 		t.Fatalf("unexpected published notification event: %+v", event)
 	}
-	var payload notificationEventPayload
+	var payload roomengine.NotificationEventPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		t.Fatalf("decode notification event payload: %v", err)
 	}
@@ -1674,7 +1674,7 @@ func TestAdminNotificationHandlers(t *testing.T) {
 	if store.createdInboxNotification.ID != "in_1" || store.createdInboxNotification.UserID != "user-1" {
 		t.Fatalf("unexpected created notification: %+v", store.createdInboxNotification)
 	}
-	assertNotificationEvent(t, store.publishedEvents, 0, notificationEventInboxCreated, notificationEventTypeInboxCreated, "user-1", "in_1")
+	assertNotificationEvent(t, store.publishedEvents, 0, roomengine.NotificationInboxCreated, roomengine.NotificationEventTypeInboxCreated, "user-1", "in_1")
 
 	listResp := performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/inbox-notifications?limit=1&query=unread:true", "")
 	if listResp.Code != http.StatusOK {
@@ -1696,17 +1696,17 @@ func TestAdminNotificationHandlers(t *testing.T) {
 	if readResp.Code != http.StatusOK {
 		t.Fatalf("expected read 200, got %d body=%q", readResp.Code, readResp.Body.String())
 	}
-	assertNotificationEvent(t, store.publishedEvents, 1, notificationEventInboxRead, notificationEventTypeInboxRead, "user-1", "in_1")
+	assertNotificationEvent(t, store.publishedEvents, 1, roomengine.NotificationInboxRead, roomengine.NotificationEventTypeInboxRead, "user-1", "in_1")
 	deleteResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/users/user-1/inbox-notifications/in_1", "")
 	if deleteResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete 204, got %d", deleteResp.Code)
 	}
-	assertNotificationEvent(t, store.publishedEvents, 2, notificationEventInboxDeleted, notificationEventTypeInboxDeleted, "user-1", "in_1")
+	assertNotificationEvent(t, store.publishedEvents, 2, roomengine.NotificationInboxDeleted, roomengine.NotificationEventTypeInboxDeleted, "user-1", "in_1")
 	deleteAllResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/users/user-1/inbox-notifications", "")
 	if deleteAllResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete all 204, got %d", deleteAllResp.Code)
 	}
-	assertNotificationEvent(t, store.publishedEvents, 3, notificationEventInboxDeletedAll, notificationEventTypeInboxDeletedAll, "user-1", "")
+	assertNotificationEvent(t, store.publishedEvents, 3, roomengine.NotificationInboxDeletedAll, roomengine.NotificationEventTypeInboxDeletedAll, "user-1", "")
 
 	settingsResp := performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/notification-settings", "")
 	if settingsResp.Code != http.StatusOK || strings.TrimSpace(settingsResp.Body.String()) != `{"email":{"thread":true}}` {
@@ -1823,7 +1823,7 @@ func TestAdminWebhookDelivery(t *testing.T) {
 			Body:     json.RawMessage(`{"content":[{"type":"paragraph","text":"first"}]}`),
 		}},
 	}
-	if err := service.publishCommentEvent(context.Background(), commentEventThreadCreated, thread, &thread.Comments[0]); err != nil {
+	if err := service.publishCommentEvent(context.Background(), roomengine.CommentThreadCreated, thread, &thread.Comments[0]); err != nil {
 		t.Fatalf("publish comment event: %v", err)
 	}
 
@@ -1834,7 +1834,7 @@ func TestAdminWebhookDelivery(t *testing.T) {
 		RoomID:     "tenant-a:room-1",
 		NotifiedAt: time.Unix(401, 0).UTC(),
 	}
-	if err := service.publishNotificationEvent(context.Background(), notificationEventInboxCreated, notification.UserID, &notification); err != nil {
+	if err := service.publishNotificationEvent(context.Background(), roomengine.NotificationInboxCreated, notification.UserID, &notification); err != nil {
 		t.Fatalf("publish notification event: %v", err)
 	}
 
@@ -1851,21 +1851,21 @@ func TestAdminWebhookDelivery(t *testing.T) {
 		t.Fatalf("unexpected room webhook payload: %+v", roomPayload)
 	}
 
-	commentEnvelope := assertWebhookDelivery(t, deliveries[1], commentEventThreadCreated, "whsec_test")
-	var commentPayload commentEventPayload
+	commentEnvelope := assertWebhookDelivery(t, deliveries[1], roomengine.CommentThreadCreated, "whsec_test")
+	var commentPayload roomengine.CommentEventPayload
 	if err := json.Unmarshal(commentEnvelope.Data, &commentPayload); err != nil {
 		t.Fatalf("decode comment webhook payload: %v", err)
 	}
-	if commentPayload.Type != commentEventTypeThreadCreated || commentPayload.ThreadID != "thread-1" || commentPayload.CommentID != "comment-1" {
+	if commentPayload.Type != roomengine.CommentEventTypeThreadCreated || commentPayload.ThreadID != "thread-1" || commentPayload.CommentID != "comment-1" {
 		t.Fatalf("unexpected comment webhook payload: %+v", commentPayload)
 	}
 
-	notificationEnvelope := assertWebhookDelivery(t, deliveries[2], notificationEventInboxCreated, "whsec_test")
-	var notificationPayload notificationEventPayload
+	notificationEnvelope := assertWebhookDelivery(t, deliveries[2], roomengine.NotificationInboxCreated, "whsec_test")
+	var notificationPayload roomengine.NotificationEventPayload
 	if err := json.Unmarshal(notificationEnvelope.Data, &notificationPayload); err != nil {
 		t.Fatalf("decode notification webhook payload: %v", err)
 	}
-	if notificationPayload.Type != notificationEventTypeInboxCreated || notificationPayload.UserID != "user-1" || notificationPayload.NotificationID != "in_1" {
+	if notificationPayload.Type != roomengine.NotificationEventTypeInboxCreated || notificationPayload.UserID != "user-1" || notificationPayload.NotificationID != "in_1" {
 		t.Fatalf("unexpected notification webhook payload: %+v", notificationPayload)
 	}
 }

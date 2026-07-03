@@ -28,6 +28,10 @@ const (
 	ClusterEventStorage      ClusterEventKind = "storage"
 	ClusterEventNotification ClusterEventKind = "notification"
 
+	CommentThreadCreated = "openrtc.comments.thread.created"
+	CommentCreated       = "openrtc.comments.comment.created"
+	CommentUpdated       = "openrtc.comments.comment.updated"
+
 	NotificationInboxCreated    = "openrtc.notifications.inbox.created"
 	NotificationInboxRead       = "openrtc.notifications.inbox.read"
 	NotificationInboxDeleted    = "openrtc.notifications.inbox.deleted"
@@ -35,6 +39,17 @@ const (
 
 	YJSPersistenceAppendUpdate  = "append_update"
 	YJSPersistenceStoreSnapshot = "store_snapshot"
+)
+
+const (
+	CommentEventTypeThreadCreated  = "thread-created"
+	CommentEventTypeCommentCreated = "comment-created"
+	CommentEventTypeCommentUpdated = "comment-updated"
+
+	NotificationEventTypeInboxCreated    = "created"
+	NotificationEventTypeInboxRead       = "read"
+	NotificationEventTypeInboxDeleted    = "deleted"
+	NotificationEventTypeInboxDeletedAll = "deleted-all"
 )
 
 type Engine struct {
@@ -243,6 +258,11 @@ type StorageMutationPlan struct {
 	Event    cluster.PublishedEvent
 }
 
+type StorageMutationEventPlan struct {
+	Mutation StorageMutation
+	Event    cluster.PublishedEvent
+}
+
 type YJSFanout struct {
 	Event         cluster.YJSEvent
 	TargetConnIDs []string
@@ -252,6 +272,22 @@ type NotificationFanout struct {
 	Event         cluster.PublishedEvent
 	UserID        string
 	TargetConnIDs []string
+}
+
+type CommentEventPayload struct {
+	Type      string                 `json:"type"`
+	RoomID    string                 `json:"roomId"`
+	ThreadID  string                 `json:"threadId"`
+	CommentID string                 `json:"commentId,omitempty"`
+	Thread    cluster.ThreadRecord   `json:"thread"`
+	Comment   *cluster.CommentRecord `json:"comment,omitempty"`
+}
+
+type NotificationEventPayload struct {
+	Type           string                           `json:"type"`
+	UserID         string                           `json:"userId"`
+	NotificationID string                           `json:"notificationId,omitempty"`
+	Notification   *cluster.InboxNotificationRecord `json:"notification,omitempty"`
 }
 
 type ConnectionsSnapshot struct {
@@ -514,6 +550,60 @@ func NewStorageEvent(room string, update StorageMutation, options StorageEventOp
 	}, nil
 }
 
+func NewCommentEvent(eventName string, thread cluster.ThreadRecord, comment *cluster.CommentRecord, options EventOptions) (cluster.PublishedEvent, CommentEventPayload, error) {
+	payload := CommentEventPayload{
+		Type:     CommentEventType(eventName),
+		RoomID:   thread.RoomID,
+		ThreadID: thread.ID,
+		Thread:   cloneThreadRecord(thread),
+	}
+	if comment != nil {
+		clonedComment := cloneCommentRecord(*comment)
+		payload.CommentID = clonedComment.ID
+		payload.Comment = &clonedComment
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return cluster.PublishedEvent{}, CommentEventPayload{}, err
+	}
+	return NewEvent(thread.RoomID, eventName, raw, options), payload, nil
+}
+
+func NewNotificationEvent(eventName string, userID string, notification *cluster.InboxNotificationRecord, options EventOptions) (cluster.PublishedEvent, NotificationEventPayload, error) {
+	payload := NotificationEventPayload{
+		Type:   NotificationEventType(eventName),
+		UserID: userID,
+	}
+	if notification != nil {
+		clonedNotification := cloneInboxNotificationRecord(*notification)
+		payload.NotificationID = clonedNotification.ID
+		payload.Notification = &clonedNotification
+		if payload.UserID == "" {
+			payload.UserID = clonedNotification.UserID
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return cluster.PublishedEvent{}, NotificationEventPayload{}, err
+	}
+	return NewEvent(NotificationEventRoom(payload.UserID), eventName, raw, options), payload, nil
+}
+
+func NewStorageMutationEventPlan(room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationEventPlan, error) {
+	mutation, err := NewStorageMutation(kind, document, operations, mutationOptions)
+	if err != nil {
+		return StorageMutationEventPlan{}, err
+	}
+	event, err := NewStorageEvent(room, mutation, eventOptions)
+	if err != nil {
+		return StorageMutationEventPlan{}, err
+	}
+	return StorageMutationEventPlan{
+		Mutation: cloneStorageMutation(mutation),
+		Event:    event,
+	}, nil
+}
+
 func NewClusterEventPlan(event cluster.PublishedEvent, localNode string) ClusterEventPlan {
 	plan := ClusterEventPlan{
 		Event: clonePublishedEvent(event),
@@ -540,6 +630,47 @@ func IsNotificationEvent(eventName string) bool {
 	default:
 		return false
 	}
+}
+
+func IsCommentEvent(eventName string) bool {
+	switch eventName {
+	case CommentThreadCreated, CommentCreated, CommentUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
+func CommentEventType(eventName string) string {
+	switch eventName {
+	case CommentThreadCreated:
+		return CommentEventTypeThreadCreated
+	case CommentCreated:
+		return CommentEventTypeCommentCreated
+	case CommentUpdated:
+		return CommentEventTypeCommentUpdated
+	default:
+		return eventName
+	}
+}
+
+func NotificationEventType(eventName string) string {
+	switch eventName {
+	case NotificationInboxCreated:
+		return NotificationEventTypeInboxCreated
+	case NotificationInboxRead:
+		return NotificationEventTypeInboxRead
+	case NotificationInboxDeleted:
+		return NotificationEventTypeInboxDeleted
+	case NotificationInboxDeletedAll:
+		return NotificationEventTypeInboxDeletedAll
+	default:
+		return eventName
+	}
+}
+
+func NotificationEventRoom(userID string) string {
+	return "notifications:" + userID
 }
 
 func NewClusterPresencePlan(event cluster.PresenceEvent, localNode string) ClusterPresencePlan {
@@ -1266,6 +1397,43 @@ func cloneStorageMutation(update StorageMutation) StorageMutation {
 		Operations:   cloneStorageOperations(update.Operations),
 		Document:     append(json.RawMessage(nil), update.Document...),
 	}
+}
+
+func cloneThreadRecord(thread cluster.ThreadRecord) cluster.ThreadRecord {
+	thread.Metadata = append(json.RawMessage(nil), thread.Metadata...)
+	if len(thread.Comments) > 0 {
+		comments := make([]cluster.CommentRecord, len(thread.Comments))
+		for i, comment := range thread.Comments {
+			comments[i] = cloneCommentRecord(comment)
+		}
+		thread.Comments = comments
+	}
+	return thread
+}
+
+func cloneCommentRecord(comment cluster.CommentRecord) cluster.CommentRecord {
+	comment.Body = append(json.RawMessage(nil), comment.Body...)
+	comment.Metadata = append(json.RawMessage(nil), comment.Metadata...)
+	comment.Mentions = append([]string(nil), comment.Mentions...)
+	comment.Reactions = append([]cluster.CommentReaction(nil), comment.Reactions...)
+	if comment.EditedAt != nil {
+		editedAt := *comment.EditedAt
+		comment.EditedAt = &editedAt
+	}
+	if comment.DeletedAt != nil {
+		deletedAt := *comment.DeletedAt
+		comment.DeletedAt = &deletedAt
+	}
+	return comment
+}
+
+func cloneInboxNotificationRecord(notification cluster.InboxNotificationRecord) cluster.InboxNotificationRecord {
+	notification.ActivityData = append(json.RawMessage(nil), notification.ActivityData...)
+	if notification.ReadAt != nil {
+		readAt := *notification.ReadAt
+		notification.ReadAt = &readAt
+	}
+	return notification
 }
 
 func clonePresenceEvent(event cluster.PresenceEvent) cluster.PresenceEvent {

@@ -123,30 +123,12 @@ const (
 	roomEventCreated = "openrtc.rooms.created"
 	roomEventUpdated = "openrtc.rooms.updated"
 	roomEventDeleted = "openrtc.rooms.deleted"
-
-	commentEventThreadCreated  = "openrtc.comments.thread.created"
-	commentEventCommentCreated = "openrtc.comments.comment.created"
-	commentEventCommentUpdated = "openrtc.comments.comment.updated"
-
-	notificationEventInboxCreated    = "openrtc.notifications.inbox.created"
-	notificationEventInboxRead       = "openrtc.notifications.inbox.read"
-	notificationEventInboxDeleted    = "openrtc.notifications.inbox.deleted"
-	notificationEventInboxDeletedAll = "openrtc.notifications.inbox.deleted_all"
 )
 
 const (
 	roomEventTypeCreated = "room-created"
 	roomEventTypeUpdated = "room-updated"
 	roomEventTypeDeleted = "room-deleted"
-
-	commentEventTypeThreadCreated  = "thread-created"
-	commentEventTypeCommentCreated = "comment-created"
-	commentEventTypeCommentUpdated = "comment-updated"
-
-	notificationEventTypeInboxCreated    = "created"
-	notificationEventTypeInboxRead       = "read"
-	notificationEventTypeInboxDeleted    = "deleted"
-	notificationEventTypeInboxDeletedAll = "deleted-all"
 )
 
 type roomListResponse struct {
@@ -158,22 +140,6 @@ type roomEventPayload struct {
 	Type   string              `json:"type"`
 	RoomID string              `json:"roomId"`
 	Room   *cluster.RoomRecord `json:"room,omitempty"`
-}
-
-type commentEventPayload struct {
-	Type      string                 `json:"type"`
-	RoomID    string                 `json:"roomId"`
-	ThreadID  string                 `json:"threadId"`
-	CommentID string                 `json:"commentId,omitempty"`
-	Thread    cluster.ThreadRecord   `json:"thread"`
-	Comment   *cluster.CommentRecord `json:"comment,omitempty"`
-}
-
-type notificationEventPayload struct {
-	Type           string                           `json:"type"`
-	UserID         string                           `json:"userId"`
-	NotificationID string                           `json:"notificationId,omitempty"`
-	Notification   *cluster.InboxNotificationRecord `json:"notification,omitempty"`
 }
 
 type roomListQuery struct {
@@ -312,14 +278,12 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.store.PublishEvent(r.Context(), cluster.PublishedEvent{
-		Room:                request.Room,
-		Event:               request.Event,
-		Payload:             request.Payload,
+	event := roomengine.NewEvent(request.Room, request.Event, request.Payload, roomengine.EventOptions{
 		ExcludeSenderConnID: request.ExcludeSenderConnID,
 		TraceID:             request.TraceID,
 		OriginNode:          "admin:" + s.cfg.NodeID,
-	}); err != nil {
+	})
+	if _, err := s.store.PublishEvent(r.Context(), event); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -658,7 +622,7 @@ func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishCommentEvent(r.Context(), commentEventThreadCreated, thread, firstThreadComment(thread)); err != nil {
+	if err := s.publishCommentEvent(r.Context(), roomengine.CommentThreadCreated, thread, firstThreadComment(thread)); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -705,7 +669,7 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishCommentEvent(r.Context(), commentEventCommentCreated, thread, findThreadComment(thread, request.ID)); err != nil {
+	if err := s.publishCommentEvent(r.Context(), roomengine.CommentCreated, thread, findThreadComment(thread, request.ID)); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -749,7 +713,7 @@ func (s *Service) handleUpdateComment(w http.ResponseWriter, r *http.Request, ro
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishCommentEvent(r.Context(), commentEventCommentUpdated, thread, findThreadComment(thread, commentID)); err != nil {
+	if err := s.publishCommentEvent(r.Context(), roomengine.CommentUpdated, thread, findThreadComment(thread, commentID)); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -829,7 +793,7 @@ func (s *Service) handleUserInboxNotifications(w http.ResponseWriter, r *http.Re
 				s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 				return
 			}
-			if err := s.publishNotificationEvent(r.Context(), notificationEventInboxDeletedAll, userID, nil); err != nil {
+			if err := s.publishNotificationEvent(r.Context(), roomengine.NotificationInboxDeletedAll, userID, nil); err != nil {
 				s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 				return
 			}
@@ -871,7 +835,7 @@ func (s *Service) handleUserInboxNotifications(w http.ResponseWriter, r *http.Re
 			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 			return
 		}
-		if err := s.publishNotificationEvent(r.Context(), notificationEventInboxDeleted, userID, &notification); err != nil {
+		if err := s.publishNotificationEvent(r.Context(), roomengine.NotificationInboxDeleted, userID, &notification); err != nil {
 			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 			return
 		}
@@ -930,7 +894,7 @@ func (s *Service) handleTriggerInboxNotification(w http.ResponseWriter, r *http.
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishNotificationEvent(r.Context(), notificationEventInboxCreated, notification.UserID, &notification); err != nil {
+	if err := s.publishNotificationEvent(r.Context(), roomengine.NotificationInboxCreated, notification.UserID, &notification); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -982,7 +946,7 @@ func (s *Service) handleInboxNotificationAction(w http.ResponseWriter, r *http.R
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishNotificationEvent(r.Context(), notificationEventInboxRead, notification.UserID, &notification); err != nil {
+	if err := s.publishNotificationEvent(r.Context(), roomengine.NotificationInboxRead, notification.UserID, &notification); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -1968,26 +1932,13 @@ func (s *Service) publishCommentEvent(ctx context.Context, eventName string, thr
 	if s.store == nil {
 		return nil
 	}
-	payload := commentEventPayload{
-		Type:     commentEventType(eventName),
-		RoomID:   thread.RoomID,
-		ThreadID: thread.ID,
-		Thread:   thread,
-	}
-	if comment != nil {
-		payload.CommentID = comment.ID
-		payload.Comment = comment
-	}
-	raw, err := json.Marshal(payload)
+	event, payload, err := roomengine.NewCommentEvent(eventName, thread, comment, roomengine.EventOptions{
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
 	if err != nil {
 		return err
 	}
-	if _, err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
-		Room:       thread.RoomID,
-		Event:      eventName,
-		Payload:    raw,
-		OriginNode: "admin:" + s.cfg.NodeID,
-	}); err != nil {
+	if _, err := s.store.PublishEvent(ctx, event); err != nil {
 		return err
 	}
 	s.dispatchWebhook(ctx, eventName, payload)
@@ -1998,27 +1949,13 @@ func (s *Service) publishNotificationEvent(ctx context.Context, eventName string
 	if s.store == nil {
 		return nil
 	}
-	payload := notificationEventPayload{
-		Type:   notificationEventType(eventName),
-		UserID: userID,
-	}
-	if notification != nil {
-		payload.NotificationID = notification.ID
-		payload.Notification = notification
-		if payload.UserID == "" {
-			payload.UserID = notification.UserID
-		}
-	}
-	raw, err := json.Marshal(payload)
+	event, payload, err := roomengine.NewNotificationEvent(eventName, userID, notification, roomengine.EventOptions{
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
 	if err != nil {
 		return err
 	}
-	if _, err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
-		Room:       notificationEventRoom(payload.UserID),
-		Event:      eventName,
-		Payload:    raw,
-		OriginNode: "admin:" + s.cfg.NodeID,
-	}); err != nil {
+	if _, err := s.store.PublishEvent(ctx, event); err != nil {
 		return err
 	}
 	s.dispatchWebhook(ctx, eventName, payload)
@@ -2029,50 +1966,14 @@ func (s *Service) publishStorageMutation(ctx context.Context, room string, kind 
 	if s.store == nil {
 		return nil
 	}
-	mutation, err := roomengine.NewStorageMutation(kind, document, operations, roomengine.StorageMutationOptions{})
-	if err != nil {
-		return err
-	}
-	event, err := roomengine.NewStorageEvent(room, mutation, roomengine.StorageEventOptions{
+	plan, err := roomengine.NewStorageMutationEventPlan(room, kind, document, operations, roomengine.StorageMutationOptions{}, roomengine.StorageEventOptions{
 		OriginNode: "admin:" + s.cfg.NodeID,
 	})
 	if err != nil {
 		return err
 	}
-	_, err = s.store.PublishEvent(ctx, event)
+	_, err = s.store.PublishEvent(ctx, plan.Event)
 	return err
-}
-
-func commentEventType(eventName string) string {
-	switch eventName {
-	case commentEventThreadCreated:
-		return commentEventTypeThreadCreated
-	case commentEventCommentCreated:
-		return commentEventTypeCommentCreated
-	case commentEventCommentUpdated:
-		return commentEventTypeCommentUpdated
-	default:
-		return eventName
-	}
-}
-
-func notificationEventType(eventName string) string {
-	switch eventName {
-	case notificationEventInboxCreated:
-		return notificationEventTypeInboxCreated
-	case notificationEventInboxRead:
-		return notificationEventTypeInboxRead
-	case notificationEventInboxDeleted:
-		return notificationEventTypeInboxDeleted
-	case notificationEventInboxDeletedAll:
-		return notificationEventTypeInboxDeletedAll
-	default:
-		return eventName
-	}
-}
-
-func notificationEventRoom(userID string) string {
-	return "notifications:" + userID
 }
 
 func firstThreadComment(thread cluster.ThreadRecord) *cluster.CommentRecord {
