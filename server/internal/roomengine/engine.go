@@ -147,6 +147,11 @@ type StorageEventOptions struct {
 	ExcludeSenderConnID string
 }
 
+type YJSEventOptions struct {
+	OriginNode   string
+	OriginConnID string
+}
+
 type PresenceFanout struct {
 	Event         cluster.PresenceEvent
 	TargetConnIDs []string
@@ -446,6 +451,16 @@ func NewStorageEvent(room string, update StorageMutation, options StorageEventOp
 		ExcludeSenderConnID: options.ExcludeSenderConnID,
 		OriginNode:          options.OriginNode,
 	}, nil
+}
+
+func NewYJSEvent(room string, kind cluster.YJSEventKind, update []byte, options YJSEventOptions) cluster.YJSEvent {
+	return cluster.YJSEvent{
+		Room:         room,
+		Kind:         kind,
+		Update:       append([]byte(nil), update...),
+		OriginNode:   options.OriginNode,
+		OriginConnID: options.OriginConnID,
+	}
 }
 
 func (e *Engine) Snapshot(room string) Snapshot {

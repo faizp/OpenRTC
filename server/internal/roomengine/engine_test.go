@@ -659,6 +659,21 @@ func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	}
 }
 
+func TestNewYJSEvent(t *testing.T) {
+	update := []byte("subdoc-diff")
+	event := NewYJSEvent("room-a", cluster.YJSEventSubdocDiff, update, YJSEventOptions{
+		OriginNode:   "node-a",
+		OriginConnID: "conn-1",
+	})
+	if event.Room != "room-a" || event.Kind != cluster.YJSEventSubdocDiff || event.OriginNode != "node-a" || event.OriginConnID != "conn-1" {
+		t.Fatalf("unexpected yjs event envelope: %+v", event)
+	}
+	update[0] = 'X'
+	if string(event.Update) != "subdoc-diff" {
+		t.Fatalf("yjs event update should be copied, got %q", event.Update)
+	}
+}
+
 func TestEngineStorageSetGetAndPatch(t *testing.T) {
 	engine := New()
 	if _, err := engine.GetStorage("room-a"); !errors.Is(err, cluster.ErrStorageNotFound) {

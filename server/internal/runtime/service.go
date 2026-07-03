@@ -421,14 +421,10 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeBadRequest).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeBadRequest))
 			return
 		}
-		update := append([]byte(nil), payload[1:]...)
-		event := cluster.YJSEvent{
-			Room:         room,
-			Kind:         cluster.YJSEventKind(kind),
-			Update:       update,
+		event := roomengine.NewYJSEvent(room, cluster.YJSEventKind(kind), payload[1:], roomengine.YJSEventOptions{
 			OriginNode:   s.cfg.NodeID,
 			OriginConnID: conn.id,
-		}
+		})
 		if yjsFrameRequiresPublish(kind) {
 			if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
