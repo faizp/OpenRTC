@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -22,6 +23,12 @@ type LimitsConfig struct {
 	RoomsPerConnection int
 	EmitsPerSecond     int
 	OutboundQueueDepth int
+}
+
+type WebhooksConfig struct {
+	URLs      []string
+	Secret    string
+	TimeoutMS int
 }
 
 type RuntimeConfig struct {
@@ -51,7 +58,8 @@ type RuntimeConfig struct {
 		EnforcePrefix bool
 		Separator     string
 	}
-	Limits LimitsConfig
+	Limits   LimitsConfig
+	Webhooks *WebhooksConfig
 }
 
 type Error struct {
@@ -175,6 +183,31 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 		}
 	}
 
+	webhookURLs := readCSV(env, "OPENRTC_WEBHOOK_URLS")
+	if webhookURL := readString(env, "OPENRTC_WEBHOOK_URL"); webhookURL != "" {
+		webhookURLs = append([]string{webhookURL}, webhookURLs...)
+	}
+	if len(webhookURLs) > 0 {
+		webhookSecret := readString(env, "OPENRTC_WEBHOOK_SECRET")
+		if webhookSecret == "" {
+			return RuntimeConfig{}, &Error{Message: "OPENRTC_WEBHOOK_SECRET is required when webhooks are configured"}
+		}
+		webhookTimeoutMS, err := readInt(env, "OPENRTC_WEBHOOK_TIMEOUT_MS", 2000)
+		if err != nil {
+			return RuntimeConfig{}, err
+		}
+		for _, rawURL := range webhookURLs {
+			if !validWebhookURL(rawURL) {
+				return RuntimeConfig{}, &Error{Message: "OPENRTC_WEBHOOK_URLS must contain absolute http(s) URLs"}
+			}
+		}
+		cfg.Webhooks = &WebhooksConfig{
+			URLs:      webhookURLs,
+			Secret:    webhookSecret,
+			TimeoutMS: webhookTimeoutMS,
+		}
+	}
+
 	if cfg.Mode == ModeCluster {
 		redisURL := readString(env, "OPENRTC_REDIS_URL")
 		if redisURL == "" {
@@ -268,4 +301,13 @@ func defaultString(value string, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func validWebhookURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	return scheme == "http" || scheme == "https"
 }

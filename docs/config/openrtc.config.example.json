@@ -19,6 +19,11 @@
     "issuer": "https://issuer.example.com",
     "audience": "openrtc-admin"
   },
+  "webhooks": {
+    "urls": ["https://hooks.example.com/openrtc"],
+    "secret": "replace-with-shared-secret",
+    "timeout_ms": 2000
+  },
   "tenant": {
     "enforce_prefix": true,
     "separator": ":"

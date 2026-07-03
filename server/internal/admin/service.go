@@ -34,6 +34,8 @@ type Service struct {
 	store    cluster.Store
 	metrics  *observability.AdminMetrics
 
+	webhookClient *http.Client
+
 	mu    sync.Mutex
 	stats stats.Snapshot
 }
@@ -117,6 +119,10 @@ const (
 )
 
 const (
+	roomEventCreated = "openrtc.rooms.created"
+	roomEventUpdated = "openrtc.rooms.updated"
+	roomEventDeleted = "openrtc.rooms.deleted"
+
 	commentEventThreadCreated  = "openrtc.comments.thread.created"
 	commentEventCommentCreated = "openrtc.comments.comment.created"
 	commentEventCommentUpdated = "openrtc.comments.comment.updated"
@@ -128,6 +134,10 @@ const (
 )
 
 const (
+	roomEventTypeCreated = "room-created"
+	roomEventTypeUpdated = "room-updated"
+	roomEventTypeDeleted = "room-deleted"
+
 	commentEventTypeThreadCreated  = "thread-created"
 	commentEventTypeCommentCreated = "comment-created"
 	commentEventTypeCommentUpdated = "comment-updated"
@@ -141,6 +151,12 @@ const (
 type roomListResponse struct {
 	Rooms      []cluster.RoomRecord `json:"rooms"`
 	NextCursor string               `json:"next_cursor,omitempty"`
+}
+
+type roomEventPayload struct {
+	Type   string              `json:"type"`
+	RoomID string              `json:"roomId"`
+	Room   *cluster.RoomRecord `json:"room,omitempty"`
 }
 
 type commentEventPayload struct {
@@ -207,6 +223,10 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 		logger:   logger,
 		verifier: verifier,
 		metrics:  observability.NewAdminMetrics(),
+	}
+
+	if cfg.Webhooks != nil && len(cfg.Webhooks.URLs) > 0 {
+		service.webhookClient = &http.Client{Timeout: time.Duration(cfg.Webhooks.TimeoutMS) * time.Millisecond}
 	}
 
 	if cfg.Redis != nil {
@@ -1147,6 +1167,11 @@ func (s *Service) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.dispatchWebhook(r.Context(), roomEventCreated, roomEventPayload{
+		Type:   roomEventTypeCreated,
+		RoomID: record.ID,
+		Room:   &record,
+	})
 	writeJSON(w, http.StatusCreated, record)
 }
 
@@ -1256,6 +1281,11 @@ func (s *Service) handleGetRoom(w http.ResponseWriter, r *http.Request, room str
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.dispatchWebhook(r.Context(), roomEventUpdated, roomEventPayload{
+		Type:   roomEventTypeUpdated,
+		RoomID: record.ID,
+		Room:   &record,
+	})
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -1341,6 +1371,10 @@ func (s *Service) handleDeleteRoom(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.dispatchWebhook(r.Context(), roomEventDeleted, roomEventPayload{
+		Type:   roomEventTypeDeleted,
+		RoomID: room,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1939,12 +1973,16 @@ func (s *Service) publishCommentEvent(ctx context.Context, eventName string, thr
 	if err != nil {
 		return err
 	}
-	return s.store.PublishEvent(ctx, cluster.PublishedEvent{
+	if err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
 		Room:       thread.RoomID,
 		Event:      eventName,
 		Payload:    raw,
 		OriginNode: "admin:" + s.cfg.NodeID,
-	})
+	}); err != nil {
+		return err
+	}
+	s.dispatchWebhook(ctx, eventName, payload)
+	return nil
 }
 
 func (s *Service) publishNotificationEvent(ctx context.Context, eventName string, userID string, notification *cluster.InboxNotificationRecord) error {
@@ -1966,12 +2004,16 @@ func (s *Service) publishNotificationEvent(ctx context.Context, eventName string
 	if err != nil {
 		return err
 	}
-	return s.store.PublishEvent(ctx, cluster.PublishedEvent{
+	if err := s.store.PublishEvent(ctx, cluster.PublishedEvent{
 		Room:       notificationEventRoom(payload.UserID),
 		Event:      eventName,
 		Payload:    raw,
 		OriginNode: "admin:" + s.cfg.NodeID,
-	})
+	}); err != nil {
+		return err
+	}
+	s.dispatchWebhook(ctx, eventName, payload)
+	return nil
 }
 
 func commentEventType(eventName string) string {

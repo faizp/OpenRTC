@@ -218,6 +218,12 @@ user-targeted realtime `notification` client events and React notification
 hooks for connected users. These deltas complement the durable inbox REST APIs;
 refresh the list after reconnects.
 
+Admin room, comment, and notification mutations can also fan out signed
+best-effort webhooks when `OPENRTC_WEBHOOK_URL` or `OPENRTC_WEBHOOK_URLS` and
+`OPENRTC_WEBHOOK_SECRET` are configured. Webhook failures are logged and do not
+roll back the admin mutation; see `docs/protocol/v1.md` for event names,
+headers, and payload envelopes.
+
 The reference app Presence Lab includes a fan-out benchmark for production
 debugging. Spawn lab clients, run the benchmark, and it stamps every synthetic
 presence update with a run ID, round, sender, and sent timestamp. The UI reports

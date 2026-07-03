@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -1760,6 +1761,191 @@ func TestAdminNotificationHandlers(t *testing.T) {
 	if deleteRoomSettingsResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete room settings 204, got %d", deleteRoomSettingsResp.Code)
 	}
+}
+
+func TestAdminWebhookDelivery(t *testing.T) {
+	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "rooms:tenant-a:*",
+	})
+	defer cleanup()
+
+	var deliveries []capturedWebhook
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		deliveries = append(deliveries, capturedWebhook{
+			Header: r.Header.Clone(),
+			Body:   append([]byte(nil), body...),
+		})
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webhookServer.Close()
+
+	client := webhookServer.Client()
+	client.Timeout = time.Second
+	store := &fakeAdminStore{
+		createRoomRecord: cluster.RoomRecord{
+			ID:        "tenant-a:room-1",
+			Metadata:  json.RawMessage(`{"title":"Draft"}`),
+			CreatedAt: time.Unix(400, 0).UTC(),
+			UpdatedAt: time.Unix(400, 0).UTC(),
+		},
+	}
+	service := newTestAdminService(verifier, store)
+	service.cfg.Webhooks = &config.WebhooksConfig{
+		URLs:      []string{webhookServer.URL},
+		Secret:    "whsec_test",
+		TimeoutMS: 1000,
+	}
+	service.webhookClient = client
+	handler := service.Handler()
+
+	createResp := performAdminRequest(handler, token, http.MethodPost, "/v1/rooms", `{"id":"tenant-a:room-1","metadata":{"title":"Draft"}}`)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("expected room create 201, got %d body=%q", createResp.Code, createResp.Body.String())
+	}
+
+	thread := cluster.ThreadRecord{
+		Type:   "thread",
+		ID:     "thread-1",
+		RoomID: "tenant-a:room-1",
+		Comments: []cluster.CommentRecord{{
+			Type:     "comment",
+			ID:       "comment-1",
+			ThreadID: "thread-1",
+			RoomID:   "tenant-a:room-1",
+			UserID:   "user-1",
+			Body:     json.RawMessage(`{"content":[{"type":"paragraph","text":"first"}]}`),
+		}},
+	}
+	if err := service.publishCommentEvent(context.Background(), commentEventThreadCreated, thread, &thread.Comments[0]); err != nil {
+		t.Fatalf("publish comment event: %v", err)
+	}
+
+	notification := cluster.InboxNotificationRecord{
+		ID:         "in_1",
+		UserID:     "user-1",
+		Kind:       "$custom",
+		RoomID:     "tenant-a:room-1",
+		NotifiedAt: time.Unix(401, 0).UTC(),
+	}
+	if err := service.publishNotificationEvent(context.Background(), notificationEventInboxCreated, notification.UserID, &notification); err != nil {
+		t.Fatalf("publish notification event: %v", err)
+	}
+
+	if len(deliveries) != 3 {
+		t.Fatalf("expected 3 webhook deliveries, got %d", len(deliveries))
+	}
+
+	roomEnvelope := assertWebhookDelivery(t, deliveries[0], roomEventCreated, "whsec_test")
+	var roomPayload roomEventPayload
+	if err := json.Unmarshal(roomEnvelope.Data, &roomPayload); err != nil {
+		t.Fatalf("decode room webhook payload: %v", err)
+	}
+	if roomPayload.Type != roomEventTypeCreated || roomPayload.RoomID != "tenant-a:room-1" || roomPayload.Room == nil || roomPayload.Room.ID != "tenant-a:room-1" {
+		t.Fatalf("unexpected room webhook payload: %+v", roomPayload)
+	}
+
+	commentEnvelope := assertWebhookDelivery(t, deliveries[1], commentEventThreadCreated, "whsec_test")
+	var commentPayload commentEventPayload
+	if err := json.Unmarshal(commentEnvelope.Data, &commentPayload); err != nil {
+		t.Fatalf("decode comment webhook payload: %v", err)
+	}
+	if commentPayload.Type != commentEventTypeThreadCreated || commentPayload.ThreadID != "thread-1" || commentPayload.CommentID != "comment-1" {
+		t.Fatalf("unexpected comment webhook payload: %+v", commentPayload)
+	}
+
+	notificationEnvelope := assertWebhookDelivery(t, deliveries[2], notificationEventInboxCreated, "whsec_test")
+	var notificationPayload notificationEventPayload
+	if err := json.Unmarshal(notificationEnvelope.Data, &notificationPayload); err != nil {
+		t.Fatalf("decode notification webhook payload: %v", err)
+	}
+	if notificationPayload.Type != notificationEventTypeInboxCreated || notificationPayload.UserID != "user-1" || notificationPayload.NotificationID != "in_1" {
+		t.Fatalf("unexpected notification webhook payload: %+v", notificationPayload)
+	}
+}
+
+func TestAdminWebhookFailuresAreBestEffort(t *testing.T) {
+	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "rooms:tenant-a:*",
+	})
+	defer cleanup()
+
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer webhookServer.Close()
+
+	client := webhookServer.Client()
+	client.Timeout = time.Second
+	store := &fakeAdminStore{
+		createRoomRecord: cluster.RoomRecord{ID: "tenant-a:room-1"},
+	}
+	service := newTestAdminService(verifier, store)
+	service.cfg.Webhooks = &config.WebhooksConfig{
+		URLs:      []string{webhookServer.URL},
+		Secret:    "whsec_test",
+		TimeoutMS: 1000,
+	}
+	service.webhookClient = client
+
+	resp := performAdminRequest(service.Handler(), token, http.MethodPost, "/v1/rooms", `{"id":"tenant-a:room-1","metadata":{}}`)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected webhook failure to keep room create successful, got %d body=%q", resp.Code, resp.Body.String())
+	}
+}
+
+type capturedWebhook struct {
+	Header http.Header
+	Body   []byte
+}
+
+type decodedWebhook struct {
+	ID        string          `json:"id"`
+	Event     string          `json:"event"`
+	CreatedAt string          `json:"createdAt"`
+	Data      json.RawMessage `json:"data"`
+}
+
+func assertWebhookDelivery(t *testing.T, delivery capturedWebhook, eventName string, secret string) decodedWebhook {
+	t.Helper()
+	if delivery.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("unexpected webhook content type: %q", delivery.Header.Get("Content-Type"))
+	}
+	if delivery.Header.Get("User-Agent") != webhookUserAgent {
+		t.Fatalf("unexpected webhook user agent: %q", delivery.Header.Get("User-Agent"))
+	}
+	if delivery.Header.Get("OpenRTC-Webhook-Event") != eventName {
+		t.Fatalf("unexpected webhook event header: %q", delivery.Header.Get("OpenRTC-Webhook-Event"))
+	}
+	timestamp := delivery.Header.Get("OpenRTC-Webhook-Timestamp")
+	if timestamp == "" {
+		t.Fatalf("missing webhook timestamp")
+	}
+	wantSignature := "v1=" + signWebhookPayload(secret, timestamp, delivery.Body)
+	if delivery.Header.Get("OpenRTC-Webhook-Signature") != wantSignature {
+		t.Fatalf("unexpected webhook signature")
+	}
+
+	var envelope decodedWebhook
+	if err := json.Unmarshal(delivery.Body, &envelope); err != nil {
+		t.Fatalf("decode webhook envelope: %v", err)
+	}
+	if envelope.ID == "" || delivery.Header.Get("OpenRTC-Webhook-Id") != envelope.ID {
+		t.Fatalf("unexpected webhook id header=%q envelope=%q", delivery.Header.Get("OpenRTC-Webhook-Id"), envelope.ID)
+	}
+	if envelope.Event != eventName {
+		t.Fatalf("unexpected webhook envelope event: %q", envelope.Event)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, envelope.CreatedAt); err != nil {
+		t.Fatalf("invalid webhook createdAt: %v", err)
+	}
+	return envelope
 }
 
 func TestAdminNotificationErrorBranches(t *testing.T) {

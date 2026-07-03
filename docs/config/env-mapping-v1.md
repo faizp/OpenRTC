@@ -16,6 +16,10 @@ Environment variables map into the config contract as follows:
 - `OPENRTC_ADMIN_AUTH_ISSUER` -> `admin_auth.issuer`
 - `OPENRTC_ADMIN_AUTH_AUDIENCE` -> `admin_auth.audience`
 - `OPENRTC_ADMIN_AUTH_JWKS_URL` -> `admin_auth.jwks_url` (defaults to `auth.jwks_url`)
+- `OPENRTC_WEBHOOK_URL` -> `webhooks.urls[0]`
+- `OPENRTC_WEBHOOK_URLS` -> `webhooks.urls` (comma-separated, appended after `OPENRTC_WEBHOOK_URL`)
+- `OPENRTC_WEBHOOK_SECRET` -> `webhooks.secret`
+- `OPENRTC_WEBHOOK_TIMEOUT_MS` -> `webhooks.timeout_ms`
 - `OPENRTC_TENANT_ENFORCE_PREFIX` -> `tenant.enforce_prefix`
 - `OPENRTC_TENANT_SEPARATOR` -> `tenant.separator`
 - `OPENRTC_LIMIT_PAYLOAD_MAX_BYTES` -> `limits.payload_max_bytes`
@@ -43,3 +47,5 @@ Compactor-only environment variables are consumed directly by
 - Integer fields must parse to base-10 positive integers.
 - Empty string values are treated as missing.
 - `mode=cluster` without `OPENRTC_REDIS_URL` is invalid.
+- Webhook URLs must be absolute `http` or `https` URLs.
+- `OPENRTC_WEBHOOK_SECRET` is required whenever any webhook URL is configured.

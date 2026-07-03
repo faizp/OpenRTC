@@ -21,6 +21,10 @@ Always required:
 Required only in cluster mode (`mode=cluster`):
 - `redis.url`
 
+Required only when webhooks are configured:
+- `webhooks.urls`
+- `webhooks.secret`
+
 ## 3. Defaults
 
 - `server.host`: `0.0.0.0`
@@ -36,6 +40,7 @@ Required only in cluster mode (`mode=cluster`):
 - `limits.rooms_per_connection`: `50`
 - `limits.emits_per_second`: `100`
 - `limits.outbound_queue_depth`: `256`
+- `webhooks.timeout_ms`: `2000`
 
 ## 4. Compatibility rules
 

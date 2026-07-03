@@ -80,6 +80,28 @@ func TestLoadFromMapClusterMode(t *testing.T) {
 	}
 }
 
+func TestLoadFromMapWebhooks(t *testing.T) {
+	env := baseEnv()
+	env["OPENRTC_WEBHOOK_URL"] = "https://hooks.example.com/openrtc"
+	env["OPENRTC_WEBHOOK_URLS"] = "https://hooks-2.example.com/openrtc, http://localhost:9001/hooks"
+	env["OPENRTC_WEBHOOK_SECRET"] = "whsec_test"
+	env["OPENRTC_WEBHOOK_TIMEOUT_MS"] = "1500"
+
+	cfg, err := LoadFromMap(env)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Webhooks == nil {
+		t.Fatalf("expected webhook config")
+	}
+	if cfg.Webhooks.Secret != "whsec_test" || cfg.Webhooks.TimeoutMS != 1500 {
+		t.Fatalf("unexpected webhook config: %+v", cfg.Webhooks)
+	}
+	if len(cfg.Webhooks.URLs) != 3 || cfg.Webhooks.URLs[0] != "https://hooks.example.com/openrtc" || cfg.Webhooks.URLs[2] != "http://localhost:9001/hooks" {
+		t.Fatalf("unexpected webhook URLs: %#v", cfg.Webhooks.URLs)
+	}
+}
+
 func TestLoadFromOS(t *testing.T) {
 	for key, value := range baseEnv() {
 		t.Setenv(key, value)
@@ -224,6 +246,30 @@ func TestLoadFromMapRejectsInvalidEnvironment(t *testing.T) {
 				env["OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH"] = "bad"
 			},
 			message: "OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH must be a positive integer",
+		},
+		{
+			name: "webhook missing secret",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_WEBHOOK_URL"] = "https://hooks.example.com/openrtc"
+			},
+			message: "OPENRTC_WEBHOOK_SECRET is required when webhooks are configured",
+		},
+		{
+			name: "webhook bad url",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_WEBHOOK_URL"] = "ftp://hooks.example.com/openrtc"
+				env["OPENRTC_WEBHOOK_SECRET"] = "whsec_test"
+			},
+			message: "OPENRTC_WEBHOOK_URLS must contain absolute http(s) URLs",
+		},
+		{
+			name: "webhook bad timeout",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_WEBHOOK_URL"] = "https://hooks.example.com/openrtc"
+				env["OPENRTC_WEBHOOK_SECRET"] = "whsec_test"
+				env["OPENRTC_WEBHOOK_TIMEOUT_MS"] = "0"
+			},
+			message: "OPENRTC_WEBHOOK_TIMEOUT_MS must be a positive integer",
 		},
 	}
 	for _, tc := range tests {

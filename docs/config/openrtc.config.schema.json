@@ -60,6 +60,20 @@
         "jwks_url": { "type": "string", "format": "uri" }
       }
     },
+    "webhooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["urls", "secret"],
+      "properties": {
+        "urls": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "format": "uri", "pattern": "^https?://" }
+        },
+        "secret": { "type": "string", "minLength": 1 },
+        "timeout_ms": { "type": "integer", "minimum": 1, "default": 2000 }
+      }
+    },
     "tenant": {
       "type": "object",
       "additionalProperties": false,

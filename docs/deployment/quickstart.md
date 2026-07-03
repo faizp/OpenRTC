@@ -114,6 +114,10 @@ All configuration is via environment variables:
 | `OPENRTC_ADMIN_AUTH_ISSUER` | — | JWT issuer for admin tokens (optional) |
 | `OPENRTC_ADMIN_AUTH_AUDIENCE` | — | JWT audience for admin tokens (optional) |
 | `OPENRTC_ADMIN_AUTH_JWKS_URL` | `OPENRTC_AUTH_JWKS_URL` | JWKS endpoint for admin tokens |
+| `OPENRTC_WEBHOOK_URL` | — | Single absolute HTTP(S) webhook endpoint for admin mutation events |
+| `OPENRTC_WEBHOOK_URLS` | — | Comma-separated additional absolute HTTP(S) webhook endpoints |
+| `OPENRTC_WEBHOOK_SECRET` | — | Shared signing secret; required when webhook URLs are configured |
+| `OPENRTC_WEBHOOK_TIMEOUT_MS` | `2000` | Per-request webhook delivery timeout in milliseconds |
 | `OPENRTC_TENANT_ENFORCE_PREFIX` | `true` | Enforce tenant prefix on room names |
 | `OPENRTC_TENANT_SEPARATOR` | `:` | Separator between tenant and room name |
 | `OPENRTC_LIMIT_PAYLOAD_MAX_BYTES` | `16384` | Max payload size (bytes) |
