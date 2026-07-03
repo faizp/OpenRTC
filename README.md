@@ -97,6 +97,9 @@ room.subscribe("storage", (event) => {
 room.subscribe("comments", (event) => {
   console.log(event.type, event.threadId, event.commentId);
 });
+const unsubscribeNotifications = client.on("notification", (event) => {
+  console.log(event.type, event.notificationId, event.notification?.roomId);
+});
 await room.patchStorage([{ op: "replace", path: "/title", value: "Review" }], {
   opId: "title-edit-1",
 });
@@ -111,6 +114,7 @@ await room.updateLiveStorage({ title: "Typed Review" }, { opId: "typed-title-1" 
 
 unsubscribe();
 unsubscribeLostConnection();
+unsubscribeNotifications();
 leave();
 ```
 
@@ -145,7 +149,7 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useSelfCursor`, `useCursor`, `useMyPresence`, `useMyPresenceSelector`,
 `useSetCursor`, `useBroadcastEvent`, `useBroadcastEventWithAck`, `useStatus`,
 `useRoomStatus`, `useRoomEvents`, `useCommentListener`, `useRoomCommentEvents`,
-`useDiagnostics`, `useErrorListener`,
+`useNotificationListener`, `useNotificationEvents`, `useDiagnostics`, `useErrorListener`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useSetStorage`, `usePatchStorage`,
 `useStorageMutation`, and `useStorageListener`. It also exports
@@ -208,6 +212,11 @@ For server-side product surfaces, `OpenRTCAdminClient` wraps the admin REST APIs
 used for rooms, active users, comments, comment metadata/reaction/mention
 updates, notifications, subscription settings, ephemeral presence, and
 broadcast.
+
+Inbox notification create/read/delete/delete-all mutations also emit
+user-targeted realtime `notification` client events and React notification
+hooks for connected users. These deltas complement the durable inbox REST APIs;
+refresh the list after reconnects.
 
 The reference app Presence Lab includes a fan-out benchmark for production
 debugging. Spawn lab clients, run the benchmark, and it stamps every synthetic

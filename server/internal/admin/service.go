@@ -116,12 +116,22 @@ const (
 	commentEventThreadCreated  = "openrtc.comments.thread.created"
 	commentEventCommentCreated = "openrtc.comments.comment.created"
 	commentEventCommentUpdated = "openrtc.comments.comment.updated"
+
+	notificationEventInboxCreated    = "openrtc.notifications.inbox.created"
+	notificationEventInboxRead       = "openrtc.notifications.inbox.read"
+	notificationEventInboxDeleted    = "openrtc.notifications.inbox.deleted"
+	notificationEventInboxDeletedAll = "openrtc.notifications.inbox.deleted_all"
 )
 
 const (
 	commentEventTypeThreadCreated  = "thread-created"
 	commentEventTypeCommentCreated = "comment-created"
 	commentEventTypeCommentUpdated = "comment-updated"
+
+	notificationEventTypeInboxCreated    = "created"
+	notificationEventTypeInboxRead       = "read"
+	notificationEventTypeInboxDeleted    = "deleted"
+	notificationEventTypeInboxDeletedAll = "deleted-all"
 )
 
 type roomListResponse struct {
@@ -136,6 +146,13 @@ type commentEventPayload struct {
 	CommentID string                 `json:"commentId,omitempty"`
 	Thread    cluster.ThreadRecord   `json:"thread"`
 	Comment   *cluster.CommentRecord `json:"comment,omitempty"`
+}
+
+type notificationEventPayload struct {
+	Type           string                           `json:"type"`
+	UserID         string                           `json:"userId"`
+	NotificationID string                           `json:"notificationId,omitempty"`
+	Notification   *cluster.InboxNotificationRecord `json:"notification,omitempty"`
 }
 
 type activeUsersResponse struct {
@@ -764,6 +781,10 @@ func (s *Service) handleUserInboxNotifications(w http.ResponseWriter, r *http.Re
 				s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 				return
 			}
+			if err := s.publishNotificationEvent(r.Context(), notificationEventInboxDeletedAll, userID, nil); err != nil {
+				s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -784,12 +805,25 @@ func (s *Service) handleUserInboxNotifications(w http.ResponseWriter, r *http.Re
 		}
 		writeJSON(w, http.StatusOK, notification)
 	case http.MethodDelete:
-		err := s.store.DeleteInboxNotification(r.Context(), userID, notificationID)
+		notification, err := s.store.GetInboxNotification(r.Context(), userID, notificationID)
 		if errors.Is(err, cluster.ErrInboxNotFound) {
 			s.writeError(w, openrtcerr.CodeInboxNotificationNotFound, "inbox notification not found", "", http.StatusNotFound)
 			return
 		}
 		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		err = s.store.DeleteInboxNotification(r.Context(), userID, notificationID)
+		if errors.Is(err, cluster.ErrInboxNotFound) {
+			s.writeError(w, openrtcerr.CodeInboxNotificationNotFound, "inbox notification not found", "", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
+		if err := s.publishNotificationEvent(r.Context(), notificationEventInboxDeleted, userID, &notification); err != nil {
 			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 			return
 		}
@@ -848,6 +882,10 @@ func (s *Service) handleTriggerInboxNotification(w http.ResponseWriter, r *http.
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	if err := s.publishNotificationEvent(r.Context(), notificationEventInboxCreated, notification.UserID, &notification); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusCreated, notification)
 }
 
@@ -893,6 +931,10 @@ func (s *Service) handleInboxNotificationAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.publishNotificationEvent(r.Context(), notificationEventInboxRead, notification.UserID, &notification); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -1848,6 +1890,33 @@ func (s *Service) publishCommentEvent(ctx context.Context, eventName string, thr
 	})
 }
 
+func (s *Service) publishNotificationEvent(ctx context.Context, eventName string, userID string, notification *cluster.InboxNotificationRecord) error {
+	if s.store == nil {
+		return nil
+	}
+	payload := notificationEventPayload{
+		Type:   notificationEventType(eventName),
+		UserID: userID,
+	}
+	if notification != nil {
+		payload.NotificationID = notification.ID
+		payload.Notification = notification
+		if payload.UserID == "" {
+			payload.UserID = notification.UserID
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return s.store.PublishEvent(ctx, cluster.PublishedEvent{
+		Room:       notificationEventRoom(payload.UserID),
+		Event:      eventName,
+		Payload:    raw,
+		OriginNode: "admin:" + s.cfg.NodeID,
+	})
+}
+
 func commentEventType(eventName string) string {
 	switch eventName {
 	case commentEventThreadCreated:
@@ -1859,6 +1928,25 @@ func commentEventType(eventName string) string {
 	default:
 		return eventName
 	}
+}
+
+func notificationEventType(eventName string) string {
+	switch eventName {
+	case notificationEventInboxCreated:
+		return notificationEventTypeInboxCreated
+	case notificationEventInboxRead:
+		return notificationEventTypeInboxRead
+	case notificationEventInboxDeleted:
+		return notificationEventTypeInboxDeleted
+	case notificationEventInboxDeletedAll:
+		return notificationEventTypeInboxDeletedAll
+	default:
+		return eventName
+	}
+}
+
+func notificationEventRoom(userID string) string {
+	return "notifications:" + userID
 }
 
 func firstThreadComment(thread cluster.ThreadRecord) *cluster.CommentRecord {

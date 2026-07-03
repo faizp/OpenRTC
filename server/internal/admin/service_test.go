@@ -1400,6 +1400,33 @@ func assertCommentEvent(t *testing.T, events []cluster.PublishedEvent, index int
 	}
 }
 
+func assertNotificationEvent(t *testing.T, events []cluster.PublishedEvent, index int, eventName string, eventType string, userID string, notificationID string) {
+	t.Helper()
+	if len(events) <= index {
+		t.Fatalf("expected published notification event %d, got %d events", index, len(events))
+	}
+	event := events[index]
+	if event.Room != notificationEventRoom(userID) || event.Event != eventName || event.OriginNode != "admin:node-a" {
+		t.Fatalf("unexpected published notification event: %+v", event)
+	}
+	var payload notificationEventPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("decode notification event payload: %v", err)
+	}
+	if payload.Type != eventType || payload.UserID != userID {
+		t.Fatalf("unexpected notification event payload: %+v", payload)
+	}
+	if notificationID == "" {
+		if payload.NotificationID != "" || payload.Notification != nil {
+			t.Fatalf("unexpected notification payload for delete-all event: %+v", payload)
+		}
+		return
+	}
+	if payload.NotificationID != notificationID || payload.Notification == nil || payload.Notification.ID != notificationID {
+		t.Fatalf("unexpected notification payload: %+v", payload)
+	}
+}
+
 func TestAdminThreadErrorBranches(t *testing.T) {
 	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
 		"tenant": "tenant-a",
@@ -1624,6 +1651,7 @@ func TestAdminNotificationHandlers(t *testing.T) {
 	if store.createdInboxNotification.ID != "in_1" || store.createdInboxNotification.UserID != "user-1" {
 		t.Fatalf("unexpected created notification: %+v", store.createdInboxNotification)
 	}
+	assertNotificationEvent(t, store.publishedEvents, 0, notificationEventInboxCreated, notificationEventTypeInboxCreated, "user-1", "in_1")
 
 	listResp := performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/inbox-notifications?limit=1&query=unread:true", "")
 	if listResp.Code != http.StatusOK {
@@ -1645,14 +1673,17 @@ func TestAdminNotificationHandlers(t *testing.T) {
 	if readResp.Code != http.StatusOK {
 		t.Fatalf("expected read 200, got %d body=%q", readResp.Code, readResp.Body.String())
 	}
+	assertNotificationEvent(t, store.publishedEvents, 1, notificationEventInboxRead, notificationEventTypeInboxRead, "user-1", "in_1")
 	deleteResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/users/user-1/inbox-notifications/in_1", "")
 	if deleteResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete 204, got %d", deleteResp.Code)
 	}
+	assertNotificationEvent(t, store.publishedEvents, 2, notificationEventInboxDeleted, notificationEventTypeInboxDeleted, "user-1", "in_1")
 	deleteAllResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/users/user-1/inbox-notifications", "")
 	if deleteAllResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete all 204, got %d", deleteAllResp.Code)
 	}
+	assertNotificationEvent(t, store.publishedEvents, 3, notificationEventInboxDeletedAll, notificationEventTypeInboxDeletedAll, "user-1", "")
 
 	settingsResp := performAdminRequest(handler, token, http.MethodGet, "/v1/users/user-1/notification-settings", "")
 	if settingsResp.Code != http.StatusOK || strings.TrimSpace(settingsResp.Body.String()) != `{"email":{"thread":true}}` {

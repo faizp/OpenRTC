@@ -4,6 +4,7 @@ import {
   OpenRTCAdminError,
   OpenRTCClient,
   OPENRTC_COMMENT_EVENTS,
+  OPENRTC_NOTIFICATION_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
   getCursorPeers,
@@ -21,6 +22,7 @@ import {
   liveObjectPatch,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
+  type OpenRTCNotificationDelta,
   type OpenRTCStorageEvent,
   type OpenRTCWebSocket,
   type PresenceState,
@@ -304,6 +306,7 @@ const othersEvents: string[] = [];
 const myPresenceValues: PresenceState[] = [];
 const roomEvents: string[] = [];
 const commentEvents: OpenRTCCommentEvent[] = [];
+const notificationEvents: OpenRTCNotificationDelta[] = [];
 const offOthers = room.subscribe("others", (_others, event) => {
   othersEvents.push(event.type);
 });
@@ -315,6 +318,9 @@ const offEvents = room.subscribe("event", (event) => {
 });
 const offComments = room.subscribe("comments", (event) => {
   commentEvents.push(event);
+});
+const offNotifications = roomClient.on("notification", (event) => {
+  notificationEvents.push(event);
 });
 const storageEvents: OpenRTCStorageEvent[] = [];
 const storageStatuses: string[] = [];
@@ -414,6 +420,28 @@ assert.equal(commentEvents.length, 1);
 assert.equal(commentEvents[0]?.type, "comment-updated");
 assert.equal(commentEvents[0]?.commentId, "comment-1");
 assert.equal(commentEvents[0]?.thread.id, "thread-1");
+
+roomSocket.receive({
+  t: "NOTIFICATION",
+  event: OPENRTC_NOTIFICATION_EVENTS.inboxCreated,
+  payload: {
+    type: "created",
+    userId: "user-1",
+    notificationId: "in_1",
+    notification: {
+      id: "in_1",
+      userId: "user-1",
+      kind: "thread",
+      roomId: "tenant-a:room-api",
+      notifiedAt: "2026-07-03T00:00:00Z",
+    },
+  },
+});
+assert.equal(notificationEvents.length, 1);
+assert.equal(notificationEvents[0]?.event, OPENRTC_NOTIFICATION_EVENTS.inboxCreated);
+assert.equal(notificationEvents[0]?.type, "created");
+assert.equal(notificationEvents[0]?.notificationId, "in_1");
+assert.equal(notificationEvents[0]?.notification?.roomId, "tenant-a:room-api");
 
 const loadedStorage = room.getStorage<{ title: string; version: number }>();
 assert.equal(
@@ -607,6 +635,7 @@ offOthers();
 offMyPresence();
 offEvents();
 offComments();
+offNotifications();
 offStorage();
 offStorageStatus();
 let sawClosedRoomReset = false;

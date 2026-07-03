@@ -126,6 +126,17 @@ export const OPENRTC_COMMENT_EVENTS = {
 export type OpenRTCCommentEventName = (typeof OPENRTC_COMMENT_EVENTS)[keyof typeof OPENRTC_COMMENT_EVENTS];
 export type OpenRTCCommentEventType = "thread-created" | "comment-created" | "comment-updated";
 
+export const OPENRTC_NOTIFICATION_EVENTS = {
+  inboxCreated: "openrtc.notifications.inbox.created",
+  inboxRead: "openrtc.notifications.inbox.read",
+  inboxDeleted: "openrtc.notifications.inbox.deleted",
+  inboxDeletedAll: "openrtc.notifications.inbox.deleted_all",
+} as const;
+
+export type OpenRTCNotificationEventName =
+  (typeof OPENRTC_NOTIFICATION_EVENTS)[keyof typeof OPENRTC_NOTIFICATION_EVENTS];
+export type OpenRTCNotificationDeltaType = "created" | "read" | "deleted" | "deleted-all";
+
 export interface OpenRTCCommentEvent {
   room: string;
   event: OpenRTCCommentEventName;
@@ -136,6 +147,14 @@ export interface OpenRTCCommentEvent {
   thread: OpenRTCAdminThread;
   comment?: OpenRTCAdminComment;
   traceId?: string;
+}
+
+export interface OpenRTCNotificationDelta {
+  event: OpenRTCNotificationEventName;
+  type: OpenRTCNotificationDeltaType;
+  userId: string;
+  notificationId?: string;
+  notification?: OpenRTCAdminInboxNotification;
 }
 
 export interface OpenRTCError {
@@ -485,6 +504,7 @@ export interface OpenRTCEventMap {
   presence: OpenRTCPresenceUpdate;
   event: OpenRTCEvent;
   comment: OpenRTCCommentEvent;
+  notification: OpenRTCNotificationDelta;
   storage: OpenRTCStorageEvent;
   "storage-status": OpenRTCStorageStatusUpdate;
   error: OpenRTCError;
@@ -1577,6 +1597,14 @@ export class OpenRTCClient {
       return;
     }
 
+    if (type === "NOTIFICATION") {
+      const notification = asOpenRTCNotificationDelta(asString(message["event"]), message["payload"]);
+      if (notification) {
+        this.emit("notification", notification);
+      }
+      return;
+    }
+
     if (type === "STORAGE_SNAPSHOT") {
       const room = asString(message["room"]);
       const document = payload["document"];
@@ -2604,6 +2632,51 @@ function commentEventTypeForName(eventName: string): OpenRTCCommentEventType | u
       return "comment-created";
     case OPENRTC_COMMENT_EVENTS.commentUpdated:
       return "comment-updated";
+    default:
+      return undefined;
+  }
+}
+
+function asOpenRTCNotificationDelta(eventName: string, rawPayload: unknown): OpenRTCNotificationDelta | undefined {
+  const type = notificationDeltaTypeForName(eventName);
+  if (!type) {
+    return undefined;
+  }
+  const payload = asRecord(rawPayload);
+  if (optionalString(payload["type"]) !== type) {
+    return undefined;
+  }
+  const userId = optionalString(payload["userId"]);
+  if (!userId) {
+    return undefined;
+  }
+  const rawNotification = payload["notification"];
+  const notification = isRecordObject(rawNotification)
+    ? (rawNotification as unknown as OpenRTCAdminInboxNotification)
+    : undefined;
+  const notificationId = optionalString(payload["notificationId"]) ?? optionalString(notification?.id);
+  if (type !== "deleted-all" && !notificationId) {
+    return undefined;
+  }
+  return {
+    event: eventName as OpenRTCNotificationEventName,
+    type,
+    userId,
+    ...(notificationId ? { notificationId } : {}),
+    ...(notification ? { notification } : {}),
+  };
+}
+
+function notificationDeltaTypeForName(eventName: string): OpenRTCNotificationDeltaType | undefined {
+  switch (eventName) {
+    case OPENRTC_NOTIFICATION_EVENTS.inboxCreated:
+      return "created";
+    case OPENRTC_NOTIFICATION_EVENTS.inboxRead:
+      return "read";
+    case OPENRTC_NOTIFICATION_EVENTS.inboxDeleted:
+      return "deleted";
+    case OPENRTC_NOTIFICATION_EVENTS.inboxDeletedAll:
+      return "deleted-all";
     default:
       return undefined;
   }

@@ -47,19 +47,23 @@ var (
 )
 
 const (
-	defaultJoinLimit          = 100
-	maxStoragePatchOperations = 100
-	storageClusterEvent       = "$openrtc.storage.update"
-	yjsPathPrefix             = "/yjs/"
-	yjsFrameUpdate            = byte(cluster.YJSEventUpdate)
-	yjsFrameSnapshot          = byte(cluster.YJSEventSnapshot)
-	yjsFrameStateVector       = byte(cluster.YJSEventStateVectorRequest)
-	yjsFrameStateVectorDiff   = byte(cluster.YJSEventStateVectorDiff)
-	yjsFrameSubdocUpdate      = byte(cluster.YJSEventSubdocUpdate)
-	yjsFrameSubdocStateVector = byte(cluster.YJSEventSubdocStateVector)
-	yjsFrameSubdocDiff        = byte(cluster.YJSEventSubdocDiff)
-	writeWait                 = 5 * time.Second
-	readWait                  = 30 * time.Second
+	defaultJoinLimit            = 100
+	maxStoragePatchOperations   = 100
+	storageClusterEvent         = "$openrtc.storage.update"
+	notificationInboxCreated    = "openrtc.notifications.inbox.created"
+	notificationInboxRead       = "openrtc.notifications.inbox.read"
+	notificationInboxDeleted    = "openrtc.notifications.inbox.deleted"
+	notificationInboxDeletedAll = "openrtc.notifications.inbox.deleted_all"
+	yjsPathPrefix               = "/yjs/"
+	yjsFrameUpdate              = byte(cluster.YJSEventUpdate)
+	yjsFrameSnapshot            = byte(cluster.YJSEventSnapshot)
+	yjsFrameStateVector         = byte(cluster.YJSEventStateVectorRequest)
+	yjsFrameStateVectorDiff     = byte(cluster.YJSEventStateVectorDiff)
+	yjsFrameSubdocUpdate        = byte(cluster.YJSEventSubdocUpdate)
+	yjsFrameSubdocStateVector   = byte(cluster.YJSEventSubdocStateVector)
+	yjsFrameSubdocDiff          = byte(cluster.YJSEventSubdocDiff)
+	writeWait                   = 5 * time.Second
+	readWait                    = 30 * time.Second
 )
 
 type Service struct {
@@ -131,6 +135,13 @@ type storageUpdatePayload struct {
 	OriginConnID string                       `json:"origin_conn_id,omitempty"`
 	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
 	Document     json.RawMessage              `json:"document"`
+}
+
+type notificationDeltaPayload struct {
+	Type           string                           `json:"type"`
+	UserID         string                           `json:"userId"`
+	NotificationID string                           `json:"notificationId,omitempty"`
+	Notification   *cluster.InboxNotificationRecord `json:"notification,omitempty"`
 }
 
 type DevConnectionsSnapshot struct {
@@ -786,6 +797,10 @@ func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 	if event.OriginNode == s.cfg.NodeID {
 		return
 	}
+	if isNotificationEvent(event.Event) {
+		_ = s.broadcastNotificationDelta(event)
+		return
+	}
 	if event.Event == storageClusterEvent {
 		var update storageUpdatePayload
 		if err := json.Unmarshal(event.Payload, &update); err != nil {
@@ -837,6 +852,39 @@ func (s *Service) broadcastEvent(event cluster.PublishedEvent, countMetric bool)
 		s.metrics.EventsTotal.Inc()
 	}
 
+	return nil
+}
+
+func (s *Service) broadcastNotificationDelta(event cluster.PublishedEvent) error {
+	var payload notificationDeltaPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return nil
+	}
+	if payload.UserID == "" {
+		return nil
+	}
+	if payload.NotificationID == "" && payload.Notification != nil {
+		payload.NotificationID = payload.Notification.ID
+	}
+
+	s.mu.RLock()
+	targets := make([]*clientConn, 0)
+	for _, conn := range s.conns {
+		if conn.claims != nil && conn.claims.Subject == payload.UserID {
+			targets = append(targets, conn)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, target := range targets {
+		if err := target.enqueue(outboundMessage{
+			T:       "NOTIFICATION",
+			Event:   event.Event,
+			Payload: payload,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -894,6 +942,15 @@ func (s *Service) broadcastStorageUpdate(room string, update storageUpdatePayloa
 		}
 	}
 	return nil
+}
+
+func isNotificationEvent(eventName string) bool {
+	switch eventName {
+	case notificationInboxCreated, notificationInboxRead, notificationInboxDeleted, notificationInboxDeletedAll:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) handleClusterYJSEvent(event cluster.YJSEvent) {

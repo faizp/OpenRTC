@@ -1563,6 +1563,54 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeNotificationDeltaTargetsSubjectConnections(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	targetA := runtimeTestConn(service, "conn-target-a", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"}, Tenant: "tenant-a"}, 2)
+	targetB := runtimeTestConn(service, "conn-target-b", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"}, Tenant: "tenant-a"}, 2)
+	other := runtimeTestConn(service, "conn-other", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-2"}, Tenant: "tenant-a"}, 2)
+	anonymous := runtimeTestConn(service, "conn-anonymous", &auth.Claims{Tenant: "tenant-a"}, 2)
+
+	payload := json.RawMessage(`{"type":"created","userId":"user-1","notificationId":"in_1","notification":{"id":"in_1","userId":"user-1","kind":"thread","notifiedAt":"2026-07-03T00:00:00Z"}}`)
+	service.handleClusterEvent(cluster.PublishedEvent{
+		Room:       "notifications:user-1",
+		Event:      notificationInboxCreated,
+		Payload:    payload,
+		OriginNode: "admin:node-b",
+	})
+
+	for _, conn := range []*clientConn{targetA, targetB} {
+		got := readRuntimeOutbound(t, conn)
+		if got.T != "NOTIFICATION" || got.Event != notificationInboxCreated {
+			t.Fatalf("unexpected notification delta for %s: %+v", conn.id, got)
+		}
+		delta, ok := got.Payload.(notificationDeltaPayload)
+		if !ok || delta.UserID != "user-1" || delta.NotificationID != "in_1" || delta.Notification == nil || delta.Notification.ID != "in_1" {
+			t.Fatalf("unexpected notification delta payload for %s: %#v", conn.id, got.Payload)
+		}
+	}
+	for _, conn := range []*clientConn{other, anonymous} {
+		select {
+		case got := <-conn.send:
+			t.Fatalf("unexpected notification delta for %s: %+v", conn.id, got)
+		default:
+		}
+	}
+
+	service.handleClusterEvent(cluster.PublishedEvent{
+		Room:       "notifications:user-1",
+		Event:      notificationInboxRead,
+		Payload:    json.RawMessage(`{"type":"read","userId":"user-1","notificationId":"in_1"}`),
+		OriginNode: service.cfg.NodeID,
+	})
+	select {
+	case got := <-targetA.send:
+		t.Fatalf("same-node notification event should be ignored, got %+v", got)
+	default:
+	}
+}
+
 func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()

@@ -31,6 +31,7 @@ import {
   type OpenRTCEvent,
   type OpenRTCError,
   type OpenRTCDiagnosticEvent,
+  type OpenRTCNotificationDelta,
   type OpenRTCRoom,
   type OpenRTCRoomPresence,
   type OpenRTCRoomState,
@@ -502,6 +503,13 @@ export function useCommentListener(room: string, callback: (event: OpenRTCCommen
   useEffect(() => roomHandle.subscribe("comments", stableCallback), [roomHandle, stableCallback]);
 }
 
+export function useNotificationListener(callback: (event: OpenRTCNotificationDelta) => void): void {
+  const client = useOpenRTC();
+  const stableCallback = useStableCallback(callback);
+
+  useEffect(() => client.on("notification", stableCallback), [client, stableCallback]);
+}
+
 export function useLostConnectionListener(
   room: string,
   callback: (event: OpenRTCLostConnectionEvent) => void,
@@ -863,6 +871,20 @@ export function useRoomCommentEvents(room: string, limit = 200): OpenRTCCommentE
       }
     });
   }, [client, room, maxEvents]);
+
+  return useMemo(() => events, [events]);
+}
+
+export function useNotificationEvents(limit = 200): OpenRTCNotificationDelta[] {
+  const client = useOpenRTC();
+  const [events, setEvents] = useState<OpenRTCNotificationDelta[]>([]);
+  const maxEvents = normalizeEventLimit(limit, 200);
+
+  useEffect(() => {
+    return client.on("notification", (event) => {
+      setEvents((current) => [...current.slice(1 - maxEvents), event]);
+    });
+  }, [client, maxEvents]);
 
   return useMemo(() => events, [events]);
 }
