@@ -469,6 +469,46 @@ func TestEngineEventAndStorageFanouts(t *testing.T) {
 	}
 }
 
+func TestEngineNotificationFanoutTargetsSessionsBySubject(t *testing.T) {
+	engine := New()
+	engine.RegisterSession(SessionInfo{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"})
+	engine.RegisterSession(SessionInfo{ConnID: "conn-a", Subject: "user-1", Tenant: "tenant-a"})
+	engine.RegisterSession(SessionInfo{ConnID: "conn-other", Subject: "user-2", Tenant: "tenant-a"})
+	engine.RegisterSession(SessionInfo{ConnID: "conn-anonymous", Tenant: "tenant-a"})
+
+	payload := json.RawMessage(`{"type":"created","userId":"user-1"}`)
+	fanout := engine.NotificationFanout(cluster.PublishedEvent{
+		Room:       "notifications:user-1",
+		Event:      "openrtc.notifications.inbox.created",
+		Payload:    payload,
+		OriginNode: "admin:node-b",
+		Sequence:   12,
+	}, "user-1")
+	if fanout.UserID != "user-1" || !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-a", "conn-b"}) {
+		t.Fatalf("unexpected notification fanout: %+v", fanout)
+	}
+	if fanout.Event.Event != "openrtc.notifications.inbox.created" || fanout.Event.Sequence != 12 {
+		t.Fatalf("unexpected notification event metadata: %+v", fanout.Event)
+	}
+	payload[0] = '['
+	if string(fanout.Event.Payload) != `{"type":"created","userId":"user-1"}` {
+		t.Fatalf("notification fanout payload should be copied, got %s", fanout.Event.Payload)
+	}
+	fanout = engine.NotificationFanout(cluster.PublishedEvent{Event: "openrtc.notifications.inbox.created"}, "")
+	if len(fanout.TargetConnIDs) != 0 {
+		t.Fatalf("empty notification user should not target anonymous sessions, got %#v", fanout.TargetConnIDs)
+	}
+
+	disconnect := engine.DisconnectSession("conn-a", PresenceEventOptions{OriginNode: "node-a"})
+	if disconnect.Cleanup == nil || disconnect.Cleanup.ConnID != "conn-a" {
+		t.Fatalf("unexpected disconnect cleanup: %+v", disconnect.Cleanup)
+	}
+	fanout = engine.NotificationFanout(cluster.PublishedEvent{Event: "openrtc.notifications.inbox.read"}, "user-1")
+	if !reflect.DeepEqual(fanout.TargetConnIDs, []string{"conn-b"}) {
+		t.Fatalf("expected disconnected session to be removed from notification targets, got %#v", fanout.TargetConnIDs)
+	}
+}
+
 func TestEngineYJSRoomsAndDocuments(t *testing.T) {
 	engine := New()
 	engine.RegisterYJSConn("conn-1", "room-a")

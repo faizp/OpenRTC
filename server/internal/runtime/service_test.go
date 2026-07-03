@@ -1343,11 +1343,20 @@ func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 
 	store := &fakeRuntimeStore{}
 	service.store = store
-	conn := runtimeTestConn(service, "conn-lifecycle", &auth.Claims{Tenant: "tenant-a"}, 2)
-	conn.claims.Subject = "user-1"
+	conn := &clientConn{
+		id:      "conn-lifecycle",
+		service: service,
+		claims:  &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"}, Tenant: "tenant-a"},
+		send:    make(chan outboundMessage, 2),
+		done:    make(chan struct{}),
+		limiter: &emitLimiter{limit: service.cfg.Limits.EmitsPerSecond},
+	}
 	service.registerConn(conn)
 	if store.touchedConnID != conn.id || store.touchedMeta.Subject != "user-1" || store.touchedMeta.Tenant != "tenant-a" {
 		t.Fatalf("unexpected touched connection: id=%q meta=%+v", store.touchedConnID, store.touchedMeta)
+	}
+	if fanout := service.roomEngine().NotificationFanout(cluster.PublishedEvent{Event: notificationInboxCreated}, "user-1"); !reflect.DeepEqual(fanout.TargetConnIDs, []string{conn.id}) {
+		t.Fatalf("expected registered connection to be a notification target, got %#v", fanout.TargetConnIDs)
 	}
 
 	receiver := runtimeTestConn(service, "conn-receiver", &auth.Claims{Tenant: "tenant-a"}, 2)
@@ -1368,6 +1377,9 @@ func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 	}
 	if got := service.roomEngine().MemberIDs("tenant-a:room-1", ""); len(got) != 1 || got[0] != receiver.id {
 		t.Fatalf("expected connection to be removed from room")
+	}
+	if fanout := service.roomEngine().NotificationFanout(cluster.PublishedEvent{Event: notificationInboxDeleted}, "user-1"); len(fanout.TargetConnIDs) != 0 {
+		t.Fatalf("expected unregistered connection to be removed from notification targets, got %#v", fanout.TargetConnIDs)
 	}
 }
 
@@ -2270,6 +2282,7 @@ func runtimeTestConn(service *Service, id string, claims *auth.Claims, depth int
 	service.mu.Lock()
 	service.conns[id] = conn
 	service.mu.Unlock()
+	service.roomEngine().RegisterSession(sessionInfoFromConn(conn))
 	return conn
 }
 

@@ -919,10 +919,14 @@ func (s *Service) broadcastNotificationDelta(event cluster.PublishedEvent) error
 		payload.NotificationID = payload.Notification.ID
 	}
 
+	return s.broadcastNotificationFanout(s.roomEngine().NotificationFanout(event, payload.UserID), payload)
+}
+
+func (s *Service) broadcastNotificationFanout(fanout roomengine.NotificationFanout, payload notificationDeltaPayload) error {
 	s.mu.RLock()
-	targets := make([]*clientConn, 0)
-	for _, conn := range s.conns {
-		if conn.claims != nil && conn.claims.Subject == payload.UserID {
+	targets := make([]*clientConn, 0, len(fanout.TargetConnIDs))
+	for _, connID := range fanout.TargetConnIDs {
+		if conn := s.conns[connID]; conn != nil {
 			targets = append(targets, conn)
 		}
 	}
@@ -931,7 +935,7 @@ func (s *Service) broadcastNotificationDelta(event cluster.PublishedEvent) error
 	for _, target := range targets {
 		if err := target.enqueue(outboundMessage{
 			T:       "NOTIFICATION",
-			Event:   event.Event,
+			Event:   fanout.Event.Event,
 			Payload: payload,
 		}); err != nil {
 			return err
@@ -1199,6 +1203,7 @@ func (s *Service) publishStorageUpdate(room string, update roomengine.StorageMut
 }
 
 func (s *Service) registerConn(conn *clientConn) {
+	s.roomEngine().RegisterSession(sessionInfoFromConn(conn))
 	s.mu.Lock()
 	s.conns[conn.id] = conn
 	s.syncStatsLocked()
@@ -1253,6 +1258,17 @@ func (s *Service) applyConnectionCleanup(cleanup *roomengine.ConnectionCleanup) 
 		return
 	}
 	_ = s.store.CleanupConnection(s.ctx, s.cfg.NodeID, cleanup.ConnID)
+}
+
+func sessionInfoFromConn(conn *clientConn) roomengine.SessionInfo {
+	info := roomengine.SessionInfo{
+		ConnID: conn.id,
+	}
+	if conn.claims != nil {
+		info.Subject = conn.claims.Subject
+		info.Tenant = conn.claims.Tenant
+	}
+	return info
 }
 
 func (s *Service) yjsHeartbeatLoop(conn *yjsConn) {

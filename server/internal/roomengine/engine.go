@@ -27,6 +27,7 @@ type Engine struct {
 	mu        sync.RWMutex
 	rooms     map[string]map[string]struct{}
 	connRooms map[string]map[string]struct{}
+	sessions  map[string]SessionInfo
 	presence  map[string]map[string]json.RawMessage
 	yjsRooms  map[string]map[string]struct{}
 	yjsDocs   map[string]*memoryYJSDocument
@@ -80,6 +81,12 @@ type MembershipMutation struct {
 	Kind   string
 	ConnID string
 	Room   string
+}
+
+type SessionInfo struct {
+	ConnID  string
+	Subject string
+	Tenant  string
 }
 
 type ConnectionCleanup struct {
@@ -150,15 +157,32 @@ type YJSFanout struct {
 	TargetConnIDs []string
 }
 
+type NotificationFanout struct {
+	Event         cluster.PublishedEvent
+	UserID        string
+	TargetConnIDs []string
+}
+
 func New() *Engine {
 	return &Engine{
 		rooms:     make(map[string]map[string]struct{}),
 		connRooms: make(map[string]map[string]struct{}),
+		sessions:  make(map[string]SessionInfo),
 		presence:  make(map[string]map[string]json.RawMessage),
 		yjsRooms:  make(map[string]map[string]struct{}),
 		yjsDocs:   make(map[string]*memoryYJSDocument),
 		storage:   make(map[string]json.RawMessage),
 	}
+}
+
+func (e *Engine) RegisterSession(info SessionInfo) {
+	if info.ConnID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.sessions[info.ConnID] = info
 }
 
 func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, error) {
@@ -268,6 +292,7 @@ func (e *Engine) disconnect(connID string, options PresenceEventOptions, include
 		}
 	}
 	delete(e.connRooms, connID)
+	delete(e.sessions, connID)
 	return rooms, fanouts
 }
 
@@ -568,6 +593,27 @@ func (e *Engine) YJSFanout(event cluster.YJSEvent) YJSFanout {
 	return YJSFanout{
 		Event:         cloneYJSEvent(event),
 		TargetConnIDs: e.yjsTargetIDsLocked(event.Room, event.OriginConnID),
+	}
+}
+
+func (e *Engine) NotificationFanout(event cluster.PublishedEvent, userID string) NotificationFanout {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	targets := make([]string, 0)
+	if userID != "" {
+		for connID, session := range e.sessions {
+			if session.Subject == userID {
+				targets = append(targets, connID)
+			}
+		}
+	}
+	sort.Strings(targets)
+
+	return NotificationFanout{
+		Event:         clonePublishedEvent(event),
+		UserID:        userID,
+		TargetConnIDs: targets,
 	}
 }
 
