@@ -88,6 +88,60 @@ export interface OpenRTCAdminClientOptions {
   fetch?: OpenRTCFetch;
 }
 
+export const OPENRTC_DEV_PUBLIC_KEY = "pk_localdev";
+
+export type OpenRTCDevTokenKind = "client" | "admin";
+export type OpenRTCDevAccessMode = "wildcard" | "grants";
+
+export interface OpenRTCDevClientConfig {
+  publicKey: string;
+  tokenURL: string;
+  jwksURL: string;
+  wsURL: string;
+  yjsURL: string;
+  adminURL: string;
+  adminProxyURL: string;
+  runtimeURL: string;
+  runtimeProxyURL: string;
+  seedRooms: string[];
+}
+
+export interface OpenRTCDevTokenResponse {
+  token: string;
+  kind: OpenRTCDevTokenKind;
+  username: string;
+  tenant: string;
+  groups: string[];
+  expiresAt: string;
+  room?: string;
+  config: OpenRTCDevClientConfig;
+}
+
+export interface OpenRTCDevTokenOptions {
+  baseURL?: string;
+  tokenURL?: string;
+  publicKey?: string;
+  kind?: OpenRTCDevTokenKind;
+  username?: string;
+  tenant?: string;
+  room?: string;
+  groups?: string[];
+  access?: OpenRTCDevAccessMode;
+  scope?: string;
+  fetch?: OpenRTCFetch;
+}
+
+export interface OpenRTCDevClientOptions
+  extends Omit<OpenRTCDevTokenOptions, "kind" | "scope">,
+    Omit<OpenRTCClientOptions, "url" | "token"> {}
+
+export interface OpenRTCDevClient {
+  client: OpenRTCClient;
+  room: string;
+  auth: OpenRTCDevTokenResponse;
+  config: OpenRTCDevClientConfig;
+}
+
 export interface JoinOptions {
   limit?: number;
   cursor?: string;
@@ -570,6 +624,60 @@ const WS_OPEN = 1;
 const DEFAULT_LOST_CONNECTION_TIMEOUT_MS = 5000;
 const MIN_LOST_CONNECTION_TIMEOUT_MS = 1000;
 const MAX_LOST_CONNECTION_TIMEOUT_MS = 30000;
+const DEFAULT_OPENRTC_DEV_BASE_URL = "http://127.0.0.1:3000";
+const DEFAULT_OPENRTC_DEV_TOKEN_URL = "/dev/token";
+
+export class OpenRTCDevError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+    message: string,
+  ) {
+    super(message);
+    this.name = "OpenRTCDevError";
+  }
+}
+
+export async function fetchOpenRTCDevToken(options: OpenRTCDevTokenOptions = {}): Promise<OpenRTCDevTokenResponse> {
+  const fetchImpl = resolveFetch(options.fetch);
+  const url = openRTCDevTokenURL(options);
+  const response = await fetchImpl(url);
+  const text = await response.text();
+  const body = text ? parseJSON(text) : undefined;
+  if (!response.ok) {
+    throw new OpenRTCDevError(response.status, body, errorMessage(response, body));
+  }
+  return parseOpenRTCDevTokenResponse(body);
+}
+
+export async function createOpenRTCDevClient(options: OpenRTCDevClientOptions = {}): Promise<OpenRTCDevClient> {
+  const auth = await fetchOpenRTCDevToken({ ...options, kind: "client" });
+  const room = options.room ?? auth.room ?? auth.config.seedRooms[0];
+  if (!room) {
+    throw new Error("OpenRTC dev token response did not include a room or seed room");
+  }
+  const clientOptions: OpenRTCClientOptions = {
+    url: auth.config.wsURL,
+    token: auth.token,
+  };
+  if (options.WebSocket) {
+    clientOptions.WebSocket = options.WebSocket;
+  }
+  if (options.autoReconnect !== undefined) {
+    clientOptions.autoReconnect = options.autoReconnect;
+  }
+  if (options.lostConnectionTimeout !== undefined) {
+    clientOptions.lostConnectionTimeout = options.lostConnectionTimeout;
+  }
+  if (options.backgroundKeepAliveTimeout !== undefined) {
+    clientOptions.backgroundKeepAliveTimeout = options.backgroundKeepAliveTimeout;
+  }
+  if (options.reconnect !== undefined) {
+    clientOptions.reconnect = options.reconnect;
+  }
+  const client = new OpenRTCClient(clientOptions);
+  return { client, room, auth, config: auth.config };
+}
 
 export class OpenRTCClient {
   readonly url: string;
@@ -2635,6 +2743,113 @@ export function withToken(rawURL: string, token: string): string {
   const parsed = new URL(rawURL);
   parsed.searchParams.set("token", token);
   return parsed.toString();
+}
+
+function resolveFetch(fetchImpl: OpenRTCFetch | undefined): OpenRTCFetch {
+  const defaultFetch = globalThis.fetch as unknown as OpenRTCFetch | undefined;
+  if (!fetchImpl && !defaultFetch) {
+    throw new Error("A fetch implementation is required in this environment");
+  }
+  return fetchImpl ?? defaultFetch!;
+}
+
+function openRTCDevTokenURL(options: OpenRTCDevTokenOptions): string {
+  const baseURL = options.baseURL ?? DEFAULT_OPENRTC_DEV_BASE_URL;
+  const tokenURL = options.tokenURL ?? DEFAULT_OPENRTC_DEV_TOKEN_URL;
+  const parsed = new URL(tokenURL, baseURL.endsWith("/") ? baseURL : `${baseURL}/`);
+  parsed.searchParams.set("kind", options.kind ?? "client");
+  const publicKey = options.publicKey ?? OPENRTC_DEV_PUBLIC_KEY;
+  if (publicKey) {
+    parsed.searchParams.set("pubkey", publicKey);
+  }
+  if (options.username) {
+    parsed.searchParams.set("username", options.username);
+  }
+  if (options.tenant) {
+    parsed.searchParams.set("tenant", options.tenant);
+  }
+  if (options.room) {
+    parsed.searchParams.set("room", options.room);
+  }
+  if (options.groups && options.groups.length > 0) {
+    parsed.searchParams.set("groups", options.groups.join(","));
+  }
+  if (options.access === "grants") {
+    parsed.searchParams.set("access", "grants");
+  }
+  if (options.scope) {
+    parsed.searchParams.set("scope", options.scope);
+  }
+  return parsed.toString();
+}
+
+function parseOpenRTCDevTokenResponse(value: unknown): OpenRTCDevTokenResponse {
+  if (!isRecordObject(value)) {
+    throw new Error("OpenRTC dev token response must be a JSON object");
+  }
+  const token = optionalString(value["token"]);
+  if (!token) {
+    throw new Error("OpenRTC dev token response is missing token");
+  }
+  const kind = value["kind"];
+  if (kind !== "client" && kind !== "admin") {
+    throw new Error("OpenRTC dev token response has invalid kind");
+  }
+  const username = optionalString(value["username"]);
+  const tenant = optionalString(value["tenant"]);
+  const expiresAt = optionalString(value["expiresAt"]);
+  const room = optionalString(value["room"]);
+  const config = parseOpenRTCDevClientConfig(value["config"]);
+  return {
+    token,
+    kind,
+    username: username ?? "",
+    tenant: tenant ?? "",
+    groups: asStringArray(value["groups"]),
+    expiresAt: expiresAt ?? "",
+    ...(room ? { room } : {}),
+    config,
+  };
+}
+
+function parseOpenRTCDevClientConfig(value: unknown): OpenRTCDevClientConfig {
+  if (!isRecordObject(value)) {
+    throw new Error("OpenRTC dev token response is missing config");
+  }
+  const publicKey = optionalString(value["publicKey"]);
+  const tokenURL = optionalString(value["tokenURL"]);
+  const jwksURL = optionalString(value["jwksURL"]);
+  const wsURL = optionalString(value["wsURL"]);
+  const yjsURL = optionalString(value["yjsURL"]);
+  const adminURL = optionalString(value["adminURL"]);
+  const adminProxyURL = optionalString(value["adminProxyURL"]);
+  const runtimeURL = optionalString(value["runtimeURL"]);
+  const runtimeProxyURL = optionalString(value["runtimeProxyURL"]);
+  if (
+    !publicKey ||
+    !tokenURL ||
+    !jwksURL ||
+    !wsURL ||
+    !yjsURL ||
+    !adminURL ||
+    !adminProxyURL ||
+    !runtimeURL ||
+    !runtimeProxyURL
+  ) {
+    throw new Error("OpenRTC dev token response config is incomplete");
+  }
+  return {
+    publicKey,
+    tokenURL,
+    jwksURL,
+    wsURL,
+    yjsURL,
+    adminURL,
+    adminProxyURL,
+    runtimeURL,
+    runtimeProxyURL,
+    seedRooms: asStringArray(value["seedRooms"]),
+  };
 }
 
 function readMessageData(event: unknown): unknown {

@@ -55,21 +55,15 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
 
-For a zero-config local client, fetch the dev token response and use its
-embedded config:
+For a zero-config local client, let the SDK fetch the dev token response and
+use its embedded config:
 
 ```ts
-import { OpenRTCClient } from "@openrtc/client";
+import { createOpenRTCDevClient } from "@openrtc/client";
 
-const auth = await fetch("http://127.0.0.1:3000/dev/token?pubkey=pk_localdev").then((res) => res.json());
-
-const client = new OpenRTCClient({
-  url: auth.config.wsURL,
-  token: auth.token,
-});
-
+const { client, room } = await createOpenRTCDevClient();
 await client.connect();
-const { room } = client.enterRoom(auth.room);
+client.enterRoom(room);
 ```
 
 ## Client presence integration

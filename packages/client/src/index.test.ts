@@ -3,10 +3,14 @@ import {
   OpenRTCAdminClient,
   OpenRTCAdminError,
   OpenRTCClient,
+  OpenRTCDevError,
   OPENRTC_COMMENT_EVENTS,
+  OPENRTC_DEV_PUBLIC_KEY,
   OPENRTC_NOTIFICATION_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
+  createOpenRTCDevClient,
+  fetchOpenRTCDevToken,
   getCursorPeers,
   getPresenceColor,
   getPresenceCursor,
@@ -1109,6 +1113,97 @@ try {
     delete (globalThis as { document?: unknown }).document;
   }
 }
+
+const devConfig = {
+  publicKey: OPENRTC_DEV_PUBLIC_KEY,
+  tokenURL: "/dev/token",
+  jwksURL: "http://127.0.0.1:3000/jwks",
+  wsURL: "ws://127.0.0.1:8080/ws",
+  yjsURL: "ws://127.0.0.1:8080/yjs",
+  adminURL: "http://127.0.0.1:8090",
+  adminProxyURL: "/admin",
+  runtimeURL: "http://127.0.0.1:8080",
+  runtimeProxyURL: "/runtime",
+  seedRooms: ["demo:room-1", "demo:canvas-1"],
+};
+
+const devTokenCalls: string[] = [];
+const devToken = await fetchOpenRTCDevToken({
+  baseURL: "http://127.0.0.1:3000",
+  username: "ada",
+  tenant: "acme",
+  room: "acme:room-1",
+  groups: ["editors", "reviewers"],
+  fetch: async (input) => {
+    devTokenCalls.push(input);
+    return fakeResponse(
+      200,
+      JSON.stringify({
+        token: "dev-token-1",
+        kind: "client",
+        username: "ada",
+        tenant: "acme",
+        groups: ["editors", "reviewers"],
+        expiresAt: "2026-07-04T00:00:00Z",
+        room: "acme:room-1",
+        config: devConfig,
+      }),
+    );
+  },
+});
+const devTokenURL = new URL(devTokenCalls[0] ?? "");
+assert.equal(devTokenURL.pathname, "/dev/token");
+assert.equal(devTokenURL.searchParams.get("pubkey"), OPENRTC_DEV_PUBLIC_KEY);
+assert.equal(devTokenURL.searchParams.get("username"), "ada");
+assert.equal(devTokenURL.searchParams.get("tenant"), "acme");
+assert.equal(devTokenURL.searchParams.get("room"), "acme:room-1");
+assert.equal(devTokenURL.searchParams.get("groups"), "editors,reviewers");
+assert.equal(devToken.token, "dev-token-1");
+assert.equal(devToken.room, "acme:room-1");
+assert.deepEqual(devToken.config.seedRooms, ["demo:room-1", "demo:canvas-1"]);
+
+const socketCountBeforeDevClient = FakeWebSocket.instances.length;
+const devClient = await createOpenRTCDevClient({
+  baseURL: "http://127.0.0.1:3000",
+  room: "demo:canvas-1",
+  WebSocket: FakeWebSocket,
+  fetch: async (input) => {
+    const url = new URL(input);
+    assert.equal(url.searchParams.get("room"), "demo:canvas-1");
+    return fakeResponse(
+      200,
+      JSON.stringify({
+        token: "dev-token-2",
+        kind: "client",
+        username: "anon-local",
+        tenant: "demo",
+        groups: [],
+        expiresAt: "2026-07-04T00:00:00Z",
+        room: "demo:canvas-1",
+        config: devConfig,
+      }),
+    );
+  },
+});
+assert.equal(devClient.room, "demo:canvas-1");
+assert.equal(devClient.config.wsURL, "ws://127.0.0.1:8080/ws");
+const devClientConnected = devClient.client.connect();
+await Promise.resolve();
+const devSocket = FakeWebSocket.instances[socketCountBeforeDevClient];
+assert.ok(devSocket);
+assert.equal(devSocket.url, "ws://127.0.0.1:8080/ws?token=dev-token-2");
+devSocket.open();
+await devClientConnected;
+devClient.client.close();
+
+await assert.rejects(
+  async () => {
+    await fetchOpenRTCDevToken({
+      fetch: async () => fakeResponse(403, JSON.stringify({ code: "ROOM_FORBIDDEN", message: "no access" })),
+    });
+  },
+  (error) => error instanceof OpenRTCDevError && error.status === 403 && error.message === "ROOM_FORBIDDEN: no access",
+);
 
 const adminCalls: Array<{ input: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }> = [];
 const adminClient = new OpenRTCAdminClient({
