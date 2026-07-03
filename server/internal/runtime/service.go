@@ -50,10 +50,10 @@ const (
 	eventCatchupMaxEvents       = 1000
 	maxStoragePatchOperations   = 100
 	storageClusterEvent         = cluster.EventStorageUpdate
-	notificationInboxCreated    = "openrtc.notifications.inbox.created"
-	notificationInboxRead       = "openrtc.notifications.inbox.read"
-	notificationInboxDeleted    = "openrtc.notifications.inbox.deleted"
-	notificationInboxDeletedAll = "openrtc.notifications.inbox.deleted_all"
+	notificationInboxCreated    = roomengine.NotificationInboxCreated
+	notificationInboxRead       = roomengine.NotificationInboxRead
+	notificationInboxDeleted    = roomengine.NotificationInboxDeleted
+	notificationInboxDeletedAll = roomengine.NotificationInboxDeletedAll
 	yjsPathPrefix               = "/yjs/"
 	yjsFrameUpdate              = byte(cluster.YJSEventUpdate)
 	yjsFrameSnapshot            = byte(cluster.YJSEventSnapshot)
@@ -761,19 +761,19 @@ func (s *Service) sendReplayEvents(conn *clientConn, events []cluster.PublishedE
 }
 
 func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
-	if event.OriginNode == s.cfg.NodeID {
+	plan := roomengine.NewClusterEventPlan(event, s.cfg.NodeID)
+	switch plan.Kind {
+	case roomengine.ClusterEventSkip:
 		return
-	}
-	if isNotificationEvent(event.Event) {
-		_ = s.broadcastNotificationDelta(event)
+	case roomengine.ClusterEventNotification:
+		_ = s.broadcastNotificationDelta(plan.Event)
 		return
-	}
-	if event.Event == storageClusterEvent {
+	case roomengine.ClusterEventStorage:
 		var update roomengine.StorageMutation
-		if err := json.Unmarshal(event.Payload, &update); err != nil {
+		if err := json.Unmarshal(plan.Event.Payload, &update); err != nil {
 			return
 		}
-		normalized, err := s.roomEngine().RecordStorageMutation(event.Room, update.Kind, update.Document, update.Operations, roomengine.StorageMutationOptions{
+		normalized, err := s.roomEngine().RecordStorageMutation(plan.Event.Room, update.Kind, update.Document, update.Operations, roomengine.StorageMutationOptions{
 			MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
 			OpID:         update.OpID,
 			OriginConnID: update.OriginConnID,
@@ -782,10 +782,11 @@ func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 			return
 		}
 		update = normalized
-		_ = s.broadcastStorageUpdate(event.Room, update, event.ExcludeSenderConnID)
+		_ = s.broadcastStorageUpdate(plan.Event.Room, update, plan.Event.ExcludeSenderConnID)
 		return
+	default:
+		_ = s.broadcastEvent(plan.Event, false)
 	}
-	_ = s.broadcastEvent(event, false)
 }
 
 func (s *Service) handleClusterPresence(event cluster.PresenceEvent) {
@@ -948,15 +949,6 @@ func (s *Service) broadcastStorageFanout(fanout roomengine.StorageFanout) error 
 		}
 	}
 	return nil
-}
-
-func isNotificationEvent(eventName string) bool {
-	switch eventName {
-	case notificationInboxCreated, notificationInboxRead, notificationInboxDeleted, notificationInboxDeletedAll:
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Service) handleClusterYJSEvent(event cluster.YJSEvent) {

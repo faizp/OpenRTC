@@ -23,6 +23,16 @@ const (
 	MembershipMutationJoin  = "join"
 	MembershipMutationLeave = "leave"
 
+	ClusterEventSkip         ClusterEventKind = "skip"
+	ClusterEventRoom         ClusterEventKind = "room"
+	ClusterEventStorage      ClusterEventKind = "storage"
+	ClusterEventNotification ClusterEventKind = "notification"
+
+	NotificationInboxCreated    = "openrtc.notifications.inbox.created"
+	NotificationInboxRead       = "openrtc.notifications.inbox.read"
+	NotificationInboxDeleted    = "openrtc.notifications.inbox.deleted"
+	NotificationInboxDeletedAll = "openrtc.notifications.inbox.deleted_all"
+
 	YJSPersistenceAppendUpdate  = "append_update"
 	YJSPersistenceStoreSnapshot = "store_snapshot"
 )
@@ -149,6 +159,13 @@ type EventOptions struct {
 type StorageEventOptions struct {
 	OriginNode          string
 	ExcludeSenderConnID string
+}
+
+type ClusterEventKind string
+
+type ClusterEventPlan struct {
+	Event cluster.PublishedEvent
+	Kind  ClusterEventKind
 }
 
 type YJSEventOptions struct {
@@ -471,6 +488,34 @@ func NewStorageEvent(room string, update StorageMutation, options StorageEventOp
 		ExcludeSenderConnID: options.ExcludeSenderConnID,
 		OriginNode:          options.OriginNode,
 	}, nil
+}
+
+func NewClusterEventPlan(event cluster.PublishedEvent, localNode string) ClusterEventPlan {
+	plan := ClusterEventPlan{
+		Event: clonePublishedEvent(event),
+		Kind:  ClusterEventRoom,
+	}
+	if event.OriginNode == localNode {
+		plan.Kind = ClusterEventSkip
+		return plan
+	}
+	if event.Event == cluster.EventStorageUpdate {
+		plan.Kind = ClusterEventStorage
+		return plan
+	}
+	if IsNotificationEvent(event.Event) {
+		plan.Kind = ClusterEventNotification
+	}
+	return plan
+}
+
+func IsNotificationEvent(eventName string) bool {
+	switch eventName {
+	case NotificationInboxCreated, NotificationInboxRead, NotificationInboxDeleted, NotificationInboxDeletedAll:
+		return true
+	default:
+		return false
+	}
 }
 
 func NewYJSEvent(room string, kind cluster.YJSEventKind, update []byte, options YJSEventOptions) cluster.YJSEvent {

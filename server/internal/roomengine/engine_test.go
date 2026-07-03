@@ -475,6 +475,95 @@ func TestEngineEventAndStorageFanouts(t *testing.T) {
 	}
 }
 
+func TestNewClusterEventPlan(t *testing.T) {
+	cases := []struct {
+		name      string
+		event     cluster.PublishedEvent
+		localNode string
+		wantKind  ClusterEventKind
+	}{
+		{
+			name: "same node skips",
+			event: cluster.PublishedEvent{
+				Room:       "room-a",
+				Event:      "doc.update",
+				Payload:    json.RawMessage(`{"kind":"same-node"}`),
+				OriginNode: "node-a",
+				Sequence:   7,
+			},
+			localNode: "node-a",
+			wantKind:  ClusterEventSkip,
+		},
+		{
+			name: "storage update",
+			event: cluster.PublishedEvent{
+				Room:       "room-a",
+				Event:      cluster.EventStorageUpdate,
+				Payload:    json.RawMessage(`{"kind":"set"}`),
+				OriginNode: "node-b",
+			},
+			localNode: "node-a",
+			wantKind:  ClusterEventStorage,
+		},
+		{
+			name: "notification delta",
+			event: cluster.PublishedEvent{
+				Room:       "notifications:user-1",
+				Event:      NotificationInboxCreated,
+				Payload:    json.RawMessage(`{"userId":"user-1"}`),
+				OriginNode: "node-b",
+			},
+			localNode: "node-a",
+			wantKind:  ClusterEventNotification,
+		},
+		{
+			name: "room event",
+			event: cluster.PublishedEvent{
+				Room:                "room-a",
+				Event:               "doc.update",
+				Payload:             json.RawMessage(`{"ok":true}`),
+				ExcludeSenderConnID: "conn-sender",
+				OriginNode:          "node-b",
+				TraceID:             "trace-1",
+				Sequence:            9,
+			},
+			localNode: "node-a",
+			wantKind:  ClusterEventRoom,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wantPayload := append(json.RawMessage(nil), tc.event.Payload...)
+			plan := NewClusterEventPlan(tc.event, tc.localNode)
+			if plan.Kind != tc.wantKind {
+				t.Fatalf("unexpected cluster event kind: got %q want %q", plan.Kind, tc.wantKind)
+			}
+			if plan.Event.Room != tc.event.Room || plan.Event.Event != tc.event.Event || plan.Event.OriginNode != tc.event.OriginNode || plan.Event.Sequence != tc.event.Sequence {
+				t.Fatalf("unexpected planned event envelope: %+v", plan.Event)
+			}
+			if string(plan.Event.Payload) != string(wantPayload) {
+				t.Fatalf("unexpected planned event payload: %s", plan.Event.Payload)
+			}
+			if len(tc.event.Payload) > 0 {
+				tc.event.Payload[0] = '['
+				if string(plan.Event.Payload) != string(wantPayload) {
+					t.Fatalf("planned cluster event payload should be copied, got %s", plan.Event.Payload)
+				}
+			}
+		})
+	}
+
+	for _, eventName := range []string{NotificationInboxCreated, NotificationInboxRead, NotificationInboxDeleted, NotificationInboxDeletedAll} {
+		if !IsNotificationEvent(eventName) {
+			t.Fatalf("expected notification event %q", eventName)
+		}
+	}
+	if IsNotificationEvent("doc.update") {
+		t.Fatalf("doc.update should not be treated as a notification event")
+	}
+}
+
 func TestEngineNotificationFanoutTargetsSessionsBySubject(t *testing.T) {
 	engine := New()
 	touch := engine.RegisterSession(SessionInfo{ConnID: "conn-b", Subject: "user-1", Tenant: "tenant-a"})
