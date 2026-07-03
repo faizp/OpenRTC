@@ -76,6 +76,20 @@ type SnapshotPage struct {
 	NextCursor string                     `json:"next_cursor"`
 }
 
+type JoinReplayOptions struct {
+	AfterSequence      uint64
+	MaxEvents          int
+	ExcludeConnID      string
+	ExcludedEventNames []string
+}
+
+type JoinReplayPlan struct {
+	AfterSequence      uint64
+	MaxEvents          int
+	ExcludeConnID      string
+	excludedEventNames map[string]struct{}
+}
+
 type PresenceEventOptions struct {
 	OriginNode string
 }
@@ -305,6 +319,47 @@ func (e *Engine) Snapshot(room string) Snapshot {
 
 func (result JoinResult) PageSnapshot(options SnapshotPageOptions) SnapshotPage {
 	return PageSnapshot(result.Snapshot, options)
+}
+
+func NewJoinReplayPlan(options JoinReplayOptions) JoinReplayPlan {
+	plan := JoinReplayPlan{
+		AfterSequence: options.AfterSequence,
+		MaxEvents:     options.MaxEvents,
+		ExcludeConnID: options.ExcludeConnID,
+	}
+	if len(options.ExcludedEventNames) > 0 {
+		plan.excludedEventNames = make(map[string]struct{}, len(options.ExcludedEventNames))
+		for _, eventName := range options.ExcludedEventNames {
+			plan.excludedEventNames[eventName] = struct{}{}
+		}
+	}
+	return plan
+}
+
+func (plan JoinReplayPlan) Enabled() bool {
+	return plan.AfterSequence > 0
+}
+
+func (plan JoinReplayPlan) ReplayEvents(events []cluster.PublishedEvent) []cluster.PublishedEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	replayEvents := make([]cluster.PublishedEvent, 0, len(events))
+	for _, event := range events {
+		if plan.skipReplayEvent(event) {
+			continue
+		}
+		replayEvents = append(replayEvents, clonePublishedEvent(event))
+	}
+	return replayEvents
+}
+
+func (plan JoinReplayPlan) skipReplayEvent(event cluster.PublishedEvent) bool {
+	if plan.ExcludeConnID != "" && event.ExcludeSenderConnID == plan.ExcludeConnID {
+		return true
+	}
+	_, excluded := plan.excludedEventNames[event.Event]
+	return excluded
 }
 
 func PageSnapshot(snapshot Snapshot, options SnapshotPageOptions) SnapshotPage {

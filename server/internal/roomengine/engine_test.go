@@ -165,6 +165,47 @@ func TestPageSnapshot(t *testing.T) {
 	}
 }
 
+func TestJoinReplayPlanFiltersEvents(t *testing.T) {
+	plan := NewJoinReplayPlan(JoinReplayOptions{
+		AfterSequence:      7,
+		MaxEvents:          100,
+		ExcludeConnID:      "conn-self",
+		ExcludedEventNames: []string{"openrtc.storage.update", "openrtc.notifications.inbox.created"},
+	})
+	if !plan.Enabled() || plan.AfterSequence != 7 || plan.MaxEvents != 100 {
+		t.Fatalf("unexpected enabled replay plan: %+v", plan)
+	}
+
+	payload := json.RawMessage(`{"ok":true}`)
+	events := plan.ReplayEvents([]cluster.PublishedEvent{
+		{Room: "room-a", Event: "doc.created", Payload: json.RawMessage(`{"ok":"listed-by-store"}`), Sequence: 7},
+		{Room: "room-a", Event: "doc.update", Payload: payload, Sequence: 8, TraceID: "trace-8"},
+		{Room: "room-a", Event: "openrtc.storage.update", Payload: json.RawMessage(`{"kind":"set"}`), Sequence: 9},
+		{Room: "room-a", Event: "openrtc.notifications.inbox.created", Payload: json.RawMessage(`{"kind":"notification"}`), Sequence: 10},
+		{Room: "room-a", Event: "self", Payload: json.RawMessage(`{"self":true}`), Sequence: 11, ExcludeSenderConnID: "conn-self"},
+	})
+	if len(events) != 2 {
+		t.Fatalf("expected two replayable events, got %#v", events)
+	}
+	if events[0].Event != "doc.created" || events[1].Event != "doc.update" || events[1].TraceID != "trace-8" {
+		t.Fatalf("unexpected replay events: %#v", events)
+	}
+	payload[0] = '['
+	if string(events[1].Payload) != `{"ok":true}` {
+		t.Fatalf("replay event payload should be copied, got %s", events[1].Payload)
+	}
+}
+
+func TestJoinReplayPlanDisabledWithoutSequence(t *testing.T) {
+	plan := NewJoinReplayPlan(JoinReplayOptions{})
+	if plan.Enabled() {
+		t.Fatalf("zero after sequence should disable replay")
+	}
+	if events := plan.ReplayEvents(nil); events != nil {
+		t.Fatalf("empty event list should stay nil, got %#v", events)
+	}
+}
+
 func TestEnginePresenceSnapshotAndTargets(t *testing.T) {
 	engine := New()
 	_, _ = engine.Join("conn-1", "room-a", 0)

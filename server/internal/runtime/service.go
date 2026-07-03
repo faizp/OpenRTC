@@ -67,6 +67,14 @@ const (
 	readWait                    = 30 * time.Second
 )
 
+var joinReplayExcludedEventNames = []string{
+	storageClusterEvent,
+	notificationInboxCreated,
+	notificationInboxRead,
+	notificationInboxDeleted,
+	notificationInboxDeletedAll,
+}
+
 type Service struct {
 	cfg      config.RuntimeConfig
 	logger   *log.Logger
@@ -594,7 +602,7 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 	if err != nil {
 		return err
 	}
-	replayEvents, err := s.replayablePublishedEvents(conn, message)
+	replayEvents, err := s.replayablePublishedEvents(message.Room, joinReplayPlan(conn.id, message.JoinMeta))
 	if err != nil {
 		return err
 	}
@@ -808,22 +816,15 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
 }
 
-func (s *Service) replayablePublishedEvents(conn *clientConn, message protocol.Message) ([]cluster.PublishedEvent, error) {
-	if s.store == nil || message.JoinMeta == nil || message.JoinMeta.AfterSequence == 0 {
+func (s *Service) replayablePublishedEvents(room string, plan roomengine.JoinReplayPlan) ([]cluster.PublishedEvent, error) {
+	if s.store == nil || !plan.Enabled() {
 		return nil, nil
 	}
-	list, err := s.store.ListPublishedEvents(s.ctx, message.Room, message.JoinMeta.AfterSequence, eventCatchupMaxEvents)
+	list, err := s.store.ListPublishedEvents(s.ctx, room, plan.AfterSequence, plan.MaxEvents)
 	if err != nil {
 		return nil, err
 	}
-	events := make([]cluster.PublishedEvent, 0, len(list.Events))
-	for _, event := range list.Events {
-		if event.Event == storageClusterEvent || isNotificationEvent(event.Event) || event.ExcludeSenderConnID == conn.id {
-			continue
-		}
-		events = append(events, event)
-	}
-	return events, nil
+	return plan.ReplayEvents(list.Events), nil
 }
 
 func (s *Service) sendReplayEvents(conn *clientConn, events []cluster.PublishedEvent) error {
@@ -1123,6 +1124,19 @@ func snapshotPageOptions(joinMeta *protocol.JoinMeta) roomengine.SnapshotPageOpt
 		Limit:  limit,
 		Cursor: cursor,
 	}
+}
+
+func joinReplayPlan(connID string, joinMeta *protocol.JoinMeta) roomengine.JoinReplayPlan {
+	var afterSequence uint64
+	if joinMeta != nil {
+		afterSequence = joinMeta.AfterSequence
+	}
+	return roomengine.NewJoinReplayPlan(roomengine.JoinReplayOptions{
+		AfterSequence:      afterSequence,
+		MaxEvents:          eventCatchupMaxEvents,
+		ExcludeConnID:      connID,
+		ExcludedEventNames: joinReplayExcludedEventNames,
+	})
 }
 
 func (s *Service) getStorage(room string) (json.RawMessage, error) {
