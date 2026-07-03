@@ -138,16 +138,24 @@ type devEventsSnapshot struct {
 }
 
 type devClientConfigSnapshot struct {
-	PublicKey       string   `json:"publicKey"`
-	TokenURL        string   `json:"tokenURL"`
-	JWKSURL         string   `json:"jwksURL"`
-	WSURL           string   `json:"wsURL"`
-	YJSURL          string   `json:"yjsURL"`
-	AdminURL        string   `json:"adminURL"`
-	AdminProxyURL   string   `json:"adminProxyURL"`
-	RuntimeURL      string   `json:"runtimeURL"`
-	RuntimeProxyURL string   `json:"runtimeProxyURL"`
-	SeedRooms       []string `json:"seedRooms"`
+	PublicKey        string   `json:"publicKey"`
+	TokenURL         string   `json:"tokenURL"`
+	JWKSURL          string   `json:"jwksURL"`
+	WSURL            string   `json:"wsURL"`
+	YJSURL           string   `json:"yjsURL"`
+	AdminURL         string   `json:"adminURL"`
+	AdminProxyURL    string   `json:"adminProxyURL"`
+	RuntimeURL       string   `json:"runtimeURL"`
+	RuntimeProxyURL  string   `json:"runtimeProxyURL"`
+	StatusURL        string   `json:"statusURL"`
+	ConnectionsURL   string   `json:"connectionsURL"`
+	SocketsURL       string   `json:"socketsURL"`
+	StorageURL       string   `json:"storageURL"`
+	YJSInspectionURL string   `json:"yjsInspectionURL"`
+	EventsURL        string   `json:"eventsURL"`
+	CrashRuntimeURL  string   `json:"crashRuntimeURL"`
+	CrashAdminURL    string   `json:"crashAdminURL"`
+	SeedRooms        []string `json:"seedRooms"`
 }
 
 type devStatusSnapshot struct {
@@ -707,17 +715,27 @@ func handleDevConfig(opts options) http.HandlerFunc {
 }
 
 func devClientConfig(opts options) devClientConfigSnapshot {
+	appURL := fmt.Sprintf("http://%s:%d", opts.host, opts.appPort)
+	firstRoom := firstSeedRoom(opts.seedRooms)
 	return devClientConfigSnapshot{
-		PublicKey:       localPublicKey,
-		TokenURL:        "/dev/token",
-		JWKSURL:         fmt.Sprintf("http://%s:%d/jwks", opts.host, opts.appPort),
-		WSURL:           fmt.Sprintf("ws://%s:%d/ws", opts.host, opts.runtimePort),
-		YJSURL:          fmt.Sprintf("ws://%s:%d/yjs", opts.host, opts.runtimePort),
-		AdminURL:        fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort),
-		AdminProxyURL:   "/admin",
-		RuntimeURL:      fmt.Sprintf("http://%s:%d", opts.host, opts.runtimePort),
-		RuntimeProxyURL: "/runtime",
-		SeedRooms:       opts.seedRooms,
+		PublicKey:        localPublicKey,
+		TokenURL:         "/dev/token",
+		JWKSURL:          appURL + "/jwks",
+		WSURL:            fmt.Sprintf("ws://%s:%d/ws", opts.host, opts.runtimePort),
+		YJSURL:           fmt.Sprintf("ws://%s:%d/yjs", opts.host, opts.runtimePort),
+		AdminURL:         fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort),
+		AdminProxyURL:    "/admin",
+		RuntimeURL:       fmt.Sprintf("http://%s:%d", opts.host, opts.runtimePort),
+		RuntimeProxyURL:  "/runtime",
+		StatusURL:        appURL + "/dev/status",
+		ConnectionsURL:   appURL + "/dev/connections?room=" + firstRoom,
+		SocketsURL:       appURL + "/dev/sockets",
+		StorageURL:       appURL + "/dev/storage?room=" + firstRoom,
+		YJSInspectionURL: appURL + "/dev/yjs?room=" + firstRoom,
+		EventsURL:        appURL + "/dev/events?room=" + firstRoom,
+		CrashRuntimeURL:  appURL + "/dev/crash/runtime",
+		CrashAdminURL:    appURL + "/dev/crash/admin",
+		SeedRooms:        opts.seedRooms,
 	}
 }
 

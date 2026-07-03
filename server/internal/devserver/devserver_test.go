@@ -185,7 +185,15 @@ func TestHandleTokenWithOptionsReturnsIntegrationConfig(t *testing.T) {
 		body.Config.WSURL != "ws://127.0.0.1:8080/ws" ||
 		body.Config.YJSURL != "ws://127.0.0.1:8080/yjs" ||
 		body.Config.AdminProxyURL != "/admin" ||
-		body.Config.RuntimeProxyURL != "/runtime" {
+		body.Config.RuntimeProxyURL != "/runtime" ||
+		body.Config.StatusURL != "http://127.0.0.1:3000/dev/status" ||
+		body.Config.ConnectionsURL != "http://127.0.0.1:3000/dev/connections?room=demo:room-1" ||
+		body.Config.SocketsURL != "http://127.0.0.1:3000/dev/sockets" ||
+		body.Config.StorageURL != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" ||
+		body.Config.YJSInspectionURL != "http://127.0.0.1:3000/dev/yjs?room=demo:room-1" ||
+		body.Config.EventsURL != "http://127.0.0.1:3000/dev/events?room=demo:room-1" ||
+		body.Config.CrashRuntimeURL != "http://127.0.0.1:3000/dev/crash/runtime" ||
+		body.Config.CrashAdminURL != "http://127.0.0.1:3000/dev/crash/admin" {
 		t.Fatalf("unexpected integration config: %+v", body.Config)
 	}
 	if len(body.Config.SeedRooms) != 2 || body.Config.SeedRooms[0] != "demo:room-1" || body.Config.SeedRooms[1] != "demo:canvas-1" {

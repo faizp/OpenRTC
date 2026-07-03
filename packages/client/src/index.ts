@@ -103,6 +103,14 @@ export interface OpenRTCDevClientConfig {
   adminProxyURL: string;
   runtimeURL: string;
   runtimeProxyURL: string;
+  statusURL?: string;
+  connectionsURL?: string;
+  socketsURL?: string;
+  storageURL?: string;
+  yjsInspectionURL?: string;
+  eventsURL?: string;
+  crashRuntimeURL?: string;
+  crashAdminURL?: string;
   seedRooms: string[];
 }
 
@@ -2988,6 +2996,14 @@ function parseOpenRTCDevClientConfig(value: unknown): OpenRTCDevClientConfig {
   const adminProxyURL = optionalString(value["adminProxyURL"]);
   const runtimeURL = optionalString(value["runtimeURL"]);
   const runtimeProxyURL = optionalString(value["runtimeProxyURL"]);
+  const statusURL = optionalString(value["statusURL"]);
+  const connectionsURL = optionalString(value["connectionsURL"]);
+  const socketsURL = optionalString(value["socketsURL"]);
+  const storageURL = optionalString(value["storageURL"]);
+  const yjsInspectionURL = optionalString(value["yjsInspectionURL"]);
+  const eventsURL = optionalString(value["eventsURL"]);
+  const crashRuntimeURL = optionalString(value["crashRuntimeURL"]);
+  const crashAdminURL = optionalString(value["crashAdminURL"]);
   if (
     !publicKey ||
     !tokenURL ||
@@ -3011,6 +3027,14 @@ function parseOpenRTCDevClientConfig(value: unknown): OpenRTCDevClientConfig {
     adminProxyURL,
     runtimeURL,
     runtimeProxyURL,
+    ...(statusURL ? { statusURL } : {}),
+    ...(connectionsURL ? { connectionsURL } : {}),
+    ...(socketsURL ? { socketsURL } : {}),
+    ...(storageURL ? { storageURL } : {}),
+    ...(yjsInspectionURL ? { yjsInspectionURL } : {}),
+    ...(eventsURL ? { eventsURL } : {}),
+    ...(crashRuntimeURL ? { crashRuntimeURL } : {}),
+    ...(crashAdminURL ? { crashAdminURL } : {}),
     seedRooms: asStringArray(value["seedRooms"]),
   };
 }

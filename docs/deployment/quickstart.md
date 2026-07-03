@@ -21,8 +21,8 @@ go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:63
 
 Open `http://127.0.0.1:3000`. Use
 `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous local client
-tokens. The token response also includes the local `config` object and default
-`room`, so browser clients can connect without hard-coding dev URLs; the
+tokens. The token response also includes the local `config` object, debug endpoint
+URLs, and default `room`, so browser clients can connect without hard-coding dev URLs; the
 `@openrtc/client` `createOpenRTCDevClient()` and
 `createOpenRTCDevAdminClient()` helpers consume this response directly. Use
 `http://127.0.0.1:3000/dev/status` to verify storage backend, Redis protocol health, runtime/admin generation,

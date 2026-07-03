@@ -1298,6 +1298,14 @@ const devConfig = {
   adminProxyURL: "/admin",
   runtimeURL: "http://127.0.0.1:8080",
   runtimeProxyURL: "/runtime",
+  statusURL: "http://127.0.0.1:3000/dev/status",
+  connectionsURL: "http://127.0.0.1:3000/dev/connections?room=demo:room-1",
+  socketsURL: "http://127.0.0.1:3000/dev/sockets",
+  storageURL: "http://127.0.0.1:3000/dev/storage?room=demo:room-1",
+  yjsInspectionURL: "http://127.0.0.1:3000/dev/yjs?room=demo:room-1",
+  eventsURL: "http://127.0.0.1:3000/dev/events?room=demo:room-1",
+  crashRuntimeURL: "http://127.0.0.1:3000/dev/crash/runtime",
+  crashAdminURL: "http://127.0.0.1:3000/dev/crash/admin",
   seedRooms: ["demo:room-1", "demo:canvas-1"],
 };
 
@@ -1335,6 +1343,14 @@ assert.equal(devTokenURL.searchParams.get("groups"), "editors,reviewers");
 assert.equal(devToken.token, "dev-token-1");
 assert.equal(devToken.room, "acme:room-1");
 assert.deepEqual(devToken.config.seedRooms, ["demo:room-1", "demo:canvas-1"]);
+assert.equal(devToken.config.statusURL, "http://127.0.0.1:3000/dev/status");
+assert.equal(devToken.config.connectionsURL, "http://127.0.0.1:3000/dev/connections?room=demo:room-1");
+assert.equal(devToken.config.socketsURL, "http://127.0.0.1:3000/dev/sockets");
+assert.equal(devToken.config.storageURL, "http://127.0.0.1:3000/dev/storage?room=demo:room-1");
+assert.equal(devToken.config.yjsInspectionURL, "http://127.0.0.1:3000/dev/yjs?room=demo:room-1");
+assert.equal(devToken.config.eventsURL, "http://127.0.0.1:3000/dev/events?room=demo:room-1");
+assert.equal(devToken.config.crashRuntimeURL, "http://127.0.0.1:3000/dev/crash/runtime");
+assert.equal(devToken.config.crashAdminURL, "http://127.0.0.1:3000/dev/crash/admin");
 
 const socketCountBeforeDevClient = FakeWebSocket.instances.length;
 const devClient = await createOpenRTCDevClient({
