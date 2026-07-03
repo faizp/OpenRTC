@@ -1094,6 +1094,99 @@ func TestEngineStorageMutations(t *testing.T) {
 	}
 }
 
+func TestEngineStorageMutationPlans(t *testing.T) {
+	engine := New()
+	_, _ = engine.Join("conn-sender", "room-a", 0)
+	_, _ = engine.Join("conn-peer", "room-a", 0)
+
+	setPlan, err := engine.SetStorageMutationPlan("room-a", json.RawMessage(`{
+		"liveblocksType":"LiveObject",
+		"data":{"title":"Draft"}
+	}`), StorageMutationOptions{
+		OpID:         "op-set",
+		OriginConnID: "conn-sender",
+	}, StorageEventOptions{
+		OriginNode:          "node-a",
+		ExcludeSenderConnID: "conn-sender",
+	})
+	if err != nil {
+		t.Fatalf("set storage mutation plan: %v", err)
+	}
+	if setPlan.Mutation.Kind != StorageMutationSet || setPlan.Mutation.OpID != "op-set" || setPlan.Mutation.OriginConnID != "conn-sender" {
+		t.Fatalf("unexpected set plan mutation: %+v", setPlan.Mutation)
+	}
+	if setPlan.Fanout.Room != "room-a" || !reflect.DeepEqual(setPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
+		t.Fatalf("unexpected set plan fanout: %+v", setPlan.Fanout)
+	}
+	if setPlan.Event.Room != "room-a" || setPlan.Event.Event != cluster.EventStorageUpdate || setPlan.Event.OriginNode != "node-a" || setPlan.Event.ExcludeSenderConnID != "conn-sender" {
+		t.Fatalf("unexpected set plan event: %+v", setPlan.Event)
+	}
+	var setEventMutation StorageMutation
+	if err := json.Unmarshal(setPlan.Event.Payload, &setEventMutation); err != nil {
+		t.Fatalf("decode set plan event payload: %v", err)
+	}
+	if setEventMutation.Kind != StorageMutationSet || setEventMutation.OpID != "op-set" || string(setEventMutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+		t.Fatalf("unexpected set event mutation: %+v", setEventMutation)
+	}
+	setPlan.Mutation.Document[0] = '['
+	if string(setPlan.Fanout.Update.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+		t.Fatalf("set plan fanout should have its own mutation copy, got %s", setPlan.Fanout.Update.Document)
+	}
+
+	patchPlan, err := engine.ApplyStoragePatchMutationPlan("room-a", []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+	}, StorageMutationOptions{
+		OpID:         "op-patch",
+		OriginConnID: "conn-sender",
+	}, StorageEventOptions{
+		OriginNode:          "node-a",
+		ExcludeSenderConnID: "conn-sender",
+	})
+	if err != nil {
+		t.Fatalf("patch storage mutation plan: %v", err)
+	}
+	if patchPlan.Mutation.Kind != StorageMutationPatch || patchPlan.Mutation.OpID != "op-patch" || len(patchPlan.Mutation.Operations) != 1 {
+		t.Fatalf("unexpected patch plan mutation: %+v", patchPlan.Mutation)
+	}
+	if !reflect.DeepEqual(patchPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
+		t.Fatalf("unexpected patch plan fanout: %+v", patchPlan.Fanout)
+	}
+
+	remoteEvent, err := NewStorageEvent("room-a", StorageMutation{
+		Kind:         StorageMutationPatch,
+		OpID:         "op-remote",
+		OriginConnID: "remote-conn",
+		Operations: []cluster.JSONPatchOperation{
+			{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Remote"`)},
+		},
+		Document: json.RawMessage(`{
+			"liveblocksType":"LiveObject",
+			"data":{"title":"Remote"}
+		}`),
+	}, StorageEventOptions{
+		OriginNode:          "node-b",
+		ExcludeSenderConnID: "remote-conn",
+	})
+	if err != nil {
+		t.Fatalf("new remote storage event: %v", err)
+	}
+	remoteEvent.Sequence = 42
+	remotePlan, err := engine.RecordStorageEvent(remoteEvent, 0)
+	if err != nil {
+		t.Fatalf("record remote storage event: %v", err)
+	}
+	if remotePlan.Mutation.Kind != StorageMutationPatch || remotePlan.Mutation.OpID != "op-remote" || remotePlan.Event.Sequence != 42 {
+		t.Fatalf("unexpected remote plan mutation/event: %+v event=%+v", remotePlan.Mutation, remotePlan.Event)
+	}
+	loaded, err := engine.GetStorage("room-a")
+	if err != nil {
+		t.Fatalf("get storage after remote plan: %v", err)
+	}
+	if string(loaded) != `{"liveblocksType":"LiveObject","data":{"title":"Remote"}}` {
+		t.Fatalf("remote plan should record compacted storage, got %s", loaded)
+	}
+}
+
 func TestNewStorageEvent(t *testing.T) {
 	update := StorageMutation{
 		Kind:         StorageMutationPatch,

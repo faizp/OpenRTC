@@ -696,21 +696,24 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
 	}
 
-	update, err := s.setStorageMutation(message.Room, message.Payload, roomengine.StorageMutationOptions{
+	plan, err := s.setStorageMutationPlan(message.Room, message.Payload, roomengine.StorageMutationOptions{
 		MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
 		OpID:         storageOpID(message),
 		OriginConnID: conn.id,
+	}, roomengine.StorageEventOptions{
+		OriginNode:          s.cfg.NodeID,
+		ExcludeSenderConnID: conn.id,
 	})
 	if err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	if err := s.broadcastStorageUpdate(message.Room, update, conn.id); err != nil {
+	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
 	}
-	if err := s.publishStorageUpdate(message.Room, update, conn.id); err != nil {
+	if err := s.publishStoragePlan(plan); err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
+	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document))
 }
 
 func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message) error {
@@ -722,21 +725,24 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	if parseErr != nil {
 		return conn.enqueue(runtimeErrorMessage(message.ID, parseErr.Code, parseErr.Message))
 	}
-	update, err := s.applyStoragePatchMutation(message.Room, operations, roomengine.StorageMutationOptions{
+	plan, err := s.applyStoragePatchMutationPlan(message.Room, operations, roomengine.StorageMutationOptions{
 		MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
 		OpID:         storageOpID(message),
 		OriginConnID: conn.id,
+	}, roomengine.StorageEventOptions{
+		OriginNode:          s.cfg.NodeID,
+		ExcludeSenderConnID: conn.id,
 	})
 	if err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	if err := s.broadcastStorageUpdate(message.Room, update, conn.id); err != nil {
+	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
 	}
-	if err := s.publishStorageUpdate(message.Room, update, conn.id); err != nil {
+	if err := s.publishStoragePlan(plan); err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	return conn.enqueue(storageAckMessage(message, update.Kind, update.Document))
+	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document))
 }
 
 func (s *Service) replayablePublishedEvents(room string, plan roomengine.JoinPlan) ([]cluster.PublishedEvent, error) {
@@ -769,20 +775,11 @@ func (s *Service) handleClusterEvent(event cluster.PublishedEvent) {
 		_ = s.broadcastNotificationDelta(plan.Event)
 		return
 	case roomengine.ClusterEventStorage:
-		var update roomengine.StorageMutation
-		if err := json.Unmarshal(plan.Event.Payload, &update); err != nil {
-			return
-		}
-		normalized, err := s.roomEngine().RecordStorageMutation(plan.Event.Room, update.Kind, update.Document, update.Operations, roomengine.StorageMutationOptions{
-			MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
-			OpID:         update.OpID,
-			OriginConnID: update.OriginConnID,
-		})
+		storagePlan, err := s.roomEngine().RecordStorageEvent(plan.Event, s.cfg.Limits.PayloadMaxBytes)
 		if err != nil {
 			return
 		}
-		update = normalized
-		_ = s.broadcastStorageUpdate(plan.Event.Room, update, plan.Event.ExcludeSenderConnID)
+		_ = s.broadcastStorageFanout(storagePlan.Fanout)
 		return
 	default:
 		_ = s.broadcastEvent(plan.Event, false)
@@ -923,10 +920,6 @@ func eventOutboundMessage(event cluster.PublishedEvent) outboundMessage {
 		message.Meta = meta
 	}
 	return message
-}
-
-func (s *Service) broadcastStorageUpdate(room string, update roomengine.StorageMutation, excludeConnID string) error {
-	return s.broadcastStorageFanout(s.roomEngine().StorageFanout(room, update, excludeConnID))
 }
 
 func (s *Service) broadcastStorageFanout(fanout roomengine.StorageFanout) error {
@@ -1081,40 +1074,33 @@ func (s *Service) getStorage(room string) (json.RawMessage, error) {
 	return s.roomEngine().GetStorage(room)
 }
 
-func (s *Service) setStorageMutation(room string, document json.RawMessage, options roomengine.StorageMutationOptions) (roomengine.StorageMutation, error) {
+func (s *Service) setStorageMutationPlan(room string, document json.RawMessage, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
 	if s.store != nil {
 		stored, err := s.store.SetStorage(s.ctx, room, document)
 		if err != nil {
-			return roomengine.StorageMutation{}, err
+			return roomengine.StorageMutationPlan{}, err
 		}
-		return s.roomEngine().RecordStorageMutation(room, roomengine.StorageMutationSet, stored, nil, options)
+		return s.roomEngine().RecordStorageMutationPlan(room, roomengine.StorageMutationSet, stored, nil, mutationOptions, eventOptions)
 	}
-	return s.roomEngine().SetStorageMutation(room, document, options)
+	return s.roomEngine().SetStorageMutationPlan(room, document, mutationOptions, eventOptions)
 }
 
-func (s *Service) applyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options roomengine.StorageMutationOptions) (roomengine.StorageMutation, error) {
+func (s *Service) applyStoragePatchMutationPlan(room string, operations []cluster.JSONPatchOperation, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
 	if s.store != nil {
-		patched, err := s.store.ApplyStoragePatch(s.ctx, room, operations, options.MaxBytes)
+		patched, err := s.store.ApplyStoragePatch(s.ctx, room, operations, mutationOptions.MaxBytes)
 		if err != nil {
-			return roomengine.StorageMutation{}, err
+			return roomengine.StorageMutationPlan{}, err
 		}
-		return s.roomEngine().RecordStorageMutation(room, roomengine.StorageMutationPatch, patched, operations, options)
+		return s.roomEngine().RecordStorageMutationPlan(room, roomengine.StorageMutationPatch, patched, operations, mutationOptions, eventOptions)
 	}
-	return s.roomEngine().ApplyStoragePatchMutation(room, operations, options)
+	return s.roomEngine().ApplyStoragePatchMutationPlan(room, operations, mutationOptions, eventOptions)
 }
 
-func (s *Service) publishStorageUpdate(room string, update roomengine.StorageMutation, excludeConnID string) error {
+func (s *Service) publishStoragePlan(plan roomengine.StorageMutationPlan) error {
 	if s.store == nil {
 		return nil
 	}
-	event, err := roomengine.NewStorageEvent(room, update, roomengine.StorageEventOptions{
-		OriginNode:          s.cfg.NodeID,
-		ExcludeSenderConnID: excludeConnID,
-	})
-	if err != nil {
-		return err
-	}
-	_, err = s.store.PublishEvent(s.ctx, event)
+	_, err := s.store.PublishEvent(s.ctx, plan.Event)
 	return err
 }
 

@@ -17,7 +17,7 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 
 - One Go image is built from `server/`.
 - The image runs either `openrtc-runtime` or `openrtc-admin` via command/args.
-- `openrtc-runtime` owns WebSocket traffic, room state, access-grant checks, presence, Yjs sync, limits, and cluster fan-out.
+- `openrtc-runtime` owns WebSocket traffic, access-grant checks, limits, and delivery; room-centered session, presence, storage mutation, Yjs, and fan-out planning live in `server/internal/roomengine`.
 - `openrtc-admin` owns room metadata/access grants, storage documents/patches, durable threads/comments, inbox notifications/settings, active-user reads, publish, presence, stats, and admin HTTP endpoints.
 
 ## Developer commands

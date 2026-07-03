@@ -229,6 +229,12 @@ type StorageFanout struct {
 	TargetConnIDs []string
 }
 
+type StorageMutationPlan struct {
+	Mutation StorageMutation
+	Fanout   StorageFanout
+	Event    cluster.PublishedEvent
+}
+
 type YJSFanout struct {
 	Event         cluster.YJSEvent
 	TargetConnIDs []string
@@ -1025,6 +1031,14 @@ func (e *Engine) SetStorageMutation(room string, document json.RawMessage, optio
 	return newStorageMutation(StorageMutationSet, stored, nil, options), nil
 }
 
+func (e *Engine) SetStorageMutationPlan(room string, document json.RawMessage, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
+	mutation, err := e.SetStorageMutation(room, document, mutationOptions)
+	if err != nil {
+		return StorageMutationPlan{}, err
+	}
+	return e.StorageMutationPlan(room, mutation, eventOptions)
+}
+
 func (e *Engine) ApplyStoragePatch(room string, operations []cluster.JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1055,6 +1069,14 @@ func (e *Engine) ApplyStoragePatchMutation(room string, operations []cluster.JSO
 	return newStorageMutation(StorageMutationPatch, patched, operations, options), nil
 }
 
+func (e *Engine) ApplyStoragePatchMutationPlan(room string, operations []cluster.JSONPatchOperation, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
+	mutation, err := e.ApplyStoragePatchMutation(room, operations, mutationOptions)
+	if err != nil {
+		return StorageMutationPlan{}, err
+	}
+	return e.StorageMutationPlan(room, mutation, eventOptions)
+}
+
 func (e *Engine) RecordStorageMutation(room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
 	if !validStorageMutationKind(kind) {
 		return StorageMutation{}, ErrStorageMutationKind
@@ -1066,6 +1088,34 @@ func (e *Engine) RecordStorageMutation(room string, kind string, document json.R
 	return NewStorageMutation(kind, stored, operations, options)
 }
 
+func (e *Engine) RecordStorageMutationPlan(room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
+	mutation, err := e.RecordStorageMutation(room, kind, document, operations, mutationOptions)
+	if err != nil {
+		return StorageMutationPlan{}, err
+	}
+	return e.StorageMutationPlan(room, mutation, eventOptions)
+}
+
+func (e *Engine) RecordStorageEvent(event cluster.PublishedEvent, maxBytes int) (StorageMutationPlan, error) {
+	var mutation StorageMutation
+	if err := json.Unmarshal(event.Payload, &mutation); err != nil {
+		return StorageMutationPlan{}, err
+	}
+	plan, err := e.RecordStorageMutationPlan(event.Room, mutation.Kind, mutation.Document, mutation.Operations, StorageMutationOptions{
+		MaxBytes:     maxBytes,
+		OpID:         mutation.OpID,
+		OriginConnID: mutation.OriginConnID,
+	}, StorageEventOptions{
+		OriginNode:          event.OriginNode,
+		ExcludeSenderConnID: event.ExcludeSenderConnID,
+	})
+	if err != nil {
+		return StorageMutationPlan{}, err
+	}
+	plan.Event.Sequence = event.Sequence
+	return plan, nil
+}
+
 func NewStorageMutation(kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
 	if !validStorageMutationKind(kind) {
 		return StorageMutation{}, ErrStorageMutationKind
@@ -1074,6 +1124,18 @@ func NewStorageMutation(kind string, document json.RawMessage, operations []clus
 		operations = nil
 	}
 	return newStorageMutation(kind, document, operations, options), nil
+}
+
+func (e *Engine) StorageMutationPlan(room string, update StorageMutation, options StorageEventOptions) (StorageMutationPlan, error) {
+	event, err := NewStorageEvent(room, update, options)
+	if err != nil {
+		return StorageMutationPlan{}, err
+	}
+	return StorageMutationPlan{
+		Mutation: cloneStorageMutation(update),
+		Fanout:   e.StorageFanout(room, update, options.ExcludeSenderConnID),
+		Event:    event,
+	}, nil
 }
 
 func (e *Engine) StorageFanout(room string, update StorageMutation, excludeConnID string) StorageFanout {
