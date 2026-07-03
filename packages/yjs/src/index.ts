@@ -83,6 +83,7 @@ export interface OpenRTCYjsSyncState {
   offlineUpdatesStored: number;
   offlineBytesStored: number;
   pendingLocalSync: boolean;
+  pendingLocalSubdocs: string[];
   reconnectAttempts: number;
   nextReconnectAt?: number;
   lastDisconnectedAt?: number;
@@ -174,6 +175,7 @@ export class OpenRTCYjsProvider {
   private offlineBytesStored = 0;
   private manualClose = false;
   private pendingLocalSync = false;
+  private readonly pendingLocalSubdocSync = new Set<string>();
   private reconnectAttempts = 0;
   private nextReconnectAt: number | undefined;
   private lastDisconnectedAt: number | undefined;
@@ -283,6 +285,7 @@ export class OpenRTCYjsProvider {
         this.setSyncStatus("syncing");
         this.startSnapshotTimer();
         this.flushPendingLocalSync();
+        this.flushPendingLocalSubdocSync();
         this.scheduleStateVectorSync();
         resolve();
       };
@@ -486,7 +489,10 @@ export class OpenRTCYjsProvider {
       if (this.sendSubdocFrame(FRAME_SUBDOC_UPDATE, guid, update)) {
         this.subdocUpdatesSent++;
         this.emitSyncStatus();
+        return;
       }
+      this.pendingLocalSubdocSync.add(guid);
+      this.emitSyncStatus();
     };
     this.subdocs.set(guid, subdoc);
     this.subdocUpdateHandlers.set(guid, handler);
@@ -510,6 +516,7 @@ export class OpenRTCYjsProvider {
     }
     this.subdocUpdateHandlers.delete(guid);
     this.subdocs.delete(guid);
+    this.pendingLocalSubdocSync.delete(guid);
     this.emitSyncStatus();
   }
 
@@ -522,6 +529,7 @@ export class OpenRTCYjsProvider {
     }
     this.subdocs.clear();
     this.subdocUpdateHandlers.clear();
+    this.pendingLocalSubdocSync.clear();
   }
 
   private queuePendingSubdocUpdate(guid: string, kind: number, update: Uint8Array, payload: Uint8Array): void {
@@ -604,6 +612,24 @@ export class OpenRTCYjsProvider {
       this.pendingLocalSync = false;
       this.emitSyncStatus();
     }
+  }
+
+  private flushPendingLocalSubdocSync(): void {
+    if (this.pendingLocalSubdocSync.size === 0) {
+      return;
+    }
+    for (const guid of [...this.pendingLocalSubdocSync]) {
+      const subdoc = this.subdocs.get(guid);
+      if (!subdoc) {
+        this.pendingLocalSubdocSync.delete(guid);
+        continue;
+      }
+      if (this.sendSubdocFrame(FRAME_SUBDOC_UPDATE, guid, Y.encodeStateAsUpdate(subdoc))) {
+        this.pendingLocalSubdocSync.delete(guid);
+        this.subdocUpdatesSent++;
+      }
+    }
+    this.emitSyncStatus();
   }
 
   private sendSubdocFrame(kind: number, guid: string, update: Uint8Array): boolean {
@@ -748,6 +774,7 @@ export class OpenRTCYjsProvider {
       offlineUpdatesStored: this.offlineUpdatesStored,
       offlineBytesStored: this.offlineBytesStored,
       pendingLocalSync: this.pendingLocalSync,
+      pendingLocalSubdocs: [...this.pendingLocalSubdocSync],
       reconnectAttempts: this.reconnectAttempts,
       ...(this.nextReconnectAt !== undefined ? { nextReconnectAt: this.nextReconnectAt } : {}),
       ...(this.lastDisconnectedAt !== undefined ? { lastDisconnectedAt: this.lastDisconnectedAt } : {}),

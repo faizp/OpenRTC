@@ -170,10 +170,10 @@ The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
 for reconnect diagnostics. It automatically reconnects by default using bounded
-backoff; local updates made while disconnected are marked as pending and flushed
-to the replacement socket before the provider requests a fresh state-vector
-diff. Set `autoReconnect: false` or pass `reconnect` options to tune that
-behavior. For browser offline starts, pass
+backoff; local root and subdoc updates made while disconnected are marked as
+pending and flushed to the replacement socket before the provider requests a
+fresh state-vector diff. Set `autoReconnect: false` or pass `reconnect` options
+to tune that behavior. For browser offline starts, pass
 `offlineStore: createIndexedDBYjsStore({ room: "tenant-a:canvas-1" })`; cached
 Yjs updates are replayed before the websocket opens, and local/remote updates
 are appended to the cache without changing server durability semantics.

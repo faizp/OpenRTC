@@ -399,6 +399,8 @@ assert.equal(offlineProvider.getSyncState().offlineBytesStored > 0, true);
 offlineProvider.destroy();
 
 const reconnectDoc = new Y.Doc();
+const reconnectSubdoc = new Y.Doc({ guid: "reconnect-subdoc-1" });
+reconnectDoc.getMap<Y.Doc>("subdocs").set("body", reconnectSubdoc);
 const reconnectProvider = new OpenRTCYjsProvider({
   url: "http://localhost:8080",
   room: "tenant-a:reconnect-doc",
@@ -430,6 +432,8 @@ assert.equal(reconnectProvider.getSyncState().reconnectAttempts, 1);
 assert.equal(typeof reconnectProvider.getSyncState().lastDisconnectedAt, "number");
 reconnectDoc.getText("body").insert(6, " local");
 assert.equal(reconnectProvider.getSyncState().pendingLocalSync, true);
+reconnectSubdoc.getText("body").insert(0, "subdoc local");
+assert.deepEqual(reconnectProvider.getSyncState().pendingLocalSubdocs, ["reconnect-subdoc-1"]);
 
 await waitForSocketCount(reconnectSocketStart + 2);
 const reconnectSocketB = FakeYjsSocket.instances[reconnectSocketStart + 1];
@@ -437,8 +441,12 @@ assert.ok(reconnectSocketB);
 reconnectSocketB.open();
 await waitFor(() => reconnectProvider.status === "open", "expected Yjs provider to reopen after reconnect");
 assert.equal(reconnectProvider.getSyncState().pendingLocalSync, false);
+assert.deepEqual(reconnectProvider.getSyncState().pendingLocalSubdocs, []);
 assert.equal(reconnectProvider.getSyncState().reconnectAttempts, 0);
 assert.equal(reconnectSocketB.sent[0]?.[0], 1);
+const reconnectSubdocFlush = reconnectSocketB.sent.find((sent) => sent[0] === 5);
+assert.ok(reconnectSubdocFlush);
+assert.equal(decodeTestSubdocPayload(reconnectSubdocFlush.subarray(1)).guid, "reconnect-subdoc-1");
 await waitFor(() => reconnectSocketB.sent.some((sent) => sent[0] === 3), "expected state-vector sync after reconnect");
 assert.equal(reconnectStatuses.includes("reconnecting"), true);
 
