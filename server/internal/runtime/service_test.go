@@ -1194,9 +1194,16 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		store := &fakeRuntimeStore{publishPresenceErr: expected}
 		service.store = store
 		conn := runtimeTestConn(service, "conn-leave-publish", claims, 2)
+		receiver := runtimeTestConn(service, "conn-leave-publish-receiver", claims, 2)
 		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
+		joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
 		if err := service.handleLeave(conn, protocol.Message{ID: "leave", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
 			t.Fatalf("expected leave presence publish error, got %v", err)
+		}
+		assertRuntimeNoOutbound(t, conn)
+		assertRuntimeNoOutbound(t, receiver)
+		if service.stats.LeavesTotal != 0 || service.metrics.LeavesTotal.Load() != 0 {
+			t.Fatalf("leave stats/metrics should not increment after publish failure")
 		}
 	})
 
@@ -1206,12 +1213,20 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		store := &fakeRuntimeStore{publishPresenceErr: expected}
 		service.store = store
 		conn := runtimeTestConn(service, "conn-presence-publish", claims, 2)
+		receiver := runtimeTestConn(service, "conn-presence-publish-receiver", claims, 2)
+		joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
+		joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
 		if err := service.handlePresence(conn, protocol.Message{
 			ID:      "presence",
 			Room:    "tenant-a:room-1",
 			Payload: json.RawMessage(`{"cursor":{"x":1}}`),
 		}); !errors.Is(err, expected) {
 			t.Fatalf("expected presence publish error, got %v", err)
+		}
+		assertRuntimeNoOutbound(t, conn)
+		assertRuntimeNoOutbound(t, receiver)
+		if service.stats.PresenceUpdatesTotal != 0 || service.metrics.PresenceUpdatesTotal.Load() != 0 {
+			t.Fatalf("presence stats/metrics should not increment after publish failure")
 		}
 	})
 }
@@ -1410,6 +1425,28 @@ func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 	if fanout := service.roomEngine().NotificationFanout(cluster.PublishedEvent{Event: notificationInboxDeleted}, "user-1"); len(fanout.TargetConnIDs) != 0 {
 		t.Fatalf("expected unregistered connection to be removed from notification targets, got %#v", fanout.TargetConnIDs)
 	}
+}
+
+func TestRuntimeUnregisterSkipsOfflinePresenceFanoutOnPublishFailure(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	store := &fakeRuntimeStore{publishPresenceErr: errors.New("publish failed")}
+	service.store = store
+	conn := runtimeTestConn(service, "conn-disconnect-publish", &auth.Claims{Tenant: "tenant-a"}, 2)
+	receiver := runtimeTestConn(service, "conn-disconnect-receiver", &auth.Claims{Tenant: "tenant-a"}, 2)
+	joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
+	joinRuntimeRoom(t, service, receiver, "tenant-a:room-1")
+
+	service.unregisterConn(conn)
+
+	if store.cleanupNodeID != service.cfg.NodeID || store.cleanupConnID != conn.id {
+		t.Fatalf("unexpected cleanup call: node=%q conn=%q", store.cleanupNodeID, store.cleanupConnID)
+	}
+	if len(store.publishedPresence) != 0 {
+		t.Fatalf("presence publish failure should not record published presence: %+v", store.publishedPresence)
+	}
+	assertRuntimeNoOutbound(t, receiver)
 }
 
 func TestRuntimeDevConnectionsSnapshot(t *testing.T) {

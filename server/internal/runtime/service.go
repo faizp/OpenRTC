@@ -547,32 +547,20 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 
 func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error {
 	leaveResult := s.roomEngine().LeaveWithPresenceFanout(conn.id, message.Room, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
-	if leaveResult.Left {
-		s.mu.Lock()
-		s.stats.LeavesTotal++
-		s.syncStatsLocked()
-		s.mu.Unlock()
-	}
-
-	if leaveResult.Left {
-		s.metrics.LeavesTotal.Inc()
-	}
 	if err := s.applyRoomMembershipMutation(leaveResult.MembershipMutation); err != nil {
 		return err
 	}
 	if leaveResult.Left {
 		fanout := leaveResult.PresenceFanout
-		if fanout == nil {
-			return conn.enqueue(outboundMessage{T: "LEFT", ID: message.ID, Room: message.Room})
-		}
-		if err := s.broadcastPresenceFanout(*fanout); err != nil {
-			return err
-		}
-		if s.store != nil {
-			if err := s.store.PublishPresence(s.ctx, fanout.Event); err != nil {
+		if fanout != nil {
+			if err := s.publishPresenceFanout(*fanout); err != nil {
+				return err
+			}
+			if err := s.broadcastPresenceFanout(*fanout); err != nil {
 				return err
 			}
 		}
+		s.recordLeave()
 	}
 
 	return conn.enqueue(outboundMessage{T: "LEFT", ID: message.ID, Room: message.Room})
@@ -652,24 +640,19 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 	}
 
 	fanout := s.roomEngine().SetPresenceFanout(conn.id, message.Room, message.Payload, roomengine.PresenceEventOptions{OriginNode: s.cfg.NodeID})
-	s.mu.Lock()
-	s.stats.PresenceUpdatesTotal++
-	s.syncStatsLocked()
-	s.mu.Unlock()
-
-	s.metrics.PresenceUpdatesTotal.Inc()
 	if s.store != nil {
 		if err := s.store.SetPresence(s.ctx, conn.id, message.Room, message.Payload); err != nil {
 			return err
 		}
 	}
 
+	if err := s.publishPresenceFanout(fanout); err != nil {
+		return err
+	}
 	if err := s.broadcastPresenceFanout(fanout); err != nil {
 		return err
 	}
-	if s.store != nil {
-		return s.store.PublishPresence(s.ctx, fanout.Event)
-	}
+	s.recordPresenceUpdate()
 	return nil
 }
 
@@ -903,6 +886,13 @@ func (s *Service) broadcastPresenceFanout(fanout roomengine.PresenceFanout) erro
 	}
 
 	return nil
+}
+
+func (s *Service) publishPresenceFanout(fanout roomengine.PresenceFanout) error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.PublishPresence(s.ctx, fanout.Event)
 }
 
 func eventOutboundMessage(event cluster.PublishedEvent) outboundMessage {
@@ -1155,10 +1145,10 @@ func (s *Service) unregisterConn(conn *clientConn) {
 
 	s.applyConnectionCleanup(disconnectResult.Cleanup)
 	for _, fanout := range disconnectResult.PresenceFanouts {
-		_ = s.broadcastPresenceFanout(fanout)
-		if s.store != nil {
-			_ = s.store.PublishPresence(s.ctx, fanout.Event)
+		if err := s.publishPresenceFanout(fanout); err != nil {
+			continue
 		}
+		_ = s.broadcastPresenceFanout(fanout)
 	}
 }
 
@@ -1272,6 +1262,22 @@ func (s *Service) handleReady(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ready"))
+}
+
+func (s *Service) recordLeave() {
+	s.mu.Lock()
+	s.stats.LeavesTotal++
+	s.syncStatsLocked()
+	s.mu.Unlock()
+	s.metrics.LeavesTotal.Inc()
+}
+
+func (s *Service) recordPresenceUpdate() {
+	s.mu.Lock()
+	s.stats.PresenceUpdatesTotal++
+	s.syncStatsLocked()
+	s.mu.Unlock()
+	s.metrics.PresenceUpdatesTotal.Inc()
 }
 
 func (s *Service) syncStatsLocked() {
