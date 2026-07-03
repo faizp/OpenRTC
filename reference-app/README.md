@@ -54,6 +54,7 @@ The dev server starts:
 - Active-user reads at `http://127.0.0.1:3000/dev/connections?room=demo:room-1`
 - Local runtime socket reads at `http://127.0.0.1:3000/dev/sockets`
 - Seeded typed storage reads at `http://127.0.0.1:3000/dev/storage?room=demo:room-1`
+- Yjs snapshot/update metadata reads at `http://127.0.0.1:3000/dev/yjs?room=demo:room-1`
 - Bounded room event-log reads at `http://127.0.0.1:3000/dev/events?room=demo:room-1`
 - Ops dev status, socket/event inspection, and reconnect drill with generation verification
 

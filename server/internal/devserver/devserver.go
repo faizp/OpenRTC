@@ -93,6 +93,10 @@ type storageGetter interface {
 	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
 }
 
+type yjsDocumentLoader interface {
+	LoadYJSDocument(ctx context.Context, room string) (cluster.YJSDocument, error)
+}
+
 type publishedEventLister interface {
 	ListPublishedEvents(ctx context.Context, room string, afterSequence uint64, limit int) (cluster.PublishedEventList, error)
 }
@@ -103,9 +107,27 @@ type devStorageSnapshot struct {
 	Runtime *runtimeapp.DevStorageSnapshot `json:"runtime,omitempty"`
 }
 
+type devYJSSnapshot struct {
+	Room    string                             `json:"room"`
+	Durable devYJSDocumentSnapshot             `json:"durable"`
+	Runtime *runtimeapp.DevYJSDocumentSnapshot `json:"runtime,omitempty"`
+}
+
 type devStorageDocumentSnapshot struct {
 	Found    bool            `json:"found"`
 	Document json.RawMessage `json:"document,omitempty"`
+}
+
+type devYJSDocumentSnapshot struct {
+	Found              bool     `json:"found"`
+	SnapshotFound      bool     `json:"snapshot_found"`
+	SnapshotBytes      int      `json:"snapshot_bytes"`
+	SnapshotHash       string   `json:"snapshot_hash,omitempty"`
+	SnapshotCheckpoint int64    `json:"snapshot_checkpoint"`
+	UpdateCount        int      `json:"update_count"`
+	UpdateBytes        int      `json:"update_bytes"`
+	UpdateSequences    []int64  `json:"update_sequences,omitempty"`
+	UpdateKinds        []string `json:"update_kinds,omitempty"`
 }
 
 type devEventsSnapshot struct {
@@ -178,6 +200,7 @@ type devEndpointSnapshot struct {
 	Connections  string `json:"connections"`
 	Sockets      string `json:"sockets"`
 	Storage      string `json:"storage"`
+	YJS          string `json:"yjs"`
 	Events       string `json:"events"`
 	CrashRuntime string `json:"crash_runtime"`
 	CrashAdmin   string `json:"crash_admin"`
@@ -335,6 +358,7 @@ func run(ctx context.Context, opts options) error {
 	mux.HandleFunc("/dev/connections", handleConnections(store))
 	mux.HandleFunc("/dev/sockets", handleSockets(currentRuntimeService))
 	mux.HandleFunc("/dev/storage", handleStorage(store, currentRuntimeService))
+	mux.HandleFunc("/dev/yjs", handleYJSDocument(store, currentRuntimeService))
 	mux.HandleFunc("/dev/events", handleEvents(store))
 	mux.HandleFunc("/dev/crash/runtime", handleRestart(runtimeSvc))
 	mux.HandleFunc("/dev/crash/admin", handleRestart(adminSvc))
@@ -375,6 +399,7 @@ func run(ctx context.Context, opts options) error {
 	log.Printf("Seed rooms:      %s", strings.Join(opts.seedRooms, ","))
 	log.Printf("Dev sockets:     http://%s:%d/dev/sockets", opts.host, opts.appPort)
 	log.Printf("Dev storage:     http://%s:%d/dev/storage?room=%s", opts.host, opts.appPort, firstSeedRoom(opts.seedRooms))
+	log.Printf("Dev Yjs:         http://%s:%d/dev/yjs?room=%s", opts.host, opts.appPort, firstSeedRoom(opts.seedRooms))
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("dev server exited: %w", err)
@@ -808,6 +833,7 @@ func devEndpoints(opts options) devEndpointSnapshot {
 		Connections:  appURL + "/dev/connections?room=" + firstRoom,
 		Sockets:      appURL + "/dev/sockets",
 		Storage:      appURL + "/dev/storage?room=" + firstRoom,
+		YJS:          appURL + "/dev/yjs?room=" + firstRoom,
 		Events:       appURL + "/dev/events?room=" + firstRoom,
 		CrashRuntime: appURL + "/dev/crash/runtime",
 		CrashAdmin:   appURL + "/dev/crash/admin",
@@ -896,6 +922,83 @@ func handleStorage(store storageGetter, currentRuntimeService func() *runtimeapp
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(snapshot)
+	}
+}
+
+func handleYJSDocument(store yjsDocumentLoader, currentRuntimeService func() *runtimeapp.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		room := strings.TrimSpace(r.URL.Query().Get("room"))
+		if room == "" {
+			http.Error(w, "room query parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		snapshot := devYJSSnapshot{Room: room}
+		document, err := store.LoadYJSDocument(r.Context(), room)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		snapshot.Durable = summarizeDevYJSDocument(document)
+
+		if service := currentRuntimeService(); service != nil {
+			runtimeSnapshot := service.DevYJSDocumentSnapshot(room)
+			snapshot.Runtime = &runtimeSnapshot
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snapshot)
+	}
+}
+
+func summarizeDevYJSDocument(document cluster.YJSDocument) devYJSDocumentSnapshot {
+	snapshot := devYJSDocumentSnapshot{
+		SnapshotFound:      len(document.Snapshot) > 0,
+		SnapshotBytes:      len(document.Snapshot),
+		SnapshotHash:       document.SnapshotHash,
+		SnapshotCheckpoint: document.SnapshotCheckpoint,
+		UpdateCount:        len(document.Updates),
+		UpdateSequences:    append([]int64(nil), document.UpdateSequences...),
+	}
+	if snapshot.SnapshotFound || snapshot.UpdateCount > 0 || snapshot.SnapshotCheckpoint > 0 {
+		snapshot.Found = true
+	}
+	if snapshot.UpdateCount > 0 {
+		snapshot.UpdateKinds = make([]string, 0, snapshot.UpdateCount)
+		for index, update := range document.Updates {
+			snapshot.UpdateBytes += len(update)
+			kind := cluster.YJSEventUpdate
+			if index < len(document.UpdateKinds) {
+				kind = document.UpdateKinds[index]
+			}
+			snapshot.UpdateKinds = append(snapshot.UpdateKinds, devYJSEventKindLabel(kind))
+		}
+	}
+	return snapshot
+}
+
+func devYJSEventKindLabel(kind cluster.YJSEventKind) string {
+	switch kind {
+	case cluster.YJSEventUpdate:
+		return "update"
+	case cluster.YJSEventSnapshot:
+		return "snapshot"
+	case cluster.YJSEventStateVectorRequest:
+		return "state-vector"
+	case cluster.YJSEventStateVectorDiff:
+		return "state-vector-diff"
+	case cluster.YJSEventSubdocUpdate:
+		return "subdoc-update"
+	case cluster.YJSEventSubdocStateVector:
+		return "subdoc-state-vector"
+	case cluster.YJSEventSubdocDiff:
+		return "subdoc-state-vector-diff"
+	default:
+		return fmt.Sprintf("unknown-%d", kind)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -164,6 +165,21 @@ type DevStorageSnapshot struct {
 	Document    json.RawMessage `json:"document,omitempty"`
 }
 
+type DevYJSDocumentSnapshot struct {
+	NodeID             string   `json:"node_id"`
+	Room               string   `json:"room"`
+	Found              bool     `json:"found"`
+	StoreBacked        bool     `json:"store_backed"`
+	SnapshotFound      bool     `json:"snapshot_found"`
+	SnapshotBytes      int      `json:"snapshot_bytes"`
+	SnapshotHash       string   `json:"snapshot_hash,omitempty"`
+	SnapshotCheckpoint int64    `json:"snapshot_checkpoint"`
+	UpdateCount        int      `json:"update_count"`
+	UpdateBytes        int      `json:"update_bytes"`
+	UpdateSequences    []int64  `json:"update_sequences,omitempty"`
+	UpdateKinds        []string `json:"update_kinds,omitempty"`
+}
+
 func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
@@ -221,6 +237,12 @@ func (s *Service) DevStorageSnapshot(room string) DevStorageSnapshot {
 	return snapshot
 }
 
+func (s *Service) DevYJSDocumentSnapshot(room string) DevYJSDocumentSnapshot {
+	document := s.roomEngine().LoadYJSDocument(room)
+	snapshot := summarizeYJSDocument(s.cfg.NodeID, room, s.store != nil, document)
+	return snapshot
+}
+
 func (s *Service) DevConnectionsSnapshot() DevConnectionsSnapshot {
 	snapshot := s.roomEngine().ConnectionsSnapshot()
 
@@ -230,6 +252,56 @@ func (s *Service) DevConnectionsSnapshot() DevConnectionsSnapshot {
 		YJSConnections:  snapshot.YJSConnections,
 		ActiveSockets:   len(snapshot.Connections) + len(snapshot.YJSConnections),
 		ActiveRoomCount: snapshot.ActiveRoomCount,
+	}
+}
+
+func summarizeYJSDocument(nodeID string, room string, storeBacked bool, document cluster.YJSDocument) DevYJSDocumentSnapshot {
+	snapshot := DevYJSDocumentSnapshot{
+		NodeID:             nodeID,
+		Room:               room,
+		StoreBacked:        storeBacked,
+		SnapshotFound:      len(document.Snapshot) > 0,
+		SnapshotBytes:      len(document.Snapshot),
+		SnapshotHash:       document.SnapshotHash,
+		SnapshotCheckpoint: document.SnapshotCheckpoint,
+		UpdateCount:        len(document.Updates),
+		UpdateSequences:    append([]int64(nil), document.UpdateSequences...),
+	}
+	if snapshot.SnapshotFound || snapshot.UpdateCount > 0 || snapshot.SnapshotCheckpoint > 0 {
+		snapshot.Found = true
+	}
+	if snapshot.UpdateCount > 0 {
+		snapshot.UpdateKinds = make([]string, 0, snapshot.UpdateCount)
+		for index, update := range document.Updates {
+			snapshot.UpdateBytes += len(update)
+			kind := cluster.YJSEventUpdate
+			if index < len(document.UpdateKinds) {
+				kind = document.UpdateKinds[index]
+			}
+			snapshot.UpdateKinds = append(snapshot.UpdateKinds, yjsEventKindLabel(kind))
+		}
+	}
+	return snapshot
+}
+
+func yjsEventKindLabel(kind cluster.YJSEventKind) string {
+	switch kind {
+	case cluster.YJSEventUpdate:
+		return "update"
+	case cluster.YJSEventSnapshot:
+		return "snapshot"
+	case cluster.YJSEventStateVectorRequest:
+		return "state-vector"
+	case cluster.YJSEventStateVectorDiff:
+		return "state-vector-diff"
+	case cluster.YJSEventSubdocUpdate:
+		return "subdoc-update"
+	case cluster.YJSEventSubdocStateVector:
+		return "subdoc-state-vector"
+	case cluster.YJSEventSubdocDiff:
+		return "subdoc-state-vector-diff"
+	default:
+		return fmt.Sprintf("unknown-%d", kind)
 	}
 }
 

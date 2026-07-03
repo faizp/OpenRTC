@@ -30,6 +30,8 @@ seeded-room, and endpoint readiness. Use
 `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect room active
 users, `http://127.0.0.1:3000/dev/sockets` to inspect the actual local runtime
 WebSocket and Yjs sockets, and
+`http://127.0.0.1:3000/dev/yjs?room=demo:room-1` to inspect Yjs snapshot/update
+metadata without dumping CRDT bytes. Use
 `http://127.0.0.1:3000/dev/events?room=demo:room-1` to inspect the bounded room
 event log that powers join catch-up. The Ops tab includes dev status,
 socket/event inspection, and a runtime reconnect drill that restarts the local

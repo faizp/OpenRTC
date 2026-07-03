@@ -1530,6 +1530,61 @@ func TestRuntimeDevStorageSnapshot(t *testing.T) {
 	}
 }
 
+func TestRuntimeDevYJSDocumentSnapshot(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	missing := service.DevYJSDocumentSnapshot("tenant-a:missing")
+	if missing.NodeID != "node-a" || missing.Room != "tenant-a:missing" || missing.Found || missing.StoreBacked {
+		t.Fatalf("unexpected missing yjs snapshot: %+v", missing)
+	}
+
+	if _, err := service.roomEngine().StoreYJSEvent(cluster.YJSEvent{
+		Room:   "tenant-a:doc-1",
+		Kind:   cluster.YJSEventUpdate,
+		Update: []byte("update-1"),
+	}); err != nil {
+		t.Fatalf("store yjs update: %v", err)
+	}
+	if _, err := service.roomEngine().StoreYJSEvent(cluster.YJSEvent{
+		Room:   "tenant-a:doc-1",
+		Kind:   cluster.YJSEventSubdocUpdate,
+		Update: []byte("subdoc-update"),
+	}); err != nil {
+		t.Fatalf("store yjs subdoc update: %v", err)
+	}
+	if _, err := service.roomEngine().StoreYJSEvent(cluster.YJSEvent{
+		Room:   "tenant-a:doc-1",
+		Kind:   cluster.YJSEventSnapshot,
+		Update: []byte("snapshot-1"),
+	}); err != nil {
+		t.Fatalf("store yjs snapshot: %v", err)
+	}
+	service.store = &fakeRuntimeStore{}
+	snapshot := service.DevYJSDocumentSnapshot("tenant-a:doc-1")
+	if snapshot.NodeID != "node-a" || snapshot.Room != "tenant-a:doc-1" || !snapshot.Found || !snapshot.StoreBacked || !snapshot.SnapshotFound {
+		t.Fatalf("unexpected yjs snapshot metadata: %+v", snapshot)
+	}
+	if snapshot.SnapshotBytes != len("snapshot-1") || snapshot.SnapshotHash != cluster.YJSSnapshotHash([]byte("snapshot-1")) || snapshot.SnapshotCheckpoint != 0 {
+		t.Fatalf("unexpected yjs snapshot details: %+v", snapshot)
+	}
+	if snapshot.UpdateCount != 2 || snapshot.UpdateBytes != len("update-1")+len("subdoc-update") {
+		t.Fatalf("unexpected yjs update counts: %+v", snapshot)
+	}
+	if !reflect.DeepEqual(snapshot.UpdateSequences, []int64{1, 2}) {
+		t.Fatalf("unexpected yjs update sequences: %+v", snapshot.UpdateSequences)
+	}
+	if !reflect.DeepEqual(snapshot.UpdateKinds, []string{"update", "subdoc-update"}) {
+		t.Fatalf("unexpected yjs update kinds: %+v", snapshot.UpdateKinds)
+	}
+
+	snapshot.UpdateSequences[0] = 99
+	again := service.DevYJSDocumentSnapshot("tenant-a:doc-1")
+	if !reflect.DeepEqual(again.UpdateSequences, []int64{1, 2}) {
+		t.Fatalf("yjs snapshot sequences should be defensively copied, got %+v", again.UpdateSequences)
+	}
+}
+
 func TestRuntimeCloseClosesActiveSockets(t *testing.T) {
 	service := newRuntimeUnitService(t)
 

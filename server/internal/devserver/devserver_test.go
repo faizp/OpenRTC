@@ -372,7 +372,8 @@ func TestHandleStatusReportsHealthyDevStack(t *testing.T) {
 	}
 	if body.Endpoints.Token != "http://127.0.0.1:3000/dev/token?pubkey=pk_localdev" ||
 		body.Endpoints.RuntimeWS != "ws://127.0.0.1:8080/ws" ||
-		body.Endpoints.Storage != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" {
+		body.Endpoints.Storage != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" ||
+		body.Endpoints.YJS != "http://127.0.0.1:3000/dev/yjs?room=demo:room-1" {
 		t.Fatalf("unexpected endpoints: %+v", body.Endpoints)
 	}
 }
@@ -549,6 +550,75 @@ func TestHandleStorageReportsMissingDurableSnapshot(t *testing.T) {
 	}
 	if body.Room != "tenant-a:missing" || body.Durable.Found || body.Runtime != nil {
 		t.Fatalf("unexpected missing durable storage snapshot: %+v", body)
+	}
+}
+
+func TestHandleYJSDocumentReportsDurableAndRuntimeSnapshots(t *testing.T) {
+	service := &runtimeapp.Service{}
+	document := cluster.YJSDocument{
+		Snapshot:           []byte("snapshot-1"),
+		SnapshotHash:       cluster.YJSSnapshotHash([]byte("snapshot-1")),
+		SnapshotCheckpoint: 7,
+		Updates:            [][]byte{[]byte("update-8"), []byte("subdoc-update")},
+		UpdateSequences:    []int64{8, 9},
+		UpdateKinds:        []cluster.YJSEventKind{cluster.YJSEventUpdate, cluster.YJSEventSubdocUpdate},
+	}
+	handler := handleYJSDocument(&fakeDevStorageStore{yjsDocument: document}, func() *runtimeapp.Service {
+		return service
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/dev/yjs?room=tenant-a:doc-1", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devYJSSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode yjs response: %v", err)
+	}
+	if body.Room != "tenant-a:doc-1" || !body.Durable.Found || !body.Durable.SnapshotFound {
+		t.Fatalf("unexpected durable yjs snapshot metadata: %+v", body)
+	}
+	if body.Durable.SnapshotBytes != len("snapshot-1") || body.Durable.SnapshotHash != cluster.YJSSnapshotHash([]byte("snapshot-1")) || body.Durable.SnapshotCheckpoint != 7 {
+		t.Fatalf("unexpected durable yjs snapshot details: %+v", body.Durable)
+	}
+	if body.Durable.UpdateCount != 2 || body.Durable.UpdateBytes != len("update-8")+len("subdoc-update") {
+		t.Fatalf("unexpected durable yjs update counts: %+v", body.Durable)
+	}
+	if len(body.Durable.UpdateSequences) != 2 || body.Durable.UpdateSequences[0] != 8 || body.Durable.UpdateSequences[1] != 9 {
+		t.Fatalf("unexpected durable yjs update sequences: %+v", body.Durable.UpdateSequences)
+	}
+	if len(body.Durable.UpdateKinds) != 2 || body.Durable.UpdateKinds[0] != "update" || body.Durable.UpdateKinds[1] != "subdoc-update" {
+		t.Fatalf("unexpected durable yjs update kinds: %+v", body.Durable.UpdateKinds)
+	}
+	if body.Runtime == nil || body.Runtime.Room != "tenant-a:doc-1" || body.Runtime.Found {
+		t.Fatalf("unexpected runtime yjs snapshot: %+v", body.Runtime)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/yjs", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing room 400, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/yjs?room=tenant-a:doc-1", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleYJSDocumentReportsStoreErrors(t *testing.T) {
+	handler := handleYJSDocument(&fakeDevStorageStore{yjsErr: context.Canceled}, func() *runtimeapp.Service {
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/yjs?room=tenant-a:doc-1", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected store failure 500, got %d", rec.Code)
 	}
 }
 
@@ -764,10 +834,12 @@ func clearDevStorageEnv(t *testing.T) {
 }
 
 type fakeDevStorageStore struct {
-	document  json.RawMessage
-	err       error
-	events    []cluster.PublishedEvent
-	eventsErr error
+	document    json.RawMessage
+	err         error
+	yjsDocument cluster.YJSDocument
+	yjsErr      error
+	events      []cluster.PublishedEvent
+	eventsErr   error
 }
 
 func (s *fakeDevStorageStore) GetStorage(context.Context, string) (json.RawMessage, error) {
@@ -778,6 +850,21 @@ func (s *fakeDevStorageStore) GetStorage(context.Context, string) (json.RawMessa
 		return nil, cluster.ErrStorageNotFound
 	}
 	return append(json.RawMessage(nil), s.document...), nil
+}
+
+func (s *fakeDevStorageStore) LoadYJSDocument(context.Context, string) (cluster.YJSDocument, error) {
+	if s.yjsErr != nil {
+		return cluster.YJSDocument{}, s.yjsErr
+	}
+	document := s.yjsDocument
+	document.Snapshot = append([]byte(nil), document.Snapshot...)
+	document.Updates = make([][]byte, 0, len(s.yjsDocument.Updates))
+	for _, update := range s.yjsDocument.Updates {
+		document.Updates = append(document.Updates, append([]byte(nil), update...))
+	}
+	document.UpdateSequences = append([]int64(nil), s.yjsDocument.UpdateSequences...)
+	document.UpdateKinds = append([]cluster.YJSEventKind(nil), s.yjsDocument.UpdateKinds...)
+	return document, nil
 }
 
 func (s *fakeDevStorageStore) ListPublishedEvents(_ context.Context, room string, afterSequence uint64, limit int) (cluster.PublishedEventList, error) {
