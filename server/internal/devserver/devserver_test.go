@@ -104,6 +104,50 @@ func TestHandleTokenAllowsLocalDevAnonymousAuth(t *testing.T) {
 	}
 }
 
+func TestHandleTokenWithOptionsReturnsIntegrationConfig(t *testing.T) {
+	privateKey = testPrivateKey(t)
+	opts := options{
+		host:        "127.0.0.1",
+		appPort:     3000,
+		runtimePort: 8080,
+		adminPort:   8090,
+		seedRooms:   []string{"demo:room-1", "demo:canvas-1"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/dev/token?pubkey=pk_localdev&room=demo:canvas-1", nil)
+	rec := httptest.NewRecorder()
+
+	handleTokenWithOptions(opts)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Token  string                  `json:"token"`
+		Room   string                  `json:"room"`
+		Config devClientConfigSnapshot `json:"config"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if body.Token == "" {
+		t.Fatalf("expected signed token")
+	}
+	if body.Room != "demo:canvas-1" {
+		t.Fatalf("expected requested room, got %q", body.Room)
+	}
+	if body.Config.PublicKey != localPublicKey ||
+		body.Config.TokenURL != "/dev/token" ||
+		body.Config.WSURL != "ws://127.0.0.1:8080/ws" ||
+		body.Config.YJSURL != "ws://127.0.0.1:8080/yjs" ||
+		body.Config.AdminProxyURL != "/admin" ||
+		body.Config.RuntimeProxyURL != "/runtime" {
+		t.Fatalf("unexpected integration config: %+v", body.Config)
+	}
+	if len(body.Config.SeedRooms) != 2 || body.Config.SeedRooms[0] != "demo:room-1" || body.Config.SeedRooms[1] != "demo:canvas-1" {
+		t.Fatalf("unexpected seed rooms: %#v", body.Config.SeedRooms)
+	}
+}
+
 func TestHandleTokenRejectsUnknownPubkey(t *testing.T) {
 	privateKey = testPrivateKey(t)
 	req := httptest.NewRequest(http.MethodGet, "/dev/token?pubkey=pk_bad", nil)

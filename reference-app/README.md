@@ -43,7 +43,7 @@ The dev server starts:
 
 - Local JWKS provider at `http://127.0.0.1:3000/jwks`
 - Static dev console at `http://127.0.0.1:3000`
-- Anonymous token helper at `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev`
+- Anonymous token helper at `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` with embedded local config and default room
 - OpenRTC runtime at `http://127.0.0.1:8080`
 - Runtime WebSocket at `ws://127.0.0.1:8080/ws`
 - Runtime Yjs WebSocket at `ws://127.0.0.1:8080/yjs/{room}`

@@ -45,7 +45,7 @@ go run ./server/cmd/openrtc dev
 Then open `http://127.0.0.1:3000`. The dev server exposes:
 
 - `http://127.0.0.1:3000/jwks` for local token verification.
-- `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous client JWTs.
+- `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous client JWTs plus the local config and default room.
 - `http://127.0.0.1:3000/dev/status` for Redis, runtime/admin, seeded-room, and endpoint readiness.
 - `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
 - `http://127.0.0.1:8090` for the admin API.
@@ -54,6 +54,23 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/storage?room=demo:room-1` for durable and runtime-observed room storage inspection.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
+
+For a zero-config local client, fetch the dev token response and use its
+embedded config:
+
+```ts
+import { OpenRTCClient } from "@openrtc/client";
+
+const auth = await fetch("http://127.0.0.1:3000/dev/token?pubkey=pk_localdev").then((res) => res.json());
+
+const client = new OpenRTCClient({
+  url: auth.config.wsURL,
+  token: auth.token,
+});
+
+await client.connect();
+const { room } = client.enterRoom(auth.room);
+```
 
 ## Client presence integration
 

@@ -103,6 +103,19 @@ type devEventsSnapshot struct {
 	Events        []cluster.PublishedEvent `json:"events"`
 }
 
+type devClientConfigSnapshot struct {
+	PublicKey       string   `json:"publicKey"`
+	TokenURL        string   `json:"tokenURL"`
+	JWKSURL         string   `json:"jwksURL"`
+	WSURL           string   `json:"wsURL"`
+	YJSURL          string   `json:"yjsURL"`
+	AdminURL        string   `json:"adminURL"`
+	AdminProxyURL   string   `json:"adminProxyURL"`
+	RuntimeURL      string   `json:"runtimeURL"`
+	RuntimeProxyURL string   `json:"runtimeProxyURL"`
+	SeedRooms       []string `json:"seedRooms"`
+}
+
 type devStatusSnapshot struct {
 	Status    string                  `json:"status"`
 	Redis     devDependencyStatus     `json:"redis"`
@@ -281,9 +294,10 @@ func run(ctx context.Context, opts options) error {
 	defer adminSvc.stop(context.Background())
 
 	mux := http.NewServeMux()
+	tokenHandler := handleTokenWithOptions(opts)
 	mux.HandleFunc("/jwks", handleJWKS)
-	mux.HandleFunc("/token", handleToken)
-	mux.HandleFunc("/dev/token", handleToken)
+	mux.HandleFunc("/token", tokenHandler)
+	mux.HandleFunc("/dev/token", tokenHandler)
 	mux.HandleFunc("/dev/config", handleDevConfig(opts))
 	mux.HandleFunc("/config", handleDevConfig(opts))
 	mux.HandleFunc("/dev/status", handleStatus(opts, store, runtimeSvc, adminSvc))
@@ -477,6 +491,17 @@ func handleJWKS(w http.ResponseWriter, _ *http.Request) {
 }
 
 func handleToken(w http.ResponseWriter, r *http.Request) {
+	issueToken(w, r, nil)
+}
+
+func handleTokenWithOptions(opts options) http.HandlerFunc {
+	config := devClientConfig(opts)
+	return func(w http.ResponseWriter, r *http.Request) {
+		issueToken(w, r, &config)
+	}
+}
+
+func issueToken(w http.ResponseWriter, r *http.Request, config *devClientConfigSnapshot) {
 	username := strings.TrimSpace(r.URL.Query().Get("username"))
 	pubkey := strings.TrimSpace(r.URL.Query().Get("pubkey"))
 	if username == "" && pubkey == localPublicKey {
@@ -528,32 +553,54 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	response := map[string]any{
 		"token":     signed,
 		"kind":      kind,
 		"username":  username,
 		"tenant":    tenant,
 		"groups":    groups,
 		"expiresAt": expiresAt.Format(time.RFC3339),
-	})
+	}
+	if room := devTokenRoom(r, config); room != "" {
+		response["room"] = room
+	}
+	if config != nil {
+		response["config"] = config
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func devTokenRoom(r *http.Request, config *devClientConfigSnapshot) string {
+	if room := strings.TrimSpace(r.URL.Query().Get("room")); room != "" {
+		return room
+	}
+	if config != nil {
+		return firstSeedRoom(config.SeedRooms)
+	}
+	return ""
 }
 
 func handleDevConfig(opts options) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"publicKey":       localPublicKey,
-			"tokenURL":        "/dev/token",
-			"jwksURL":         fmt.Sprintf("http://%s:%d/jwks", opts.host, opts.appPort),
-			"wsURL":           fmt.Sprintf("ws://%s:%d/ws", opts.host, opts.runtimePort),
-			"yjsURL":          fmt.Sprintf("ws://%s:%d/yjs", opts.host, opts.runtimePort),
-			"adminURL":        fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort),
-			"adminProxyURL":   "/admin",
-			"runtimeURL":      fmt.Sprintf("http://%s:%d", opts.host, opts.runtimePort),
-			"runtimeProxyURL": "/runtime",
-			"seedRooms":       opts.seedRooms,
-		})
+		_ = json.NewEncoder(w).Encode(devClientConfig(opts))
+	}
+}
+
+func devClientConfig(opts options) devClientConfigSnapshot {
+	return devClientConfigSnapshot{
+		PublicKey:       localPublicKey,
+		TokenURL:        "/dev/token",
+		JWKSURL:         fmt.Sprintf("http://%s:%d/jwks", opts.host, opts.appPort),
+		WSURL:           fmt.Sprintf("ws://%s:%d/ws", opts.host, opts.runtimePort),
+		YJSURL:          fmt.Sprintf("ws://%s:%d/yjs", opts.host, opts.runtimePort),
+		AdminURL:        fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort),
+		AdminProxyURL:   "/admin",
+		RuntimeURL:      fmt.Sprintf("http://%s:%d", opts.host, opts.runtimePort),
+		RuntimeProxyURL: "/runtime",
+		SeedRooms:       opts.seedRooms,
 	}
 }
 
