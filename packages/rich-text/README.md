@@ -84,6 +84,48 @@ integration.dispose();
 Lexical and BlockNote use the same pattern through
 `createLexicalOpenRTCIntegration()` and `createBlockNoteOpenRTCIntegration()`.
 
+For a more complete lifecycle wrapper, use the session helpers. A session enters
+the OpenRTC room, exposes remote-selection helpers, and disposes editor
+presence, room entry, provider, and optional cleanup exactly once:
+
+```ts
+import { createTiptapOpenRTCSession } from "@openrtc/rich-text";
+
+const session = createTiptapOpenRTCSession({
+  provider,
+  client,
+  room,
+  field: "body",
+  user,
+  enterRoom: { initialPresence: { user } },
+  cleanup: () => {
+    // App-specific teardown, if any.
+  },
+});
+
+const editor = useEditor({
+  extensions: [
+    Collaboration.configure(session.binding.collaboration),
+    CollaborationCursor.configure(session.binding.collaborationCursor),
+  ],
+});
+
+// If the editor instance already exists, pass `editor` to the session options
+// so selection presence is bound by `session.dispose()`. If the editor is
+// created after the session, use `bindTiptapPresence()` as shown below.
+
+const unsubscribeRemoteSelections = session.subscribeRemoteSelections((selections) => {
+  renderRemoteSelections(selections);
+});
+
+unsubscribeRemoteSelections();
+session.dispose();
+```
+
+Use `createLexicalOpenRTCSession()` and `createBlockNoteOpenRTCSession()` for
+the same owning lifecycle with Lexical and BlockNote. Set
+`destroyProvider: false` if provider cleanup is owned by your framework.
+
 ## Tiptap
 
 ```ts
@@ -233,6 +275,7 @@ subscription glue in every editor canvas:
 ```ts
 import {
   useRemoteTextSelections,
+  useRichTextSessionRemoteSelections,
   useSelectionPresenceController,
 } from "@openrtc/rich-text/react";
 import { useEffect } from "react";
@@ -256,6 +299,11 @@ useEffect(() => {
   editor.on("selectionUpdate", selectionPresence.flush);
   return () => editor.off("selectionUpdate", selectionPresence.flush);
 }, [editor, selectionPresence]);
+
+const sessionSelections = useRichTextSessionRemoteSelections(session, {
+  editor: "tiptap",
+  maxAgeMs: 30_000,
+});
 ```
 
 Yjs awareness is still available through `provider.awareness` for editor plugins

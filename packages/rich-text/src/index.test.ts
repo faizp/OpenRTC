@@ -6,35 +6,88 @@ import {
   bindLexicalPresence,
   bindTiptapPresence,
   createBlockNoteOpenRTCIntegration,
+  createBlockNoteOpenRTCSession,
   createBlockNoteYjsBinding,
   createLexicalOpenRTCIntegration,
+  createLexicalOpenRTCSession,
   createLexicalYjsBinding,
+  createRichTextOpenRTCSession,
   createRichTextYjsBinding,
   createTiptapOpenRTCIntegration,
+  createTiptapOpenRTCSession,
   createTiptapYjsBinding,
   getRemoteTextSelections,
   isTextSelectionPresence,
   subscribeRemoteTextSelections,
 } from "./index.ts";
-import { useRemoteTextSelections, useSelectionPresenceController } from "./react.ts";
-import type { PresenceState } from "@openrtc/client";
+import {
+  useRemoteTextSelections,
+  useRichTextSessionRemoteSelections,
+  useSelectionPresenceController,
+} from "./react.ts";
+import type { OpenRTCOthersEvent, PresencePeer, PresenceState } from "@openrtc/client";
 
 assert.equal(typeof useRemoteTextSelections, "function");
+assert.equal(typeof useRichTextSessionRemoteSelections, "function");
 assert.equal(typeof useSelectionPresenceController, "function");
+
+class FakeRoomHandle {
+  readonly subscribers = new Set<(others: PresencePeer[], event: OpenRTCOthersEvent) => void>();
+  others: PresencePeer[] = [];
+
+  getOthers(): PresencePeer[] {
+    return this.others;
+  }
+
+  subscribe(type: "others", callback: (others: PresencePeer[], event: OpenRTCOthersEvent) => void): () => void {
+    assert.equal(type, "others");
+    this.subscribers.add(callback);
+    return () => {
+      this.subscribers.delete(callback);
+    };
+  }
+
+  emitOthers(event: OpenRTCOthersEvent = { type: "reset" }): void {
+    for (const subscriber of this.subscribers) {
+      subscriber(this.others, event);
+    }
+  }
+}
 
 class FakeClient {
   updates: Array<{ room: string; state: PresenceState }> = [];
+  roomHandle = new FakeRoomHandle();
+  entered: Array<{ room: string; options: unknown }> = [];
+  leaveCount = 0;
 
   updatePresence(room: string, state: PresenceState): string {
     this.updates.push({ room, state });
     return "presence-1";
   }
+
+  enterRoom(room: string, options: unknown = {}): { room: FakeRoomHandle; leave: () => void } {
+    this.entered.push({ room, options });
+    return {
+      room: this.roomHandle,
+      leave: () => {
+        this.leaveCount += 1;
+      },
+    };
+  }
+
+  room(_room: string): FakeRoomHandle {
+    return this.roomHandle;
+  }
 }
 
 const doc = new Y.Doc();
+let providerDestroyCount = 0;
 const provider = {
   doc,
   awareness: new OpenRTCAwareness(doc),
+  destroy() {
+    providerDestroyCount += 1;
+  },
 };
 
 const richTextBinding = createRichTextYjsBinding(provider as never, { field: "body" });
@@ -200,6 +253,44 @@ subscribedCallback?.(remotePeers, { type: "reset" });
 unsubscribeSelections();
 assert.equal(unsubscribed, true);
 
+const sessionClient = new FakeClient();
+sessionClient.roomHandle.others = remotePeers;
+let sessionCleanupCount = 0;
+const richTextSession = createRichTextOpenRTCSession({
+  provider: provider as never,
+  client: sessionClient as never,
+  room: "tenant-a:doc",
+  enterRoom: { initialPresence: { user: { id: "user-1" } } },
+  cleanup: () => {
+    sessionCleanupCount += 1;
+  },
+});
+assert.equal(richTextSession.roomHandle, sessionClient.roomHandle);
+assert.equal(richTextSession.room, "tenant-a:doc");
+assert.equal(sessionClient.entered[0]?.room, "tenant-a:doc");
+assert.deepEqual(richTextSession.getRemoteSelections({ editor: "tiptap" }).map((entry) => entry.connId), [
+  "peer-tiptap",
+]);
+let sessionSelectionEvent: OpenRTCOthersEvent | undefined;
+const unsubscribeSessionSelections = richTextSession.subscribeRemoteSelections((selections, event) => {
+  sessionSelectionEvent = event;
+  assert.deepEqual(
+    selections.map((entry) => entry.connId),
+    ["peer-tiptap", "peer-lexical"],
+  );
+});
+sessionClient.roomHandle.emitOthers({ type: "reset" });
+assert.deepEqual(sessionSelectionEvent, { type: "reset" });
+unsubscribeSessionSelections();
+assert.equal(sessionClient.roomHandle.subscribers.size, 0);
+richTextSession.leave();
+richTextSession.leave();
+assert.equal(sessionClient.leaveCount, 1);
+richTextSession.dispose();
+richTextSession.dispose();
+assert.equal(providerDestroyCount, 1);
+assert.equal(sessionCleanupCount, 1);
+
 let tiptapCleanupCount = 0;
 const tiptapIntegrationClient = new FakeClient();
 const tiptapIntegration = createTiptapOpenRTCIntegration({
@@ -219,6 +310,30 @@ tiptapIntegration.dispose();
 tiptapIntegration.dispose();
 assert.equal(tiptapHandlers.size, 0);
 assert.equal(tiptapCleanupCount, 1);
+
+let tiptapSessionCleanupCount = 0;
+const tiptapSessionClient = new FakeClient();
+const tiptapSession = createTiptapOpenRTCSession({
+  provider: provider as never,
+  client: tiptapSessionClient as never,
+  room: "tenant-a:doc",
+  field: "session-article",
+  editor: tiptap,
+  throttleMs: 0,
+  destroyProvider: false,
+  cleanup: () => {
+    tiptapSessionCleanupCount += 1;
+  },
+});
+assert.equal(tiptapSession.binding.field, "session-article");
+assert.equal(tiptapSession.integration.binding, tiptapSession.binding);
+assert.equal(tiptapHandlers.size, 2);
+tiptapSession.dispose();
+tiptapSession.dispose();
+assert.equal(tiptapHandlers.size, 0);
+assert.equal(tiptapSessionClient.leaveCount, 1);
+assert.equal(tiptapSessionCleanupCount, 1);
+assert.equal(providerDestroyCount, 1);
 
 let lexicalIntegrationListener: (() => void) | undefined;
 let lexicalCleanupCount = 0;
@@ -245,6 +360,36 @@ lexicalIntegration.dispose();
 lexicalIntegration.dispose();
 assert.equal(lexicalIntegrationListener, undefined);
 assert.equal(lexicalCleanupCount, 1);
+
+let lexicalSessionListener: (() => void) | undefined;
+let lexicalSessionCleanupCount = 0;
+const lexicalSessionClient = new FakeClient();
+const lexicalSession = createLexicalOpenRTCSession({
+  provider: provider as never,
+  client: lexicalSessionClient as never,
+  room: "tenant-a:doc",
+  id: "lexical-session",
+  editor: {
+    registerUpdateListener(listener: () => void) {
+      lexicalSessionListener = listener;
+      return () => {
+        lexicalSessionListener = undefined;
+      };
+    },
+  },
+  readSelection: () => ({ anchor: 9, head: 9, from: 9, to: 9 }),
+  destroyProvider: false,
+  cleanup: () => {
+    lexicalSessionCleanupCount += 1;
+  },
+});
+assert.equal(lexicalSession.binding.id, "lexical-session");
+assert.equal(typeof lexicalSessionListener, "function");
+lexicalSession.dispose();
+lexicalSession.dispose();
+assert.equal(lexicalSessionListener, undefined);
+assert.equal(lexicalSessionClient.leaveCount, 1);
+assert.equal(lexicalSessionCleanupCount, 1);
 
 let blockNoteIntegrationHandler: (() => void) | undefined;
 let blockNoteCleanupCount = 0;
@@ -273,3 +418,35 @@ blockNoteIntegration.dispose();
 blockNoteIntegration.dispose();
 assert.equal(blockNoteIntegrationHandler, undefined);
 assert.equal(blockNoteCleanupCount, 1);
+
+let blockNoteSessionHandler: (() => void) | undefined;
+let blockNoteSessionCleanupCount = 0;
+const blockNoteSessionClient = new FakeClient();
+const blockNoteSession = createBlockNoteOpenRTCSession({
+  provider: provider as never,
+  client: blockNoteSessionClient as never,
+  room: "tenant-a:doc",
+  fragment: "session-blocks",
+  editor: {
+    onSelectionChange(handler: () => void) {
+      blockNoteSessionHandler = handler;
+      return () => {
+        blockNoteSessionHandler = undefined;
+      };
+    },
+    getTextCursorPosition() {
+      return { block: { id: "block-3" } };
+    },
+  },
+  destroyProvider: false,
+  cleanup: () => {
+    blockNoteSessionCleanupCount += 1;
+  },
+});
+assert.equal(blockNoteSession.binding.fragmentName, "session-blocks");
+assert.equal(typeof blockNoteSessionHandler, "function");
+blockNoteSession.dispose();
+blockNoteSession.dispose();
+assert.equal(blockNoteSessionHandler, undefined);
+assert.equal(blockNoteSessionClient.leaveCount, 1);
+assert.equal(blockNoteSessionCleanupCount, 1);

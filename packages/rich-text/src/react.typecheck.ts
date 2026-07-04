@@ -1,5 +1,9 @@
-import type { RemoteTextSelection, SelectionPresenceController } from "./index.ts";
-import { useRemoteTextSelections, useSelectionPresenceController } from "./react.ts";
+import type { RemoteTextSelection, RichTextOpenRTCSession, SelectionPresenceController } from "./index.ts";
+import {
+  useRemoteTextSelections,
+  useRichTextSessionRemoteSelections,
+  useSelectionPresenceController,
+} from "./react.ts";
 
 function expectType<T>(_value: T): void {}
 
@@ -10,6 +14,12 @@ function RichTextReactIntegrationTypes() {
     limit: 50,
   });
   expectType<RemoteTextSelection[]>(selections);
+
+  const sessionSelections = useRichTextSessionRemoteSelections({} as RichTextOpenRTCSession, {
+    editor: "blocknote",
+    maxAgeMs: 30_000,
+  });
+  expectType<RemoteTextSelection[]>(sessionSelections);
 
   const controller = useSelectionPresenceController({
     room: "tenant-a:doc-1",

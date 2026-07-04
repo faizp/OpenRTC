@@ -1,4 +1,11 @@
-import type { OpenRTCClient, OpenRTCOthersEvent, PresencePeer, PresenceState } from "@openrtc/client";
+import type {
+  EnterRoomOptions,
+  OpenRTCClient,
+  OpenRTCOthersEvent,
+  OpenRTCRoom,
+  PresencePeer,
+  PresenceState,
+} from "@openrtc/client";
 import type { OpenRTCAwareness, OpenRTCYjsProvider } from "@openrtc/yjs";
 import type * as Y from "yjs";
 
@@ -14,6 +21,27 @@ export interface TextSelectionPresence extends PresenceState {
 
 export interface SelectionPresenceTransport {
   updatePresence(room: string, state: PresenceState): string;
+}
+
+export interface RichTextOpenRTCSessionOptions {
+  client: OpenRTCClient;
+  provider: OpenRTCYjsProvider;
+  room: string;
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface RichTextOpenRTCSession extends RichTextYjsBinding {
+  room: string;
+  roomHandle: OpenRTCRoom;
+  leave(): void;
+  getRemoteSelections(options?: RemoteTextSelectionOptions): RemoteTextSelection[];
+  subscribeRemoteSelections(
+    callback: (selections: RemoteTextSelection[], event: OpenRTCOthersEvent) => void,
+    options?: RemoteTextSelectionOptions,
+  ): () => void;
+  dispose(): void;
 }
 
 export interface SelectionPresenceControllerOptions {
@@ -113,6 +141,17 @@ export interface TiptapOpenRTCIntegration {
   dispose(): void;
 }
 
+export interface TiptapOpenRTCSessionOptions extends TiptapOpenRTCIntegrationOptions {
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+}
+
+export interface TiptapOpenRTCSession extends RichTextOpenRTCSession {
+  binding: TiptapYjsBinding;
+  integration: TiptapOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
 export interface LexicalOpenRTCIntegrationOptions extends LexicalYjsBindingOptions, LexicalPresenceOptions {
   provider: OpenRTCYjsProvider;
   client: OpenRTCClient;
@@ -127,6 +166,17 @@ export interface LexicalOpenRTCIntegration {
   dispose(): void;
 }
 
+export interface LexicalOpenRTCSessionOptions extends LexicalOpenRTCIntegrationOptions {
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+}
+
+export interface LexicalOpenRTCSession extends RichTextOpenRTCSession {
+  binding: LexicalYjsBinding;
+  integration: LexicalOpenRTCIntegration;
+  unbindPresence: () => void;
+}
+
 export interface BlockNoteOpenRTCIntegrationOptions extends BlockNoteYjsBindingOptions, BlockNotePresenceOptions {
   provider: OpenRTCYjsProvider;
   client: OpenRTCClient;
@@ -139,6 +189,17 @@ export interface BlockNoteOpenRTCIntegration {
   binding: BlockNoteYjsBinding;
   unbindPresence?: (() => void) | undefined;
   dispose(): void;
+}
+
+export interface BlockNoteOpenRTCSessionOptions extends BlockNoteOpenRTCIntegrationOptions {
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+}
+
+export interface BlockNoteOpenRTCSession extends RichTextOpenRTCSession {
+  binding: BlockNoteYjsBinding;
+  integration: BlockNoteOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
 }
 
 export function createRichTextYjsBinding(
@@ -203,6 +264,35 @@ export function createBlockNoteYjsBinding(
       fragment: binding.fragment,
       user: options.user,
     },
+  };
+}
+
+export function createRichTextOpenRTCSession(
+  options: RichTextOpenRTCSessionOptions,
+  bindingOptions: RichTextYjsBindingOptions = {},
+): RichTextOpenRTCSession {
+  const binding = createRichTextYjsBinding(options.provider, bindingOptions);
+  const entered =
+    options.enterRoom === false ? undefined : options.client.enterRoom(options.room, options.enterRoom ?? {});
+  const roomHandle = entered?.room ?? options.client.room(options.room);
+  const leave = createDisposable(entered?.leave);
+  const dispose = createDisposable(
+    leave,
+    options.destroyProvider === false ? undefined : () => options.provider.destroy(),
+    options.cleanup,
+  );
+  return {
+    ...binding,
+    room: options.room,
+    roomHandle,
+    leave,
+    getRemoteSelections(remoteOptions = {}) {
+      return getRemoteTextSelections(roomHandle.getOthers(), remoteOptions);
+    },
+    subscribeRemoteSelections(callback, remoteOptions = {}) {
+      return subscribeRemoteTextSelections(roomHandle, callback, remoteOptions);
+    },
+    dispose,
   };
 }
 
@@ -372,6 +462,19 @@ export function createTiptapOpenRTCIntegration(
   };
 }
 
+export function createTiptapOpenRTCSession(options: TiptapOpenRTCSessionOptions): TiptapOpenRTCSession {
+  const session = createRichTextOpenRTCSession(sessionLifecycleOptions(options), options);
+  const integration = createTiptapOpenRTCIntegration({ ...options, cleanup: undefined });
+  const dispose = createDisposable(integration.dispose, session.dispose, options.cleanup);
+  return {
+    ...session,
+    binding: integration.binding,
+    integration,
+    unbindPresence: integration.unbindPresence,
+    dispose,
+  };
+}
+
 export interface LexicalEditorLike {
   registerUpdateListener(listener: () => void): () => void;
 }
@@ -413,6 +516,19 @@ export function createLexicalOpenRTCIntegration(
   return {
     binding,
     unbindPresence,
+    dispose,
+  };
+}
+
+export function createLexicalOpenRTCSession(options: LexicalOpenRTCSessionOptions): LexicalOpenRTCSession {
+  const session = createRichTextOpenRTCSession(sessionLifecycleOptions(options), options);
+  const integration = createLexicalOpenRTCIntegration({ ...options, cleanup: undefined });
+  const dispose = createDisposable(integration.dispose, session.dispose, options.cleanup);
+  return {
+    ...session,
+    binding: integration.binding,
+    integration,
+    unbindPresence: integration.unbindPresence,
     dispose,
   };
 }
@@ -482,6 +598,19 @@ export function createBlockNoteOpenRTCIntegration(
   };
 }
 
+export function createBlockNoteOpenRTCSession(options: BlockNoteOpenRTCSessionOptions): BlockNoteOpenRTCSession {
+  const session = createRichTextOpenRTCSession(sessionLifecycleOptions(options), options);
+  const integration = createBlockNoteOpenRTCIntegration({ ...options, cleanup: undefined });
+  const dispose = createDisposable(integration.dispose, session.dispose, options.cleanup);
+  return {
+    ...session,
+    binding: integration.binding,
+    integration,
+    unbindPresence: integration.unbindPresence,
+    dispose,
+  };
+}
+
 function createDisposable(...callbacks: Array<(() => void) | undefined>): () => void {
   let disposed = false;
   return () => {
@@ -492,6 +621,16 @@ function createDisposable(...callbacks: Array<(() => void) | undefined>): () => 
     for (const callback of callbacks) {
       callback?.();
     }
+  };
+}
+
+function sessionLifecycleOptions(options: RichTextOpenRTCSessionOptions): RichTextOpenRTCSessionOptions {
+  return {
+    client: options.client,
+    provider: options.provider,
+    room: options.room,
+    ...(options.enterRoom !== undefined ? { enterRoom: options.enterRoom } : {}),
+    ...(options.destroyProvider !== undefined ? { destroyProvider: options.destroyProvider } : {}),
   };
 }
 

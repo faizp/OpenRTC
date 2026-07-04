@@ -1,9 +1,10 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOpenRTC, useOthers } from "@openrtc/react";
 import type { JoinOptions, PresenceState } from "@openrtc/client";
 import {
   createSelectionPresenceController,
   getRemoteTextSelections,
+  type RichTextOpenRTCSession,
   type RemoteTextSelection,
   type RemoteTextSelectionOptions,
   type SelectionPresenceController,
@@ -38,6 +39,28 @@ export function useRemoteTextSelections(
       }),
     [editor, maxAgeMs, now, others],
   );
+}
+
+export function useRichTextSessionRemoteSelections(
+  session: RichTextOpenRTCSession,
+  options: RemoteTextSelectionOptions = {},
+): RemoteTextSelection[] {
+  const editor = options.editor;
+  const maxAgeMs = options.maxAgeMs;
+  const now = options.now;
+  const [selections, setSelections] = useState<RemoteTextSelection[]>(() => session.getRemoteSelections(options));
+
+  useEffect(() => {
+    const remoteOptions: RemoteTextSelectionOptions = {
+      ...(editor ? { editor } : {}),
+      ...(maxAgeMs !== undefined ? { maxAgeMs } : {}),
+      ...(now !== undefined ? { now } : {}),
+    };
+    setSelections(session.getRemoteSelections(remoteOptions));
+    return session.subscribeRemoteSelections((next) => setSelections(next), remoteOptions);
+  }, [editor, maxAgeMs, now, session]);
+
+  return selections;
 }
 
 export function useSelectionPresenceController(
