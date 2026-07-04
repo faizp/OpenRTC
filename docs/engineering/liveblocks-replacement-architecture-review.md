@@ -113,13 +113,13 @@ Recommended target shape:
   selection helpers for Tiptap, Lexical, and BlockNote-style editor setup and
   cleanup without importing editor packages into OpenRTC.
 - Added Redis-backed room metadata CRUD/list admin APIs with `rooms:` scoped authorization.
-- Added Liveblocks-style `defaultAccesses`, `usersAccesses`, and `groupsAccesses` room grants. Runtime room actions still honor existing access-token scopes first, then fall back to room grants for ID-token-style subject/group authorization in cluster mode.
-- Added Redis-backed storage get/set/delete and atomic JSON Patch admin APIs with `storage:` scoped authorization.
+- Added Liveblocks-style `defaultAccesses`, `usersAccesses`, and `groupsAccesses` room grants. Runtime and admin room data actions honor existing access-token scopes first, then fall back to room grants for ID-token-style subject/group authorization in cluster mode.
+- Added Redis-backed storage get/set/delete and atomic JSON Patch admin APIs with `storage:` scoped authorization and room-grant fallback.
 - Added typed storage validation for `LiveObject`, `LiveList`, and `LiveMap` envelopes so PUT and JSON Patch cannot persist malformed typed storage documents.
-- Added Redis-backed active-user room reads with `presence:` scoped authorization.
+- Added Redis-backed active-user room reads with `presence:` scoped authorization and room-grant fallback.
 - Added Redis-backed room thread/comment APIs with `comments:` scoped
-  authorization, object-rooted comment bodies/metadata, and durable per-room
-  thread records.
+  authorization, room-grant fallback, object-rooted comment bodies/metadata,
+  and durable per-room thread records.
 - Added Redis-backed inbox notifications, notification settings, and room
   subscription settings with `notifications:` scoped authorization and durable
   read/reset state.

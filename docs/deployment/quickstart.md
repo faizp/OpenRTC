@@ -186,12 +186,12 @@ curl -H "Authorization: Bearer <admin-jwt>" \
   "http://<admin-host>:8090/v1/rooms?prefix=tenant-a:&limit=50"
 
 # Active users. Requires an admin token with a scope such as
-# presence:tenant-a:*.
+# presence:tenant-a:* or a room grant that allows presence writes.
 curl -H "Authorization: Bearer <admin-jwt>" \
   http://<admin-host>:8090/v1/rooms/tenant-a:room-1/active_users
 
 # Durable room storage. Requires an admin token with a scope such as
-# storage:tenant-a:*.
+# storage:tenant-a:* or a room grant that allows storage writes.
 curl -X PUT -H "Authorization: Bearer <admin-jwt>" \
   -H "Content-Type: application/json" \
   -d '{"layers":["base"],"meta":{"title":"Draft"}}' \

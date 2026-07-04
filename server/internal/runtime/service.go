@@ -1430,22 +1430,10 @@ func (s *Service) tenantPrefix(claims *auth.Claims) string {
 }
 
 func (s *Service) allowsRoomAction(ctx context.Context, claims *auth.Claims, action string, room string) bool {
-	if claims.Allows(action, room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
-		return true
-	}
-	if s.cfg.Tenant.EnforcePrefix {
-		if claims.Tenant == "" || !strings.HasPrefix(room, claims.Tenant+s.cfg.Tenant.Separator) {
-			return false
-		}
-	}
-	if s.store == nil {
-		return false
-	}
-	record, err := s.store.GetRoom(ctx, room)
-	if err != nil {
-		return false
-	}
-	return record.Allows(claims.Subject, claims.RoomGroupIDs(), action)
+	return roomengine.AllowsRoomAction(ctx, claims, s.store, action, room, roomengine.RoomAuthorizationOptions{
+		EnforceTenantPrefix: s.cfg.Tenant.EnforcePrefix,
+		TenantSeparator:     s.cfg.Tenant.Separator,
+	})
 }
 
 func decodeStoragePatchPayload(payload json.RawMessage) ([]cluster.JSONPatchOperation, *protocol.ParseError) {

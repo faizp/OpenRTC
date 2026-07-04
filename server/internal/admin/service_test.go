@@ -1233,6 +1233,153 @@ func TestAdminCreateRoomAndActiveUsersErrorBranches(t *testing.T) {
 	}
 }
 
+func TestAdminRoomScopedHandlersHonorRoomAccessGrants(t *testing.T) {
+	now := time.Unix(250, 0).UTC()
+	thread := cluster.ThreadRecord{
+		Type:      "thread",
+		ID:        "thread-1",
+		RoomID:    "tenant-a:room-1",
+		Metadata:  json.RawMessage(`{"anchor":"shape-1"}`),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Comments: []cluster.CommentRecord{
+			{
+				Type:      "comment",
+				ID:        "comment-1",
+				ThreadID:  "thread-1",
+				RoomID:    "tenant-a:room-1",
+				UserID:    "comment-writer",
+				Body:      json.RawMessage(`{"content":[{"type":"paragraph","text":"first"}]}`),
+				Metadata:  json.RawMessage(`{}`),
+				CreatedAt: now,
+			},
+		},
+	}
+	store := &fakeAdminStore{
+		getRoomRecord: cluster.RoomRecord{
+			ID:              "tenant-a:room-1",
+			DefaultAccesses: []string{cluster.PermissionStorageRead, cluster.PermissionCommentsRead},
+			UsersAccesses: map[string][]string{
+				"publisher":      {cluster.PermissionRoomWrite},
+				"presence-agent": {cluster.PermissionRoomPresenceWrite},
+				"comment-writer": {cluster.PermissionCommentsWrite},
+			},
+			GroupsAccesses: map[string][]string{
+				"editors": {cluster.PermissionStorageWrite},
+			},
+		},
+		getStorageDoc:       json.RawMessage(`{"title":"Draft"}`),
+		setStorageDoc:       json.RawMessage(`{"title":"Stored"}`),
+		applyStorageDoc:     json.RawMessage(`{"title":"Patched"}`),
+		createThreadRecord:  thread,
+		listThreads:         []cluster.ThreadRecord{thread},
+		addCommentThread:    thread,
+		updateCommentThread: thread,
+		activeUsers: []cluster.ActiveUser{
+			{
+				Type:         "user",
+				ConnectionID: "conn-1",
+				ID:           "user-1",
+				Tenant:       "tenant-a",
+				NodeID:       "node-a",
+				ConnectedAt:  now,
+				Presence:     json.RawMessage(`{"cursor":{"x":1}}`),
+			},
+		},
+	}
+
+	handlerFor := func(t *testing.T, extra map[string]any) (http.Handler, string, func()) {
+		t.Helper()
+		verifier, token, cleanup := newAdminTestVerifier(t, extra)
+		return newTestAdminService(verifier, store).Handler(), token, cleanup
+	}
+
+	readerHandler, readerToken, readerCleanup := handlerFor(t, map[string]any{
+		"tenant": "tenant-a",
+		"sub":    "reader",
+	})
+	defer readerCleanup()
+	storageReadResp := performAdminRequest(readerHandler, readerToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/storage", "")
+	if storageReadResp.Code != http.StatusOK || strings.TrimSpace(storageReadResp.Body.String()) != `{"title":"Draft"}` {
+		t.Fatalf("expected default storage read grant, got %d body=%q", storageReadResp.Code, storageReadResp.Body.String())
+	}
+	storageWriteDeniedResp := performAdminRequest(readerHandler, readerToken, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/storage", `{"title":"Denied"}`)
+	if storageWriteDeniedResp.Code != http.StatusForbidden {
+		t.Fatalf("expected default storage write denial, got %d", storageWriteDeniedResp.Code)
+	}
+	threadsReadResp := performAdminRequest(readerHandler, readerToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads", "")
+	if threadsReadResp.Code != http.StatusOK {
+		t.Fatalf("expected default comments read grant, got %d", threadsReadResp.Code)
+	}
+
+	editorHandler, editorToken, editorCleanup := handlerFor(t, map[string]any{
+		"tenant":   "tenant-a",
+		"sub":      "editor-1",
+		"groupIds": []string{"editors"},
+	})
+	defer editorCleanup()
+	storageSetResp := performAdminRequest(editorHandler, editorToken, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/storage", `{"title":"Stored"}`)
+	if storageSetResp.Code != http.StatusOK || strings.TrimSpace(storageSetResp.Body.String()) != `{"title":"Stored"}` {
+		t.Fatalf("expected group storage write grant, got %d body=%q", storageSetResp.Code, storageSetResp.Body.String())
+	}
+	storagePatchResp := performAdminRequest(editorHandler, editorToken, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/storage/json-patch", `[{"op":"replace","path":"/title","value":"Patched"}]`)
+	if storagePatchResp.Code != http.StatusOK || strings.TrimSpace(storagePatchResp.Body.String()) != `{"title":"Patched"}` {
+		t.Fatalf("expected group storage patch grant, got %d body=%q", storagePatchResp.Code, storagePatchResp.Body.String())
+	}
+
+	commentHandler, commentToken, commentCleanup := handlerFor(t, map[string]any{
+		"tenant": "tenant-a",
+		"sub":    "comment-writer",
+	})
+	defer commentCleanup()
+	createThreadResp := performAdminRequest(commentHandler, commentToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", `{"id":"thread-1","comment":{"id":"comment-1","userId":"comment-writer","body":{}}}`)
+	if createThreadResp.Code != http.StatusCreated {
+		t.Fatalf("expected user comments write grant for thread create, got %d body=%q", createThreadResp.Code, createThreadResp.Body.String())
+	}
+	addCommentResp := performAdminRequest(commentHandler, commentToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-2","userId":"comment-writer","body":{}}`)
+	if addCommentResp.Code != http.StatusCreated {
+		t.Fatalf("expected user comments write grant for add comment, got %d body=%q", addCommentResp.Code, addCommentResp.Body.String())
+	}
+	updateCommentResp := performAdminRequest(commentHandler, commentToken, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", `{"metadata":{"status":"resolved"}}`)
+	if updateCommentResp.Code != http.StatusOK {
+		t.Fatalf("expected user comments write grant for update comment, got %d body=%q", updateCommentResp.Code, updateCommentResp.Body.String())
+	}
+
+	presenceHandler, presenceToken, presenceCleanup := handlerFor(t, map[string]any{
+		"tenant": "tenant-a",
+		"sub":    "presence-agent",
+	})
+	defer presenceCleanup()
+	presenceResp := performAdminRequest(presenceHandler, presenceToken, http.MethodPost, "/v1/presence", `{"room":"tenant-a:room-1","conn_id":"agent-1","state":{"status":"online"}}`)
+	if presenceResp.Code != http.StatusAccepted {
+		t.Fatalf("expected user presence grant, got %d body=%q", presenceResp.Code, presenceResp.Body.String())
+	}
+	activeUsersResp := performAdminRequest(presenceHandler, presenceToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/active_users", "")
+	if activeUsersResp.Code != http.StatusOK {
+		t.Fatalf("expected user presence grant for active users, got %d", activeUsersResp.Code)
+	}
+
+	publisherHandler, publisherToken, publisherCleanup := handlerFor(t, map[string]any{
+		"tenant": "tenant-a",
+		"sub":    "publisher",
+	})
+	defer publisherCleanup()
+	publishResp := performAdminRequest(publisherHandler, publisherToken, http.MethodPost, "/v1/publish", `{"room":"tenant-a:room-1","event":"doc.update","payload":{"ok":true}}`)
+	if publishResp.Code != http.StatusAccepted {
+		t.Fatalf("expected user room write grant for publish, got %d body=%q", publishResp.Code, publishResp.Body.String())
+	}
+
+	crossTenantHandler, crossTenantToken, crossTenantCleanup := handlerFor(t, map[string]any{
+		"tenant": "tenant-b",
+		"sub":    "publisher",
+	})
+	defer crossTenantCleanup()
+	crossTenantResp := performAdminRequest(crossTenantHandler, crossTenantToken, http.MethodPost, "/v1/publish", `{"room":"tenant-a:room-1","event":"doc.update","payload":{"ok":true}}`)
+	if crossTenantResp.Code != http.StatusForbidden {
+		t.Fatalf("expected cross-tenant room grant denial, got %d", crossTenantResp.Code)
+	}
+}
+
 func TestAdminThreadHandlers(t *testing.T) {
 	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
 		"tenant": "tenant-a",

@@ -207,10 +207,10 @@ In Kubernetes, the pod termination grace period (default 30s) should be sufficie
   sensitive profile data there because it is visible to room peers and admin
   active-user readers.
 - **Room access grants:** Room records can include `defaultAccesses`,
-  `usersAccesses`, and `groupsAccesses`. Runtime nodes check access-token
-  scopes first, then room grants for ID-token-style subject/group auth. Keep
-  `room:{room}:record` in the same Redis deployment as runtime nodes or grant
-  fallback will deny.
+  `usersAccesses`, and `groupsAccesses`. Runtime nodes and admin room data
+  APIs check access-token scopes first, then room grants for ID-token-style
+  subject/group auth. Keep `room:{room}:record` in the same Redis deployment as
+  runtime/admin nodes or grant fallback will deny.
 - **Redis is the bottleneck:** All cross-node traffic flows through Redis.
   For very high throughput, consider Redis Cluster or sharding by tenant.
 - **Admin API is stateless:** Scale independently based on publish volume.

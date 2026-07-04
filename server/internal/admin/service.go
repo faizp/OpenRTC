@@ -196,6 +196,13 @@ func (s *Service) Close() error {
 	return nil
 }
 
+func (s *Service) allowsRoomAction(ctx context.Context, claims *auth.Claims, action string, room string) bool {
+	return roomengine.AllowsRoomAction(ctx, claims, s.store, action, room, roomengine.RoomAuthorizationOptions{
+		EnforceTenantPrefix: s.cfg.Tenant.EnforcePrefix,
+		TenantSeparator:     s.cfg.Tenant.Separator,
+	})
+}
+
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/publish", s.handlePublish)
@@ -255,7 +262,7 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodePayloadTooLarge, "payload exceeds max size", "", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if !claims.Allows("publish", request.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "publish", request.Room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room publish is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -317,7 +324,7 @@ func (s *Service) handlePresence(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodePayloadTooLarge, "state exceeds max size", "", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if !claims.Allows("presence", request.Room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "presence", request.Room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room presence is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -433,7 +440,7 @@ func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "storage:write", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -477,7 +484,7 @@ func (s *Service) handleActiveUsers(w http.ResponseWriter, r *http.Request, room
 		s.writeError(w, openrtcerr.CodeInternal, "active users API requires redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("presence", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "presence", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room presence is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -546,7 +553,7 @@ func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments:read", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "comments:read", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -568,7 +575,7 @@ func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "comments:write", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -625,7 +632,7 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "comments:write", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -672,7 +679,7 @@ func (s *Service) handleUpdateComment(w http.ResponseWriter, r *http.Request, ro
 		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("comments:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "comments:write", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -1132,7 +1139,7 @@ func (s *Service) handleGetStorage(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage:read", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "storage:read", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -1159,7 +1166,7 @@ func (s *Service) handleSetStorage(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "storage:write", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
@@ -1191,7 +1198,7 @@ func (s *Service) handleDeleteStorage(w http.ResponseWriter, r *http.Request, ro
 		s.writeError(w, openrtcerr.CodeInternal, "storage APIs require redis backing", "", http.StatusServiceUnavailable)
 		return
 	}
-	if !claims.Allows("storage:write", room, s.cfg.Tenant.EnforcePrefix, s.cfg.Tenant.Separator) {
+	if !s.allowsRoomAction(r.Context(), claims, "storage:write", room) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room storage is not permitted", "", http.StatusForbidden)
 		return
 	}
