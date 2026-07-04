@@ -774,7 +774,7 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
 	}
-	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document))
+	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document, plan.Fanout.Sequence))
 }
 
 func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message) error {
@@ -804,7 +804,7 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
 	}
-	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document))
+	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document, plan.Fanout.Sequence))
 }
 
 func (s *Service) replayablePublishedEvents(room string, plan roomengine.JoinPlan) ([]cluster.PublishedEvent, error) {
@@ -1431,8 +1431,8 @@ func decodeStoragePatchPayload(payload json.RawMessage) ([]cluster.JSONPatchOper
 	return operations, nil
 }
 
-func storageAckMessage(message protocol.Message, kind string, document json.RawMessage) outboundMessage {
-	return outboundMessage{
+func storageAckMessage(message protocol.Message, kind string, document json.RawMessage, sequence uint64) outboundMessage {
+	outbound := outboundMessage{
 		T:    "STORAGE_ACK",
 		ID:   message.ID,
 		Room: message.Room,
@@ -1442,6 +1442,10 @@ func storageAckMessage(message protocol.Message, kind string, document json.RawM
 			"document": document,
 		},
 	}
+	if sequence > 0 {
+		outbound.Meta = map[string]any{"seq": sequence}
+	}
+	return outbound
 }
 
 func storageOpID(message protocol.Message) string {

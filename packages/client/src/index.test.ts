@@ -727,9 +727,11 @@ roomSocket.receive({
   t: "STORAGE_ACK",
   id: "storage-set-6",
   room: "tenant-a:room-api",
+  meta: { seq: 1 },
   payload: { kind: "set", op_id: "op-set-1", document: { title: "Published", version: 20 } },
 });
 assert.deepEqual(await setStorage, { title: "Published", version: 20 });
+assert.equal(room.getStorageSequence(), 1);
 assert.deepEqual(room.getStoragePendingMutations(), []);
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
@@ -737,6 +739,14 @@ assert.deepEqual(storageEvents.at(-1), {
   source: "ack",
   kind: "set",
   opId: "op-set-1",
+  sequence: 1,
+});
+assert.deepEqual(storageStatusUpdates.at(-1), {
+  room: "tenant-a:room-api",
+  status: "synchronized",
+  pendingMutations: 0,
+  pendingOpIds: [],
+  sequence: 1,
 });
 
 const patchStorage = room.patchStorage([{ op: "replace", path: "/title", value: "Patched" }], { opId: "op-patch-1" });
@@ -778,6 +788,7 @@ assert.deepEqual(await patchStorage, { title: "Patched", version: 20 });
 roomSocket.receive({
   t: "STORAGE_UPDATE",
   room: "tenant-a:room-api",
+  meta: { seq: 2 },
   payload: {
     kind: "patch",
     op_id: "remote-op-1",
@@ -787,15 +798,32 @@ roomSocket.receive({
   },
 });
 assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
+assert.equal(room.getStorageSequence(), 2);
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
   document: { title: "Patched", version: 3 },
   source: "remote",
   kind: "patch",
   opId: "remote-op-1",
+  sequence: 2,
   originConnId: "room-peer",
   operations: [{ op: "replace", path: "/version", value: 3 }],
 });
+const eventsAfterSequencedRemote = storageEvents.length;
+roomSocket.receive({
+  t: "STORAGE_UPDATE",
+  room: "tenant-a:room-api",
+  meta: { seq: 1 },
+  payload: {
+    kind: "set",
+    op_id: "stale-op-1",
+    origin_conn_id: "room-peer",
+    document: { title: "Stale", version: 1 },
+  },
+});
+assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
+assert.equal(room.getStorageSequence(), 2);
+assert.equal(storageEvents.length, eventsAfterSequencedRemote);
 
 const failedPatch = room.patchStorage([{ op: "replace", path: "/version", value: 4 }], { opId: "op-fail-1" });
 assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 4 });
@@ -1026,12 +1054,14 @@ assert.deepEqual(roomStorageStatusUpdates.at(-1), {
   status: "synchronizing",
   pendingMutations: 1,
   pendingOpIds: ["concurrent-b"],
+  sequence: 2,
 });
 assert.deepEqual(storageStatusUpdates.at(-1), {
   room: "tenant-a:room-api",
   status: "synchronizing",
   pendingMutations: 1,
   pendingOpIds: ["concurrent-b"],
+  sequence: 2,
 });
 assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 32 });
 assert.deepEqual(storageEvents.at(-1), {
@@ -1056,6 +1086,7 @@ assert.deepEqual(storageStatusUpdates.at(-1), {
   status: "synchronized",
   pendingMutations: 0,
   pendingOpIds: [],
+  sequence: 2,
 });
 assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 33 });
 

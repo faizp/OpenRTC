@@ -1419,6 +1419,9 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if setPlan.Fanout.Room != "room-a" || !reflect.DeepEqual(setPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
 		t.Fatalf("unexpected set plan fanout: %+v", setPlan.Fanout)
 	}
+	if setPlan.Event.Sequence != 1 || setPlan.Fanout.Sequence != 1 {
+		t.Fatalf("expected local set storage sequence 1, got event=%+v fanout=%+v", setPlan.Event, setPlan.Fanout)
+	}
 	if setPlan.Event.Room != "room-a" || setPlan.Event.Event != cluster.EventStorageUpdate || setPlan.Event.OriginNode != "node-a" || setPlan.Event.ExcludeSenderConnID != "conn-sender" {
 		t.Fatalf("unexpected set plan event: %+v", setPlan.Event)
 	}
@@ -1451,6 +1454,9 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	}
 	if !reflect.DeepEqual(patchPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
 		t.Fatalf("unexpected patch plan fanout: %+v", patchPlan.Fanout)
+	}
+	if patchPlan.Event.Sequence != 2 || patchPlan.Fanout.Sequence != 2 {
+		t.Fatalf("expected local patch storage sequence 2, got event=%+v fanout=%+v", patchPlan.Event, patchPlan.Fanout)
 	}
 	sequencedPlan := patchPlan.WithEvent(cluster.PublishedEvent{
 		Room:       "room-a",
@@ -1518,12 +1524,16 @@ func TestNewStorageEvent(t *testing.T) {
 	event, err := NewStorageEvent("room-a", update, StorageEventOptions{
 		OriginNode:          "node-a",
 		ExcludeSenderConnID: "conn-1",
+		Sequence:            9,
 	})
 	if err != nil {
 		t.Fatalf("new storage event: %v", err)
 	}
 	if event.Room != "room-a" || event.Event != cluster.EventStorageUpdate || event.OriginNode != "node-a" || event.ExcludeSenderConnID != "conn-1" {
 		t.Fatalf("unexpected storage event envelope: %+v", event)
+	}
+	if event.Sequence != 9 {
+		t.Fatalf("expected storage event sequence, got %+v", event)
 	}
 
 	update.Document[0] = '['

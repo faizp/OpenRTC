@@ -13,6 +13,7 @@ import {
   useStorageListener,
   useStorageMutation,
   useStoragePendingMutations,
+  useStorageSequence,
   useStorageSelector,
   useStorageStatus,
   useUpdateLiveStorage,
@@ -33,6 +34,7 @@ function childrenOf(element: ElementWithProps): unknown[] {
 assert.equal(typeof useStorage, "function");
 assert.equal(typeof useStorageSelector, "function");
 assert.equal(typeof useStorageStatus, "function");
+assert.equal(typeof useStorageSequence, "function");
 assert.equal(typeof useSetStorage, "function");
 assert.equal(typeof usePatchStorage, "function");
 assert.equal(typeof useSetLiveStorage, "function");

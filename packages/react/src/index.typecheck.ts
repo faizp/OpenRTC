@@ -43,6 +43,7 @@ import {
   useStorageMutation,
   useStorageSelector,
   useStoragePendingMutations,
+  useStorageSequence,
   useStorageStatus,
   useUpdateLiveStorage,
 } from "./index.ts";
@@ -150,6 +151,7 @@ function StorageIntegrationTypes() {
     ),
   );
   expectType<OpenRTCStorageStatus>(useStorageStatus(roomId));
+  expectType<number | undefined>(useStorageSequence(roomId));
   expectType<OpenRTCStoragePendingMutation[]>(useStoragePendingMutations(roomId));
 
   const setStorage = useSetStorage<CanvasStorage>(roomId);
@@ -177,6 +179,7 @@ function StorageIntegrationTypes() {
 
   useStorageListener<OpenRTCLiveObject<CanvasStorage>>(roomId, (event) => {
     expectType<OpenRTCStorageEvent<OpenRTCLiveObject<CanvasStorage>>>(event);
+    expectType<number | undefined>(event.sequence);
   });
 
   return null;

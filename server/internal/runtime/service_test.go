@@ -1803,6 +1803,9 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if setUpdate.T != "STORAGE_UPDATE" || setUpdate.Room != "tenant-a:room-1" {
 		t.Fatalf("unexpected storage set update: %+v", setUpdate)
 	}
+	if meta, ok := setUpdate.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected sequenced storage set update metadata, got %#v", setUpdate.Meta)
+	}
 	setPayload, ok := setUpdate.Payload.(roomengine.StorageMutation)
 	if !ok || setPayload.Kind != "set" || setPayload.OpID != "op-set" || setPayload.OriginConnID != sender.id {
 		t.Fatalf("unexpected storage set payload: %#v", setUpdate.Payload)
@@ -1813,6 +1816,9 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	setAck := readRuntimeOutbound(t, sender)
 	if setAck.T != "STORAGE_ACK" || setAck.ID != "storage-set" {
 		t.Fatalf("unexpected storage set ack: %+v", setAck)
+	}
+	if meta, ok := setAck.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected sequenced storage set ack metadata, got %#v", setAck.Meta)
 	}
 
 	if err := service.handleStorageGet(sender, protocol.Message{ID: "storage-get", Room: "tenant-a:room-1"}); err != nil {
@@ -1837,6 +1843,9 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if patchUpdate.T != "STORAGE_UPDATE" {
 		t.Fatalf("unexpected storage patch update: %+v", patchUpdate)
 	}
+	if meta, ok := patchUpdate.Meta.(map[string]any); !ok || meta["seq"] != uint64(2) {
+		t.Fatalf("expected sequenced storage patch update metadata, got %#v", patchUpdate.Meta)
+	}
 	patchPayload, ok := patchUpdate.Payload.(roomengine.StorageMutation)
 	if !ok || patchPayload.Kind != "patch" || patchPayload.OpID != "op-patch" || len(patchPayload.Operations) != 1 {
 		t.Fatalf("unexpected storage patch payload: %#v", patchUpdate.Payload)
@@ -1847,6 +1856,9 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	patchAck := readRuntimeOutbound(t, sender)
 	if patchAck.T != "STORAGE_ACK" || patchAck.ID != "storage-patch" {
 		t.Fatalf("unexpected storage patch ack: %+v", patchAck)
+	}
+	if meta, ok := patchAck.Meta.(map[string]any); !ok || meta["seq"] != uint64(2) {
+		t.Fatalf("expected sequenced storage patch ack metadata, got %#v", patchAck.Meta)
 	}
 
 	denied := runtimeTestConn(service, "conn-storage-denied", &auth.Claims{Tenant: "tenant-a"}, 1)
@@ -1896,6 +1908,8 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, sender); got.T != "STORAGE_ACK" || got.ID != "storage-patch-store" {
 		t.Fatalf("unexpected store backed storage ack: %+v", got)
+	} else if meta, ok := got.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected sequenced store backed storage ack metadata, got %#v", got.Meta)
 	}
 	if len(store.storagePatchOperations) != 1 || store.storagePatchOperations[0].Path != "/title" {
 		t.Fatalf("expected storage patch operation to reach store: %#v", store.storagePatchOperations)

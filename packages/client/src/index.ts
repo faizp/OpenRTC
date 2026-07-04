@@ -628,6 +628,7 @@ export interface OpenRTCStorageEvent<TDocument = unknown> {
   source: OpenRTCStorageEventSource;
   kind?: OpenRTCStorageMutationKind;
   opId?: string;
+  sequence?: number;
   originConnId?: string;
   operations?: JSONPatchOperation[];
 }
@@ -644,6 +645,7 @@ export interface OpenRTCStorageStatusUpdate {
   status: OpenRTCStorageStatus;
   pendingMutations: number;
   pendingOpIds: string[];
+  sequence?: number;
 }
 
 export interface OpenRTCRoom {
@@ -662,6 +664,7 @@ export interface OpenRTCRoom {
   getStorage<TDocument = unknown>(): Promise<TDocument>;
   getStorageSnapshot<TDocument = unknown>(): TDocument | undefined;
   getStorageStatus(): OpenRTCStorageStatus;
+  getStorageSequence(): number | undefined;
   getStoragePendingMutations(): OpenRTCStoragePendingMutation[];
   setStorage<TDocument = unknown>(
     document: TDocument,
@@ -1494,6 +1497,7 @@ export class OpenRTCClient {
   private nextCursorByRoom = new Map<string, string>();
   private storageByRoom = new Map<string, unknown>();
   private storageStatusByRoom = new Map<string, OpenRTCStorageStatus>();
+  private storageSequenceByRoom = new Map<string, number>();
   private storageRequestedRooms = new Set<string>();
   private pendingRequests = new Map<string, PendingSend>();
   private pendingTraces = new Map<string, PendingSend>();
@@ -1791,6 +1795,10 @@ export class OpenRTCClient {
 
   getStorageStatus(room: string): OpenRTCStorageStatus {
     return this.storageStatusByRoom.get(room) ?? "not-loaded";
+  }
+
+  getStorageSequence(room: string): number | undefined {
+    return this.storageSequenceByRoom.get(room);
   }
 
   getStoragePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
@@ -2562,6 +2570,7 @@ export class OpenRTCClient {
         source: "ack",
         ...(kind ? { kind } : {}),
         ...(opId ? { opId } : {}),
+        ...(sequence !== undefined ? { sequence } : {}),
       } as const;
       if (requestId) {
         const pending = this.pendingStorageMutations.get(requestId);
@@ -2586,6 +2595,7 @@ export class OpenRTCClient {
         source: "remote",
         ...(kind ? { kind } : {}),
         ...(opId ? { opId } : {}),
+        ...(sequence !== undefined ? { sequence } : {}),
         ...(originConnId ? { originConnId } : {}),
         ...(operations ? { operations } : {}),
       });
@@ -2649,9 +2659,18 @@ export class OpenRTCClient {
     room: string,
     document: unknown,
     options: Omit<OpenRTCStorageEvent, "room" | "document">,
-  ): void {
+  ): boolean {
+    if (options.sequence !== undefined) {
+      const previousSequence = this.storageSequenceByRoom.get(room) ?? 0;
+      if (options.sequence <= previousSequence) {
+        this.refreshStorageStatus(room);
+        return false;
+      }
+      this.storageSequenceByRoom.set(room, options.sequence);
+    }
     this.applyStorageMessage(room, document, options);
     this.reapplyPendingStorageMutations(room, document);
+    return true;
   }
 
   private applyStorageMessage(
@@ -2837,12 +2856,27 @@ export class OpenRTCClient {
 
   private emitStorageStatus(room: string): void {
     const pending = this.storagePendingMutations(room);
+    const sequence = this.storageSequenceByRoom.get(room);
     this.emit("storage-status", {
       room,
       status: this.getStorageStatus(room),
       pendingMutations: pending.length,
       pendingOpIds: pending.map((mutation) => mutation.opId),
+      ...(sequence !== undefined ? { sequence } : {}),
     });
+  }
+
+  private refreshStorageStatus(room: string): void {
+    if (this.storagePendingMutations(room).length > 0) {
+      if (!this.setStorageStatus(room, "synchronizing")) {
+        this.emitStorageStatus(room);
+      }
+      return;
+    }
+    const status: OpenRTCStorageStatus = this.storageByRoom.has(room) ? "synchronized" : "not-loaded";
+    if (!this.setStorageStatus(room, status)) {
+      this.emitStorageStatus(room);
+    }
   }
 
   private storagePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
@@ -2872,6 +2906,7 @@ export class OpenRTCClient {
             ...this.nextCursorByRoom.keys(),
             ...this.storageByRoom.keys(),
             ...this.storageStatusByRoom.keys(),
+            ...this.storageSequenceByRoom.keys(),
             ...this.storageRequestedRooms.keys(),
             ...this.lastEventSequenceByRoom.keys(),
           ],
@@ -2884,6 +2919,7 @@ export class OpenRTCClient {
         this.localPresenceByRoom.delete(room);
         this.lastEventSequenceByRoom.delete(room);
         this.storageByRoom.delete(room);
+        this.storageSequenceByRoom.delete(room);
         this.storageRequestedRooms.delete(room);
         this.rejectStorageGetWaiters(room, new Error(`Room ${room} was left before storage request completed`));
         for (const [id, pendingRoom] of this.pendingStorageGets) {
@@ -3245,6 +3281,10 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
 
   getStorageStatus(): OpenRTCStorageStatus {
     return this.client.getStorageStatus(this.id);
+  }
+
+  getStorageSequence(): number | undefined {
+    return this.client.getStorageSequence(this.id);
   }
 
   getStoragePendingMutations(): OpenRTCStoragePendingMutation[] {

@@ -70,6 +70,7 @@ type Engine struct {
 	yjsSessions map[string]YJSSessionInfo
 	yjsDocs     map[string]*memoryYJSDocument
 	storage     map[string]json.RawMessage
+	storageSeq  map[string]uint64
 }
 
 type memoryYJSDocument struct {
@@ -195,6 +196,7 @@ type EventOptions struct {
 type StorageEventOptions struct {
 	OriginNode          string
 	ExcludeSenderConnID string
+	Sequence            uint64
 }
 
 type ClusterEventKind string
@@ -352,6 +354,7 @@ func New() *Engine {
 		yjsSessions: make(map[string]YJSSessionInfo),
 		yjsDocs:     make(map[string]*memoryYJSDocument),
 		storage:     make(map[string]json.RawMessage),
+		storageSeq:  make(map[string]uint64),
 	}
 }
 
@@ -634,6 +637,7 @@ func NewStorageEvent(room string, update StorageMutation, options StorageEventOp
 		Event:               cluster.EventStorageUpdate,
 		Payload:             payload,
 		ExcludeSenderConnID: options.ExcludeSenderConnID,
+		Sequence:            options.Sequence,
 		OriginNode:          options.OriginNode,
 	}, nil
 }
@@ -1321,6 +1325,7 @@ func (e *Engine) SetStorageMutationPlan(room string, document json.RawMessage, m
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
+	eventOptions.Sequence = e.nextStorageSequence(room)
 	return e.StorageMutationPlan(room, mutation, eventOptions)
 }
 
@@ -1359,6 +1364,7 @@ func (e *Engine) ApplyStoragePatchMutationPlan(room string, operations []cluster
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
+	eventOptions.Sequence = e.nextStorageSequence(room)
 	return e.StorageMutationPlan(room, mutation, eventOptions)
 }
 
@@ -1417,11 +1423,21 @@ func (e *Engine) StorageMutationPlan(room string, update StorageMutation, option
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
+	fanout := e.StorageFanout(room, update, options.ExcludeSenderConnID)
+	fanout.Sequence = options.Sequence
 	return StorageMutationPlan{
 		Mutation: cloneStorageMutation(update),
-		Fanout:   e.StorageFanout(room, update, options.ExcludeSenderConnID),
+		Fanout:   fanout,
 		Event:    event,
 	}, nil
+}
+
+func (e *Engine) nextStorageSequence(room string) uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.storageSeq[room]++
+	return e.storageSeq[room]
 }
 
 func (plan StorageMutationPlan) WithEvent(event cluster.PublishedEvent) StorageMutationPlan {

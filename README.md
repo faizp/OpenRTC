@@ -189,9 +189,12 @@ remote update arrives while later local mutations are still pending, the SDK
 uses the server document as the new base and replays pending optimistic
 mutations on top. `room.getStoragePendingMutations()` plus client
 `storage-status` events and room `storage-status` subscription updates expose
-pending mutation count and op IDs. Storage mutations send an `op_id`
-automatically when one is not provided, so optimistic, ack, and rollback events
-can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
+pending mutation count, op IDs, and the latest authoritative storage sequence
+when the runtime provides one. Sequenced storage ACK/UPDATE messages are exposed
+as `event.sequence` and `room.getStorageSequence()`, and stale sequenced updates
+are ignored so late fan-out cannot roll local storage backward. Storage mutations
+send an `op_id` automatically when one is not provided, so optimistic, ack, and
+rollback events can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
 `LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
 reserved envelope JSON. `liveObjectDelete`, `liveMapPatch`, `liveMapDelete`,
@@ -228,7 +231,7 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useRoomStatus`, `useRoomEvents`, `useCommentListener`, `useRoomCommentEvents`,
 `useNotificationListener`, `useNotificationEvents`, `useDiagnostics`, `useErrorListener`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
-`useStorageSelector`, `useStorageStatus`, `useSetStorage`, `usePatchStorage`,
+`useStorageSelector`, `useStorageStatus`, `useStorageSequence`, `useSetStorage`, `usePatchStorage`,
 `useStoragePendingMutations`, `useSetLiveStorage`, `useUpdateLiveStorage`,
 `useStorageMutation`, and `useStorageListener`. It also exports
 Liveblocks-style `Cursors`, `Cursor`, and `AvatarStack` components for apps that

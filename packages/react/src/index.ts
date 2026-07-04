@@ -488,6 +488,20 @@ export function useStorageStatus(room: string): OpenRTCStorageStatus {
   return status;
 }
 
+export function useStorageSequence(room: string): number | undefined {
+  const roomHandle = useRoomHandle(room);
+  const [sequence, setSequence] = useState<number | undefined>(() => roomHandle.getStorageSequence());
+
+  useEffect(() => {
+    setSequence(roomHandle.getStorageSequence());
+    return roomHandle.subscribe("storage-status", () => {
+      setSequence(roomHandle.getStorageSequence());
+    });
+  }, [roomHandle]);
+
+  return sequence;
+}
+
 export function useStoragePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
   const roomHandle = useRoomHandle(room);
   const [mutations, setMutations] = useState<OpenRTCStoragePendingMutation[]>(() =>

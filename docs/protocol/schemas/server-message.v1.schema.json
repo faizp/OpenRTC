@@ -143,6 +143,114 @@
           }
         }
       }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "payload"],
+      "properties": {
+        "t": { "const": "STORAGE_SNAPSHOT" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["document"],
+          "properties": {
+            "document": {}
+          }
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "seq": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "payload"],
+      "properties": {
+        "t": { "const": "STORAGE_ACK" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "document"],
+          "properties": {
+            "kind": { "enum": ["set", "patch"] },
+            "op_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "document": {}
+          }
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "seq": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "room", "payload"],
+      "properties": {
+        "t": { "const": "STORAGE_UPDATE" },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "document"],
+          "properties": {
+            "kind": { "enum": ["set", "patch"] },
+            "op_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "origin_conn_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "operations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["op", "path"],
+                "properties": {
+                  "op": { "type": "string" },
+                  "path": { "type": "string" },
+                  "from": { "type": "string" },
+                  "value": {}
+                }
+              }
+            },
+            "document": {}
+          }
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "seq": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
     }
   ]
 }
