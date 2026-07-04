@@ -1884,7 +1884,15 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if conflict.T != "ERROR" || conflict.ID != "storage-conflict" {
 		t.Fatalf("unexpected storage conflict response: %+v", conflict)
 	}
-	if payload, ok := conflict.Payload.(openrtcerr.APIError); !ok || payload.Code != openrtcerr.CodeStorageConflict {
+	if conflict.Room != "tenant-a:room-1" {
+		t.Fatalf("expected storage conflict room, got %q", conflict.Room)
+	}
+	payload, ok := conflict.Payload.(storageConflictErrorPayload)
+	if !ok ||
+		payload.Code != openrtcerr.CodeStorageConflict ||
+		payload.Room != "tenant-a:room-1" ||
+		payload.Sequence != 2 ||
+		string(payload.Document) != `{"data":{"title":"Published"},"liveblocksType":"LiveObject"}` {
 		t.Fatalf("expected storage conflict error payload, got %#v", conflict.Payload)
 	}
 	assertRuntimeNoOutbound(t, receiver)
@@ -1986,8 +1994,17 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, sender); got.T != "ERROR" || got.ID != "storage-patch-store-conflict" {
 		t.Fatalf("unexpected store backed conflict response: %+v", got)
-	} else if payload, ok := got.Payload.(openrtcerr.APIError); !ok || payload.Code != openrtcerr.CodeStorageConflict {
-		t.Fatalf("expected store backed storage conflict error payload, got %#v", got.Payload)
+	} else if got.Room != "tenant-a:room-1" {
+		t.Fatalf("expected store backed storage conflict room, got %q", got.Room)
+	} else {
+		payload, ok := got.Payload.(storageConflictErrorPayload)
+		if !ok ||
+			payload.Code != openrtcerr.CodeStorageConflict ||
+			payload.Room != "tenant-a:room-1" ||
+			payload.Sequence != 1 ||
+			string(payload.Document) != `{"title":"Published"}` {
+			t.Fatalf("expected store backed storage conflict error payload, got %#v", got.Payload)
+		}
 	}
 	assertRuntimeNoOutbound(t, receiver)
 	if len(store.publishedEvents) != 1 {

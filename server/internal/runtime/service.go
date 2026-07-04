@@ -741,7 +741,7 @@ func (s *Service) handleStorageGet(conn *clientConn, message protocol.Message) e
 
 	document, sequence, err := s.getStorageSnapshot(message.Room)
 	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
+		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
 	outbound := outboundMessage{
 		T:    "STORAGE_SNAPSHOT",
@@ -773,11 +773,11 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 		ExcludeSenderConnID: conn.id,
 	})
 	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
+		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
 	plan, err = s.publishStoragePlan(plan)
 	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
+		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
 	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
@@ -805,11 +805,11 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 		ExcludeSenderConnID: conn.id,
 	})
 	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
+		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
 	plan, err = s.publishStoragePlan(plan)
 	if err != nil {
-		return conn.enqueue(storageErrorMessage(message.ID, err))
+		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
 	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
 		return err
@@ -1527,12 +1527,34 @@ func runtimeErrorMessage(requestID string, code openrtcerr.Code, message string)
 	}
 }
 
-func storageErrorMessage(requestID string, err error) outboundMessage {
+type storageConflictErrorPayload struct {
+	openrtcerr.APIError
+	Room     string          `json:"room,omitempty"`
+	Document json.RawMessage `json:"document,omitempty"`
+	Sequence uint64          `json:"sequence,omitempty"`
+}
+
+func (s *Service) storageErrorMessage(requestID string, room string, err error) outboundMessage {
 	switch {
 	case errors.Is(err, cluster.ErrStorageNotFound):
 		return runtimeErrorMessage(requestID, openrtcerr.CodeStorageNotFound, "storage document not found")
 	case errors.Is(err, cluster.ErrStorageConflict):
-		return runtimeErrorMessage(requestID, openrtcerr.CodeStorageConflict, err.Error())
+		outbound := runtimeErrorMessage(requestID, openrtcerr.CodeStorageConflict, err.Error())
+		document, sequence, snapshotErr := s.getStorageSnapshot(room)
+		if snapshotErr == nil {
+			outbound.Room = room
+			outbound.Payload = storageConflictErrorPayload{
+				APIError: openrtcerr.APIError{
+					Code:      openrtcerr.CodeStorageConflict,
+					Message:   err.Error(),
+					RequestID: requestID,
+				},
+				Room:     room,
+				Document: document,
+				Sequence: sequence,
+			}
+		}
+		return outbound
 	case errors.Is(err, cluster.ErrStoragePatch):
 		return runtimeErrorMessage(requestID, openrtcerr.CodePatchFailed, err.Error())
 	default:

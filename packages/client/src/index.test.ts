@@ -50,6 +50,7 @@ import {
   runOpenRTCDevProbe,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
+  type OpenRTCError,
   type OpenRTCEvent,
   type OpenRTCNotificationDelta,
   type OpenRTCStorageEvent,
@@ -515,6 +516,7 @@ const roomEvents: string[] = [];
 const receivedRoomEvents: OpenRTCEvent[] = [];
 const commentEvents: OpenRTCCommentEvent[] = [];
 const notificationEvents: OpenRTCNotificationDelta[] = [];
+const errorEvents: OpenRTCError[] = [];
 const offOthers = room.subscribe("others", (_others, event) => {
   othersEvents.push(event.type);
 });
@@ -530,6 +532,9 @@ const offComments = room.subscribe("comments", (event) => {
 });
 const offNotifications = roomClient.on("notification", (event) => {
   notificationEvents.push(event);
+});
+const offErrors = roomClient.on("error", (event) => {
+  errorEvents.push(event);
 });
 const storageEvents: OpenRTCStorageEvent[] = [];
 const storageStatuses: string[] = [];
@@ -836,22 +841,35 @@ assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 4 });
 roomSocket.receive({
   t: "ERROR",
   id: "storage-patch-8",
+  room: "tenant-a:room-api",
   payload: {
     code: "STORAGE_CONFLICT",
     message: "storage conflict",
     request_id: "storage-patch-8",
+    room: "tenant-a:room-api",
+    sequence: 2,
+    document: { title: "Patched", version: 30 },
   },
 });
 await assert.rejects(failedPatch, /storage conflict/);
-assert.equal(room.getStorageStatus(), "error");
-assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
+assert.equal(room.getStorageStatus(), "synchronized");
+assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 30 });
+assert.equal(room.getStorageSequence(), 2);
 assert.deepEqual(storageEvents.at(-1), {
   room: "tenant-a:room-api",
-  document: { title: "Patched", version: 3 },
-  source: "rollback",
-  kind: "patch",
-  opId: "op-fail-1",
-  operations: [{ op: "replace", path: "/version", value: 4 }],
+  document: { title: "Patched", version: 30 },
+  source: "repair",
+  sequence: 2,
+});
+assert.deepEqual(errorEvents.at(-1), {
+  code: "STORAGE_CONFLICT",
+  message: "storage conflict",
+  requestId: "storage-patch-8",
+  storageRepair: {
+    room: "tenant-a:room-api",
+    document: { title: "Patched", version: 30 },
+    sequence: 2,
+  },
 });
 await assert.rejects(
   room.patchStorage([{ op: "replace", path: "/version", value: 5 }], { expectedSequence: 1.5 }),
@@ -1120,6 +1138,7 @@ offMyPresence();
 offEvents();
 offComments();
 offNotifications();
+offErrors();
 offStorage();
 offStorageStatus();
 offStorageStatusUpdates();

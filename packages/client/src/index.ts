@@ -473,6 +473,13 @@ export interface OpenRTCError {
   code: string;
   message: string;
   requestId?: string;
+  storageRepair?: OpenRTCStorageRepair;
+}
+
+export interface OpenRTCStorageRepair<TDocument = unknown> {
+  room: string;
+  document: TDocument;
+  sequence?: number;
 }
 
 export interface OpenRTCRoomState {
@@ -613,7 +620,7 @@ export type OpenRTCLiveStorageNodeValue = OpenRTCLiveObject | OpenRTCLiveList | 
 
 export type OpenRTCStorageStatus = "not-loaded" | "loading" | "synchronizing" | "synchronized" | "error";
 export type OpenRTCStorageMutationKind = "set" | "patch";
-export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "remote" | "rollback";
+export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "remote" | "repair" | "rollback";
 
 export interface OpenRTCStorageMutationOptions {
   opId?: string;
@@ -2617,10 +2624,12 @@ export class OpenRTCClient {
     }
 
     if (type === "ERROR") {
+      const storageRepair = this.applyStorageConflictRepair(requestId, payload);
       const error = {
         code: asString(payload["code"]),
         message: asString(payload["message"]),
         ...(requestId ? { requestId } : {}),
+        ...(storageRepair ? { storageRepair } : {}),
       };
       if (pendingRequest?.t === "JOIN" && pendingRequest.room) {
         this.failRoomJoin(
@@ -2629,7 +2638,9 @@ export class OpenRTCClient {
         );
       }
       if (requestId) {
-        this.rejectStorageRequest(requestId, new Error(error.message || error.code || "OpenRTC storage request failed"));
+        this.rejectStorageRequest(requestId, new Error(error.message || error.code || "OpenRTC storage request failed"), {
+          rollback: !storageRepair,
+        });
       }
       this.emit("error", error);
     }
@@ -2762,7 +2773,55 @@ export class OpenRTCClient {
     }
   }
 
-  private rejectStorageRequest(requestId: string, error: Error): void {
+  private applyStorageConflictRepair(
+    requestId: string | undefined,
+    payload: Record<string, unknown>,
+  ): OpenRTCStorageRepair | undefined {
+    if (asString(payload["code"]) !== "STORAGE_CONFLICT" || !("document" in payload)) {
+      return undefined;
+    }
+
+    const excludedMutation = requestId ? this.pendingStorageMutations.get(requestId) : undefined;
+    const room = optionalString(payload["room"]) ?? excludedMutation?.room;
+    if (!room) {
+      return undefined;
+    }
+
+    const document = payload["document"];
+    const sequence = optionalSequence(payload["sequence"]);
+    if (sequence !== undefined) {
+      const previousSequence = this.storageSequenceByRoom.get(room) ?? 0;
+      if (sequence < previousSequence) {
+        this.refreshStorageStatus(room);
+        return undefined;
+      }
+      this.storageSequenceByRoom.set(room, sequence);
+    }
+
+    if (requestId && excludedMutation) {
+      this.pendingStorageMutations.delete(requestId);
+    }
+    this.storageRequestedRooms.add(room);
+    this.applyStorageMessage(room, document, {
+      source: "repair",
+      ...(sequence !== undefined ? { sequence } : {}),
+    });
+    this.reapplyPendingStorageMutations(room, document);
+    if (requestId && excludedMutation) {
+      this.pendingStorageMutations.set(requestId, excludedMutation);
+    }
+    return {
+      room,
+      document,
+      ...(sequence !== undefined ? { sequence } : {}),
+    };
+  }
+
+  private rejectStorageRequest(
+    requestId: string,
+    error: Error,
+    options: { rollback: boolean } = { rollback: true },
+  ): void {
     const getRoom = this.pendingStorageGets.get(requestId);
     if (getRoom) {
       this.pendingStorageGets.delete(requestId);
@@ -2774,7 +2833,11 @@ export class OpenRTCClient {
     const mutation = this.pendingStorageMutations.get(requestId);
     if (mutation) {
       this.pendingStorageMutations.delete(requestId);
-      this.rollbackStorageMutation(mutation);
+      if (options.rollback) {
+        this.rollbackStorageMutation(mutation);
+      } else {
+        this.refreshStorageStatus(mutation.room);
+      }
       mutation.reject(error);
     }
   }

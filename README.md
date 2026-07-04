@@ -197,9 +197,11 @@ snapshot sequence metadata before resolving. Stale sequenced updates are ignored
 so late fan-out cannot roll local storage backward. Pass
 `expectedSequence` to `setStorage`, `patchStorage`, or typed storage helpers to
 reject stale writes with `STORAGE_CONFLICT` instead of applying them on a newer
-base document. Storage mutations
-send an `op_id` automatically when one is not provided, so optimistic, ack, and
-rollback events can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
+base document. Conflict errors include the authoritative storage document and
+sequence when available, and the SDK applies that repair snapshot before
+rejecting the stale mutation so later pending mutations can rebase cleanly.
+Storage mutations send an `op_id` automatically when one is not provided, so
+optimistic, ack, and rollback events can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
 `LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
 reserved envelope JSON. `liveObjectDelete`, `liveMapPatch`, `liveMapDelete`,

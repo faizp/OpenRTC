@@ -36,6 +36,12 @@
       "properties": {
         "t": { "const": "ERROR" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
         "payload": {
           "type": "object",
           "additionalProperties": false,
@@ -43,7 +49,15 @@
           "properties": {
             "code": { "type": "string", "minLength": 1, "maxLength": 64 },
             "message": { "type": "string", "minLength": 1, "maxLength": 512 },
-            "request_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+            "request_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "room": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 256,
+              "pattern": "^[a-zA-Z0-9._:-]+$"
+            },
+            "document": {},
+            "sequence": { "type": "integer", "minimum": 1 }
           }
         }
       }
