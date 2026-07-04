@@ -72,6 +72,13 @@
       "description": "Requested durable storage document does not exist."
     },
     {
+      "code": "STORAGE_CONFLICT",
+      "http_status": 409,
+      "ws_close_code": 4418,
+      "retryable": false,
+      "description": "Storage mutation expected a different authoritative storage sequence."
+    },
+    {
       "code": "PATCH_FAILED",
       "http_status": 422,
       "ws_close_code": 4413,

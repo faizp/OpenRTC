@@ -226,6 +226,7 @@
             "kind": { "enum": ["set", "patch"] },
             "op_id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "origin_conn_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "seq": { "type": "integer", "minimum": 1 },
             "operations": {
               "type": "array",
               "items": {

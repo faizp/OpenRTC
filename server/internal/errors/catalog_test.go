@@ -35,6 +35,10 @@ func TestDescriptorFor(t *testing.T) {
 	if storageNotFound.HTTPStatus != 404 || storageNotFound.WSCloseCode != 4412 || storageNotFound.Retryable {
 		t.Fatalf("unexpected storage not found descriptor: %+v", storageNotFound)
 	}
+	storageConflict := DescriptorFor(CodeStorageConflict)
+	if storageConflict.HTTPStatus != 409 || storageConflict.WSCloseCode != 4418 || storageConflict.Retryable {
+		t.Fatalf("unexpected storage conflict descriptor: %+v", storageConflict)
+	}
 	patchFailed := DescriptorFor(CodePatchFailed)
 	if patchFailed.HTTPStatus != 422 || patchFailed.WSCloseCode != 4413 || patchFailed.Retryable {
 		t.Fatalf("unexpected patch failed descriptor: %+v", patchFailed)

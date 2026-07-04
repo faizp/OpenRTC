@@ -67,19 +67,19 @@ func TestParseValidMessageVariants(t *testing.T) {
 		t.Fatalf("unexpected storage get message: %+v", storageGet)
 	}
 
-	storageSet, err := ParseClientMessage([]byte(`{"t":"STORAGE_SET","id":"req-6","room":"tenant-a:room-1","payload":{"liveblocksType":"LiveObject","data":{}},"meta":{"op_id":"op-1"}}`), ParseOptions{})
+	storageSet, err := ParseClientMessage([]byte(`{"t":"STORAGE_SET","id":"req-6","room":"tenant-a:room-1","payload":{"liveblocksType":"LiveObject","data":{}},"meta":{"op_id":"op-1","expected_seq":0}}`), ParseOptions{})
 	if err != nil {
 		t.Fatalf("parse storage set: %v", err)
 	}
-	if storageSet.Type != TypeStorageSet || storageSet.StorageMeta == nil || storageSet.StorageMeta.OpID != "op-1" {
+	if storageSet.Type != TypeStorageSet || storageSet.StorageMeta == nil || storageSet.StorageMeta.OpID != "op-1" || !storageSet.StorageMeta.ExpectedSequenceSet || storageSet.StorageMeta.ExpectedSequence != 0 {
 		t.Fatalf("unexpected storage set message: %+v", storageSet)
 	}
 
-	storagePatch, err := ParseClientMessage([]byte(`{"t":"STORAGE_PATCH","id":"req-7","room":"tenant-a:room-1","payload":[{"op":"add","path":"/title","value":"Draft"}],"meta":{"op_id":"op-2"}}`), ParseOptions{})
+	storagePatch, err := ParseClientMessage([]byte(`{"t":"STORAGE_PATCH","id":"req-7","room":"tenant-a:room-1","payload":[{"op":"add","path":"/title","value":"Draft"}],"meta":{"op_id":"op-2","expected_seq":3}}`), ParseOptions{})
 	if err != nil {
 		t.Fatalf("parse storage patch: %v", err)
 	}
-	if storagePatch.Type != TypeStoragePatch || storagePatch.StorageMeta == nil || storagePatch.StorageMeta.OpID != "op-2" {
+	if storagePatch.Type != TypeStoragePatch || storagePatch.StorageMeta == nil || storagePatch.StorageMeta.OpID != "op-2" || !storagePatch.StorageMeta.ExpectedSequenceSet || storagePatch.StorageMeta.ExpectedSequence != 3 {
 		t.Fatalf("unexpected storage patch message: %+v", storagePatch)
 	}
 
@@ -280,6 +280,11 @@ func TestParseRejectsInvalidMessageShapes(t *testing.T) {
 		{
 			name: "storage meta bad op id",
 			raw:  []byte(`{"t":"STORAGE_PATCH","id":"req-1","room":"tenant-a:room-1","payload":[],"meta":{"op_id":"bad id"}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "storage meta bad expected sequence",
+			raw:  []byte(`{"t":"STORAGE_PATCH","id":"req-1","room":"tenant-a:room-1","payload":[],"meta":{"expected_seq":-1}}`),
 			want: openrtcerr.CodeBadRequest,
 		},
 	}

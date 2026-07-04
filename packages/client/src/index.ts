@@ -616,6 +616,7 @@ export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "rem
 
 export interface OpenRTCStorageMutationOptions {
   opId?: string;
+  expectedSequence?: number;
 }
 
 export interface OpenRTCLiveNodePatchOptions {
@@ -2248,6 +2249,12 @@ export class OpenRTCClient {
     payload: unknown,
     options: OpenRTCStorageMutationOptions,
   ): Promise<TDocument> {
+    let expectedSequence: number | undefined;
+    try {
+      expectedSequence = normalizeExpectedStorageSequence(options.expectedSequence);
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     const id = this.nextID(kind === "set" ? "storage-set" : "storage-patch");
     const opId = normalizeStorageOpID(options.opId, id);
     const operations = kind === "patch" ? asJSONPatchOperations(payload) : undefined;
@@ -2276,7 +2283,10 @@ export class OpenRTCClient {
       id,
       room,
       payload: kind === "patch" ? operations : payload,
-      meta: { op_id: opId },
+      meta: {
+        op_id: opId,
+        ...(expectedSequence !== undefined ? { expected_seq: expectedSequence } : {}),
+      },
     };
 
     return new Promise<TDocument>((resolve, reject) => {
@@ -3963,6 +3973,16 @@ function normalizeStorageOpID(opId: string | undefined, fallback: string): strin
     return opId;
   }
   return fallback;
+}
+
+function normalizeExpectedStorageSequence(sequence: number | undefined): number | undefined {
+  if (sequence === undefined) {
+    return undefined;
+  }
+  if (typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0) {
+    return sequence;
+  }
+  throw new Error("Storage expectedSequence must be a non-negative safe integer");
 }
 
 function applyPendingStorageMutation(document: unknown, mutation: PendingStorageMutation): unknown {

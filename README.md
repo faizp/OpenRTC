@@ -149,6 +149,7 @@ const unsubscribeNotifications = client.on("notification", (event) => {
 });
 await room.patchStorage([{ op: "replace", path: "/title", value: "Review" }], {
   opId: "title-edit-1",
+  expectedSequence: room.getStorageSequence(),
 });
 
 const typedRoot = liveObject({
@@ -192,7 +193,10 @@ mutations on top. `room.getStoragePendingMutations()` plus client
 pending mutation count, op IDs, and the latest authoritative storage sequence
 when the runtime provides one. Sequenced storage ACK/UPDATE messages are exposed
 as `event.sequence` and `room.getStorageSequence()`, and stale sequenced updates
-are ignored so late fan-out cannot roll local storage backward. Storage mutations
+are ignored so late fan-out cannot roll local storage backward. Pass
+`expectedSequence` to `setStorage`, `patchStorage`, or typed storage helpers to
+reject stale writes with `STORAGE_CONFLICT` instead of applying them on a newer
+base document. Storage mutations
 send an `op_id` automatically when one is not provided, so optimistic, ack, and
 rollback events can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
 `LiveList`, and `LiveMap` envelopes and

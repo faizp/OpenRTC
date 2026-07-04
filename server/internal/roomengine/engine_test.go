@@ -1416,6 +1416,9 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if setPlan.Mutation.Kind != StorageMutationSet || setPlan.Mutation.OpID != "op-set" || setPlan.Mutation.OriginConnID != "conn-sender" {
 		t.Fatalf("unexpected set plan mutation: %+v", setPlan.Mutation)
 	}
+	if setPlan.Mutation.Sequence != 1 {
+		t.Fatalf("expected set mutation storage sequence 1, got %+v", setPlan.Mutation)
+	}
 	if setPlan.Fanout.Room != "room-a" || !reflect.DeepEqual(setPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
 		t.Fatalf("unexpected set plan fanout: %+v", setPlan.Fanout)
 	}
@@ -1429,7 +1432,7 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if err := json.Unmarshal(setPlan.Event.Payload, &setEventMutation); err != nil {
 		t.Fatalf("decode set plan event payload: %v", err)
 	}
-	if setEventMutation.Kind != StorageMutationSet || setEventMutation.OpID != "op-set" || string(setEventMutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+	if setEventMutation.Kind != StorageMutationSet || setEventMutation.OpID != "op-set" || setEventMutation.Sequence != 1 || string(setEventMutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
 		t.Fatalf("unexpected set event mutation: %+v", setEventMutation)
 	}
 	setPlan.Mutation.Document[0] = '['
@@ -1452,11 +1455,31 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if patchPlan.Mutation.Kind != StorageMutationPatch || patchPlan.Mutation.OpID != "op-patch" || len(patchPlan.Mutation.Operations) != 1 {
 		t.Fatalf("unexpected patch plan mutation: %+v", patchPlan.Mutation)
 	}
+	if patchPlan.Mutation.Sequence != 2 {
+		t.Fatalf("expected patch mutation storage sequence 2, got %+v", patchPlan.Mutation)
+	}
 	if !reflect.DeepEqual(patchPlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
 		t.Fatalf("unexpected patch plan fanout: %+v", patchPlan.Fanout)
 	}
 	if patchPlan.Event.Sequence != 2 || patchPlan.Fanout.Sequence != 2 {
 		t.Fatalf("expected local patch storage sequence 2, got event=%+v fanout=%+v", patchPlan.Event, patchPlan.Fanout)
+	}
+	if _, err := engine.ApplyStoragePatchMutationPlan("room-a", []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Stale"`)},
+	}, StorageMutationOptions{
+		OpID:                "op-conflict",
+		OriginConnID:        "conn-sender",
+		ExpectedSequence:    1,
+		ExpectedSequenceSet: true,
+	}, StorageEventOptions{}); !errors.Is(err, cluster.ErrStorageConflict) {
+		t.Fatalf("expected stale expected sequence conflict, got %v", err)
+	}
+	conflictLoaded, err := engine.GetStorage("room-a")
+	if err != nil {
+		t.Fatalf("get storage after conflict: %v", err)
+	}
+	if string(conflictLoaded) != `{"data":{"title":"Published"},"liveblocksType":"LiveObject"}` {
+		t.Fatalf("conflicting patch should not mutate storage, got %s", conflictLoaded)
 	}
 	sequencedPlan := patchPlan.WithEvent(cluster.PublishedEvent{
 		Room:       "room-a",
@@ -1465,7 +1488,7 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 		Sequence:   7,
 		OriginNode: "node-a",
 	})
-	if sequencedPlan.Event.Sequence != 7 || sequencedPlan.Fanout.Sequence != 7 {
+	if sequencedPlan.Event.Sequence != 7 || sequencedPlan.Fanout.Sequence != 2 {
 		t.Fatalf("expected sequenced storage plan, got event=%+v fanout=%+v", sequencedPlan.Event, sequencedPlan.Fanout)
 	}
 	sequencedPlan.Fanout.Update.Document[0] = '['
@@ -1477,6 +1500,7 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 		Kind:         StorageMutationPatch,
 		OpID:         "op-remote",
 		OriginConnID: "remote-conn",
+		Sequence:     6,
 		Operations: []cluster.JSONPatchOperation{
 			{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Remote"`)},
 		},
@@ -1496,10 +1520,10 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record remote storage event: %v", err)
 	}
-	if remotePlan.Mutation.Kind != StorageMutationPatch || remotePlan.Mutation.OpID != "op-remote" || remotePlan.Event.Sequence != 42 {
+	if remotePlan.Mutation.Kind != StorageMutationPatch || remotePlan.Mutation.OpID != "op-remote" || remotePlan.Mutation.Sequence != 6 || remotePlan.Event.Sequence != 42 {
 		t.Fatalf("unexpected remote plan mutation/event: %+v event=%+v", remotePlan.Mutation, remotePlan.Event)
 	}
-	if remotePlan.Fanout.Sequence != 42 {
+	if remotePlan.Fanout.Sequence != 6 {
 		t.Fatalf("expected remote storage fanout sequence, got %+v", remotePlan.Fanout)
 	}
 	loaded, err := engine.GetStorage("room-a")

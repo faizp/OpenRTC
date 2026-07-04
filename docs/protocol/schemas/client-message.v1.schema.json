@@ -66,10 +66,10 @@
         }
       }
     },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["t", "id", "room", "payload"],
+	    {
+	      "type": "object",
+	      "additionalProperties": false,
+	      "required": ["t", "id", "room", "payload"],
       "properties": {
         "t": { "const": "PRESENCE_SET" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -82,8 +82,87 @@
         "payload": {
           "type": "object",
           "additionalProperties": true
-        }
-      }
-    }
-  ]
-}
+	        }
+	      }
+	    },
+	    {
+	      "type": "object",
+	      "additionalProperties": false,
+	      "required": ["t", "id", "room"],
+	      "properties": {
+	        "t": { "const": "STORAGE_GET" },
+	        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+	        "room": {
+	          "type": "string",
+	          "minLength": 3,
+	          "maxLength": 256,
+	          "pattern": "^[a-zA-Z0-9._:-]+$"
+	        }
+	      }
+	    },
+	    {
+	      "type": "object",
+	      "additionalProperties": false,
+	      "required": ["t", "id", "room", "payload"],
+	      "properties": {
+	        "t": { "const": "STORAGE_SET" },
+	        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+	        "room": {
+	          "type": "string",
+	          "minLength": 3,
+	          "maxLength": 256,
+	          "pattern": "^[a-zA-Z0-9._:-]+$"
+	        },
+	        "payload": {
+	          "type": "object",
+	          "additionalProperties": true
+	        },
+	        "meta": {
+	          "type": "object",
+	          "additionalProperties": false,
+	          "properties": {
+	            "op_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+	            "expected_seq": { "type": "integer", "minimum": 0 }
+	          }
+	        }
+	      }
+	    },
+	    {
+	      "type": "object",
+	      "additionalProperties": false,
+	      "required": ["t", "id", "room", "payload"],
+	      "properties": {
+	        "t": { "const": "STORAGE_PATCH" },
+	        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+	        "room": {
+	          "type": "string",
+	          "minLength": 3,
+	          "maxLength": 256,
+	          "pattern": "^[a-zA-Z0-9._:-]+$"
+	        },
+	        "payload": {
+	          "type": "array",
+	          "items": {
+	            "type": "object",
+	            "additionalProperties": true,
+	            "required": ["op", "path"],
+	            "properties": {
+	              "op": { "type": "string" },
+	              "path": { "type": "string" },
+	              "from": { "type": "string" },
+	              "value": {}
+	            }
+	          }
+	        },
+	        "meta": {
+	          "type": "object",
+	          "additionalProperties": false,
+	          "properties": {
+	            "op_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+	            "expected_seq": { "type": "integer", "minimum": 0 }
+	          }
+	        }
+	      }
+	    }
+	  ]
+	}

@@ -749,7 +749,10 @@ assert.deepEqual(storageStatusUpdates.at(-1), {
   sequence: 1,
 });
 
-const patchStorage = room.patchStorage([{ op: "replace", path: "/title", value: "Patched" }], { opId: "op-patch-1" });
+const patchStorage = room.patchStorage([{ op: "replace", path: "/title", value: "Patched" }], {
+  opId: "op-patch-1",
+  expectedSequence: 1,
+});
 assert.equal(
   roomSocket.sent.at(-1),
   JSON.stringify({
@@ -757,7 +760,7 @@ assert.equal(
     id: "storage-patch-7",
     room: "tenant-a:room-api",
     payload: [{ op: "replace", path: "/title", value: "Patched" }],
-    meta: { op_id: "op-patch-1" },
+    meta: { op_id: "op-patch-1", expected_seq: 1 },
   }),
 );
 assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 20 });
@@ -825,18 +828,21 @@ assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
 assert.equal(room.getStorageSequence(), 2);
 assert.equal(storageEvents.length, eventsAfterSequencedRemote);
 
-const failedPatch = room.patchStorage([{ op: "replace", path: "/version", value: 4 }], { opId: "op-fail-1" });
+const failedPatch = room.patchStorage([{ op: "replace", path: "/version", value: 4 }], {
+  opId: "op-fail-1",
+  expectedSequence: 1,
+});
 assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 4 });
 roomSocket.receive({
   t: "ERROR",
   id: "storage-patch-8",
   payload: {
-    code: "PATCH_FAILED",
-    message: "patch failed",
+    code: "STORAGE_CONFLICT",
+    message: "storage conflict",
     request_id: "storage-patch-8",
   },
 });
-await assert.rejects(failedPatch, /patch failed/);
+await assert.rejects(failedPatch, /storage conflict/);
 assert.equal(room.getStorageStatus(), "error");
 assert.deepEqual(room.getStorageSnapshot(), { title: "Patched", version: 3 });
 assert.deepEqual(storageEvents.at(-1), {
@@ -847,6 +853,10 @@ assert.deepEqual(storageEvents.at(-1), {
   opId: "op-fail-1",
   operations: [{ op: "replace", path: "/version", value: 4 }],
 });
+await assert.rejects(
+  room.patchStorage([{ op: "replace", path: "/version", value: 5 }], { expectedSequence: 1.5 }),
+  /expectedSequence/,
+);
 
 const typedItems = liveList(["a"]);
 const typedProps = liveMap({ visible: true });

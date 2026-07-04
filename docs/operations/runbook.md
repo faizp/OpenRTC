@@ -141,6 +141,7 @@ redis-cli hdel "room:<room>:presence" "<conn_id>"
 | `conn:{conn_id}:meta` | hash | — | Connection metadata (user, tenant, node, connected_at) |
 | `room:{room}:record` | hash | — | Durable room metadata record managed by admin room APIs |
 | `room:{room}:storage` | string | — | Durable JSON storage document managed by admin storage APIs |
+| `room:{room}:storage:seq` | string | — | Monotonic storage document sequence for conditional realtime writes |
 | `room:{room}:threads` | set | — | Durable thread IDs for the room |
 | `room:{room}:thread:{thread_id}` | hash | — | Durable thread metadata |
 | `room:{room}:thread:{thread_id}:comments` | list | — | Durable ordered comments for a thread |

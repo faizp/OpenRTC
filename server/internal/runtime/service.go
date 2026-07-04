@@ -757,9 +757,11 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 	}
 
 	plan, err := s.setStorageMutationPlan(message.Room, message.Payload, roomengine.StorageMutationOptions{
-		MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
-		OpID:         storageOpID(message),
-		OriginConnID: conn.id,
+		MaxBytes:            s.cfg.Limits.PayloadMaxBytes,
+		OpID:                storageOpID(message),
+		OriginConnID:        conn.id,
+		ExpectedSequence:    storageExpectedSequence(message),
+		ExpectedSequenceSet: storageExpectedSequenceSet(message),
 	}, roomengine.StorageEventOptions{
 		OriginNode:          s.cfg.NodeID,
 		ExcludeSenderConnID: conn.id,
@@ -787,9 +789,11 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 		return conn.enqueue(runtimeErrorMessage(message.ID, parseErr.Code, parseErr.Message))
 	}
 	plan, err := s.applyStoragePatchMutationPlan(message.Room, operations, roomengine.StorageMutationOptions{
-		MaxBytes:     s.cfg.Limits.PayloadMaxBytes,
-		OpID:         storageOpID(message),
-		OriginConnID: conn.id,
+		MaxBytes:            s.cfg.Limits.PayloadMaxBytes,
+		OpID:                storageOpID(message),
+		OriginConnID:        conn.id,
+		ExpectedSequence:    storageExpectedSequence(message),
+		ExpectedSequenceSet: storageExpectedSequenceSet(message),
 	}, roomengine.StorageEventOptions{
 		OriginNode:          s.cfg.NodeID,
 		ExcludeSenderConnID: conn.id,
@@ -1153,6 +1157,17 @@ func (s *Service) getStorage(room string) (json.RawMessage, error) {
 
 func (s *Service) setStorageMutationPlan(room string, document json.RawMessage, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
 	if s.store != nil {
+		if sequenced, ok := s.store.(cluster.SequencedStorageWriter); ok {
+			stored, sequence, err := sequenced.SetStorageWithOptions(s.ctx, room, document, storageWriteOptions(mutationOptions))
+			if err != nil {
+				return roomengine.StorageMutationPlan{}, err
+			}
+			mutationOptions.Sequence = sequence
+			return s.roomEngine().RecordStorageMutationPlan(room, roomengine.StorageMutationSet, stored, nil, mutationOptions, eventOptions)
+		}
+		if mutationOptions.ExpectedSequenceSet {
+			return roomengine.StorageMutationPlan{}, cluster.ErrStorageConflict
+		}
 		stored, err := s.store.SetStorage(s.ctx, room, document)
 		if err != nil {
 			return roomengine.StorageMutationPlan{}, err
@@ -1164,6 +1179,17 @@ func (s *Service) setStorageMutationPlan(room string, document json.RawMessage, 
 
 func (s *Service) applyStoragePatchMutationPlan(room string, operations []cluster.JSONPatchOperation, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
 	if s.store != nil {
+		if sequenced, ok := s.store.(cluster.SequencedStorageWriter); ok {
+			patched, sequence, err := sequenced.ApplyStoragePatchWithOptions(s.ctx, room, operations, storageWriteOptions(mutationOptions))
+			if err != nil {
+				return roomengine.StorageMutationPlan{}, err
+			}
+			mutationOptions.Sequence = sequence
+			return s.roomEngine().RecordStorageMutationPlan(room, roomengine.StorageMutationPatch, patched, operations, mutationOptions, eventOptions)
+		}
+		if mutationOptions.ExpectedSequenceSet {
+			return roomengine.StorageMutationPlan{}, cluster.ErrStorageConflict
+		}
 		patched, err := s.store.ApplyStoragePatch(s.ctx, room, operations, mutationOptions.MaxBytes)
 		if err != nil {
 			return roomengine.StorageMutationPlan{}, err
@@ -1455,6 +1481,25 @@ func storageOpID(message protocol.Message) string {
 	return message.StorageMeta.OpID
 }
 
+func storageExpectedSequence(message protocol.Message) uint64 {
+	if message.StorageMeta == nil {
+		return 0
+	}
+	return message.StorageMeta.ExpectedSequence
+}
+
+func storageExpectedSequenceSet(message protocol.Message) bool {
+	return message.StorageMeta != nil && message.StorageMeta.ExpectedSequenceSet
+}
+
+func storageWriteOptions(options roomengine.StorageMutationOptions) cluster.StorageWriteOptions {
+	return cluster.StorageWriteOptions{
+		MaxBytes:            options.MaxBytes,
+		ExpectedSequence:    options.ExpectedSequence,
+		ExpectedSequenceSet: options.ExpectedSequenceSet,
+	}
+}
+
 func runtimeErrorMessage(requestID string, code openrtcerr.Code, message string) outboundMessage {
 	return outboundMessage{
 		T:  "ERROR",
@@ -1471,6 +1516,8 @@ func storageErrorMessage(requestID string, err error) outboundMessage {
 	switch {
 	case errors.Is(err, cluster.ErrStorageNotFound):
 		return runtimeErrorMessage(requestID, openrtcerr.CodeStorageNotFound, "storage document not found")
+	case errors.Is(err, cluster.ErrStorageConflict):
+		return runtimeErrorMessage(requestID, openrtcerr.CodeStorageConflict, err.Error())
 	case errors.Is(err, cluster.ErrStoragePatch):
 		return runtimeErrorMessage(requestID, openrtcerr.CodePatchFailed, err.Error())
 	default:

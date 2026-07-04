@@ -30,6 +30,7 @@ var (
 	ErrRoomAlreadyExists   = errors.New("room already exists")
 	ErrRoomNotFound        = errors.New("room not found")
 	ErrStorageNotFound     = errors.New("storage not found")
+	ErrStorageConflict     = errors.New("storage conflict")
 	ErrStoragePatch        = errors.New("storage patch failed")
 	ErrThreadAlreadyExists = errors.New("thread already exists")
 	ErrThreadNotFound      = errors.New("thread not found")
@@ -314,6 +315,17 @@ type Store interface {
 	SyncStats(ctx context.Context, nodeID string, snapshot stats.Snapshot) error
 	AggregateStats(ctx context.Context) (stats.Snapshot, error)
 	Close() error
+}
+
+type StorageWriteOptions struct {
+	MaxBytes            int
+	ExpectedSequence    uint64
+	ExpectedSequenceSet bool
+}
+
+type SequencedStorageWriter interface {
+	SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error)
+	ApplyStoragePatchWithOptions(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (json.RawMessage, uint64, error)
 }
 
 type RedisStore struct {
@@ -1169,14 +1181,15 @@ func (s *RedisStore) SetStorage(ctx context.Context, room string, document json.
 	if err := ValidateStorageDocument(compacted); err != nil {
 		return nil, err
 	}
-	if err := s.client.Set(ctx, roomStorageKey(room), string(compacted), 0).Err(); err != nil {
+	stored, _, err := s.SetStorageWithOptions(ctx, room, compacted, StorageWriteOptions{})
+	if err != nil {
 		return nil, err
 	}
-	return compacted, nil
+	return stored, nil
 }
 
 func (s *RedisStore) DeleteStorage(ctx context.Context, room string) error {
-	deleted, err := s.client.Del(ctx, roomStorageKey(room)).Result()
+	deleted, err := s.client.Del(ctx, roomStorageKey(room), roomStorageSequenceKey(room)).Result()
 	if err != nil {
 		return err
 	}
@@ -1186,9 +1199,57 @@ func (s *RedisStore) DeleteStorage(ctx context.Context, room string) error {
 	return nil
 }
 
-func (s *RedisStore) ApplyStoragePatch(ctx context.Context, room string, operations []JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
+func (s *RedisStore) SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error) {
+	compacted, err := compactJSON(document)
+	if err != nil {
+		return nil, 0, err
+	}
+	if options.MaxBytes > 0 && len(compacted) > options.MaxBytes {
+		return nil, 0, fmt.Errorf("%w: storage exceeds max size", ErrStoragePatch)
+	}
+	if err := ValidateStorageDocument(compacted); err != nil {
+		return nil, 0, err
+	}
+
 	key := roomStorageKey(room)
+	sequenceKey := roomStorageSequenceKey(room)
+	var sequence uint64
+	err = s.client.Watch(ctx, func(tx *redis.Tx) error {
+		currentSequence, err := redisStorageSequence(ctx, tx, sequenceKey)
+		if err != nil {
+			return err
+		}
+		if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+			return fmt.Errorf("%w: expected %d, got %d", ErrStorageConflict, options.ExpectedSequence, currentSequence)
+		}
+		var increment *redis.IntCmd
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, key, string(compacted), 0)
+			increment = pipe.Incr(ctx, sequenceKey)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		sequence = uint64(increment.Val())
+		return nil
+	}, key, sequenceKey)
+	if err != nil {
+		return nil, 0, err
+	}
+	return append(json.RawMessage(nil), compacted...), sequence, nil
+}
+
+func (s *RedisStore) ApplyStoragePatch(ctx context.Context, room string, operations []JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
+	patched, _, err := s.ApplyStoragePatchWithOptions(ctx, room, operations, StorageWriteOptions{MaxBytes: maxBytes})
+	return patched, err
+}
+
+func (s *RedisStore) ApplyStoragePatchWithOptions(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (json.RawMessage, uint64, error) {
+	key := roomStorageKey(room)
+	sequenceKey := roomStorageSequenceKey(room)
 	var patched json.RawMessage
+	var sequence uint64
 	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
 		raw, err := tx.Get(ctx, key).Result()
 		if err == redis.Nil {
@@ -1197,30 +1258,55 @@ func (s *RedisStore) ApplyStoragePatch(ctx context.Context, room string, operati
 		if err != nil {
 			return err
 		}
+		currentSequence, err := redisStorageSequence(ctx, tx, sequenceKey)
+		if err != nil {
+			return err
+		}
+		if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+			return fmt.Errorf("%w: expected %d, got %d", ErrStorageConflict, options.ExpectedSequence, currentSequence)
+		}
 		result, err := ApplyJSONPatch(json.RawMessage(raw), operations)
 		if err != nil {
 			return err
 		}
-		if maxBytes > 0 && len(result) > maxBytes {
+		if options.MaxBytes > 0 && len(result) > options.MaxBytes {
 			return fmt.Errorf("%w: patched storage exceeds max size", ErrStoragePatch)
 		}
 		if err := ValidateStorageDocument(result); err != nil {
 			return err
 		}
+		var increment *redis.IntCmd
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, key, string(result), 0)
+			increment = pipe.Incr(ctx, sequenceKey)
 			return nil
 		})
 		if err != nil {
 			return err
 		}
 		patched = result
+		sequence = uint64(increment.Val())
 		return nil
-	}, key)
+	}, key, sequenceKey)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return patched, nil
+	return patched, sequence, nil
+}
+
+func redisStorageSequence(ctx context.Context, tx *redis.Tx, key string) (uint64, error) {
+	raw, err := tx.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	sequence, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: invalid storage sequence", ErrStoragePatch)
+	}
+	return sequence, nil
 }
 
 func (s *RedisStore) LoadYJSDocument(ctx context.Context, room string) (YJSDocument, error) {
@@ -2342,6 +2428,10 @@ func roomRecordScanPattern(prefix string) string {
 
 func roomStorageKey(room string) string {
 	return fmt.Sprintf("room:%s:storage", room)
+}
+
+func roomStorageSequenceKey(room string) string {
+	return fmt.Sprintf("room:%s:storage:seq", room)
 }
 
 func roomEventLogKey(room string) string {

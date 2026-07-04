@@ -443,7 +443,7 @@ func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
 		return
 	}
-	document, err := s.store.ApplyStoragePatch(r.Context(), room, operations, s.cfg.Limits.PayloadMaxBytes)
+	document, sequence, err := s.applyStoragePatch(r.Context(), room, operations)
 	if errors.Is(err, cluster.ErrStorageNotFound) {
 		s.writeError(w, openrtcerr.CodeStorageNotFound, "storage document not found", "", http.StatusNotFound)
 		return
@@ -456,7 +456,7 @@ func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishStorageMutation(r.Context(), room, roomengine.StorageMutationPatch, document, operations); err != nil {
+	if err := s.publishStorageMutation(r.Context(), room, roomengine.StorageMutationPatch, document, operations, sequence); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -1169,12 +1169,12 @@ func (s *Service) handleSetStorage(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
 		return
 	}
-	stored, err := s.store.SetStorage(r.Context(), room, document)
+	stored, sequence, err := s.setStorage(r.Context(), room, document)
 	if err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	if err := s.publishStorageMutation(r.Context(), room, roomengine.StorageMutationSet, stored, nil); err != nil {
+	if err := s.publishStorageMutation(r.Context(), room, roomengine.StorageMutationSet, stored, nil, sequence); err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
@@ -1944,11 +1944,33 @@ func (s *Service) publishNotificationEvent(ctx context.Context, eventName string
 	return nil
 }
 
-func (s *Service) publishStorageMutation(ctx context.Context, room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation) error {
+func (s *Service) setStorage(ctx context.Context, room string, document json.RawMessage) (json.RawMessage, uint64, error) {
+	if sequenced, ok := s.store.(cluster.SequencedStorageWriter); ok {
+		return sequenced.SetStorageWithOptions(ctx, room, document, cluster.StorageWriteOptions{
+			MaxBytes: s.cfg.Limits.PayloadMaxBytes,
+		})
+	}
+	stored, err := s.store.SetStorage(ctx, room, document)
+	return stored, 0, err
+}
+
+func (s *Service) applyStoragePatch(ctx context.Context, room string, operations []cluster.JSONPatchOperation) (json.RawMessage, uint64, error) {
+	if sequenced, ok := s.store.(cluster.SequencedStorageWriter); ok {
+		return sequenced.ApplyStoragePatchWithOptions(ctx, room, operations, cluster.StorageWriteOptions{
+			MaxBytes: s.cfg.Limits.PayloadMaxBytes,
+		})
+	}
+	document, err := s.store.ApplyStoragePatch(ctx, room, operations, s.cfg.Limits.PayloadMaxBytes)
+	return document, 0, err
+}
+
+func (s *Service) publishStorageMutation(ctx context.Context, room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, sequence uint64) error {
 	if s.store == nil {
 		return nil
 	}
-	plan, err := roomengine.NewStorageMutationEventPlan(room, kind, document, operations, roomengine.StorageMutationOptions{}, roomengine.StorageEventOptions{
+	plan, err := roomengine.NewStorageMutationEventPlan(room, kind, document, operations, roomengine.StorageMutationOptions{
+		Sequence: sequence,
+	}, roomengine.StorageEventOptions{
 		OriginNode: "admin:" + s.cfg.NodeID,
 	})
 	if err != nil {

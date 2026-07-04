@@ -23,6 +23,7 @@ import (
 	"github.com/openrtc/openrtc/server/internal/auth"
 	"github.com/openrtc/openrtc/server/internal/cluster"
 	"github.com/openrtc/openrtc/server/internal/config"
+	openrtcerr "github.com/openrtc/openrtc/server/internal/errors"
 	"github.com/openrtc/openrtc/server/internal/protocol"
 	"github.com/openrtc/openrtc/server/internal/roomengine"
 	"github.com/openrtc/openrtc/server/internal/stats"
@@ -1861,6 +1862,34 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 		t.Fatalf("expected sequenced storage patch ack metadata, got %#v", patchAck.Meta)
 	}
 
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-conflict",
+		Room:    "tenant-a:room-1",
+		Payload: json.RawMessage(`[{"op":"replace","path":"/data/title","value":"Stale"}]`),
+		StorageMeta: &protocol.StorageMeta{
+			OpID:                "op-conflict",
+			ExpectedSequence:    1,
+			ExpectedSequenceSet: true,
+		},
+	}); err != nil {
+		t.Fatalf("conflicting storage patch should enqueue error, got %v", err)
+	}
+	conflict := readRuntimeOutbound(t, sender)
+	if conflict.T != "ERROR" || conflict.ID != "storage-conflict" {
+		t.Fatalf("unexpected storage conflict response: %+v", conflict)
+	}
+	if payload, ok := conflict.Payload.(openrtcerr.APIError); !ok || payload.Code != openrtcerr.CodeStorageConflict {
+		t.Fatalf("expected storage conflict error payload, got %#v", conflict.Payload)
+	}
+	assertRuntimeNoOutbound(t, receiver)
+	current, err := service.roomEngine().GetStorage("tenant-a:room-1")
+	if err != nil {
+		t.Fatalf("get storage after conflict: %v", err)
+	}
+	if string(current) != `{"data":{"title":"Published"},"liveblocksType":"LiveObject"}` {
+		t.Fatalf("conflicting patch should not mutate storage, got %s", current)
+	}
+
 	denied := runtimeTestConn(service, "conn-storage-denied", &auth.Claims{Tenant: "tenant-a"}, 1)
 	if err := service.handleStorageGet(denied, protocol.Message{ID: "storage-denied", Room: "tenant-a:room-1"}); err != nil {
 		t.Fatalf("denied storage should enqueue error, got %v", err)
@@ -1923,6 +1952,35 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	}
 	if string(stored) != `{"title":"Published"}` {
 		t.Fatalf("unexpected room engine storage after store-backed patch: %s", stored)
+	}
+
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-patch-store-conflict",
+		Room:    "tenant-a:room-1",
+		Payload: json.RawMessage(`[{"op":"replace","path":"/title","value":"Stale"}]`),
+		StorageMeta: &protocol.StorageMeta{
+			OpID:                "op-store-conflict",
+			ExpectedSequence:    0,
+			ExpectedSequenceSet: true,
+		},
+	}); err != nil {
+		t.Fatalf("store backed conflicting storage patch should enqueue error, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, sender); got.T != "ERROR" || got.ID != "storage-patch-store-conflict" {
+		t.Fatalf("unexpected store backed conflict response: %+v", got)
+	} else if payload, ok := got.Payload.(openrtcerr.APIError); !ok || payload.Code != openrtcerr.CodeStorageConflict {
+		t.Fatalf("expected store backed storage conflict error payload, got %#v", got.Payload)
+	}
+	assertRuntimeNoOutbound(t, receiver)
+	if len(store.publishedEvents) != 1 {
+		t.Fatalf("conflicting store backed patch should not publish event, got %#v", store.publishedEvents)
+	}
+	stored, err = service.roomEngine().GetStorage("tenant-a:room-1")
+	if err != nil {
+		t.Fatalf("expected store-backed storage after conflict: %v", err)
+	}
+	if string(stored) != `{"title":"Published"}` {
+		t.Fatalf("store-backed conflict should not mutate room engine storage: %s", stored)
 	}
 
 	store.publishEventErr = errors.New("publish failed")
@@ -2634,6 +2692,7 @@ type fakeRuntimeStore struct {
 	subscribePresenceErr   error
 	subscribeYJSErr        error
 	storage                json.RawMessage
+	storageSequence        uint64
 	getStorageErr          error
 	setStorageErr          error
 	patchStorageErr        error
@@ -2854,15 +2913,27 @@ func (s *fakeRuntimeStore) GetStorage(context.Context, string) (json.RawMessage,
 }
 
 func (s *fakeRuntimeStore) SetStorage(_ context.Context, _ string, document json.RawMessage) (json.RawMessage, error) {
+	stored, _, err := s.SetStorageWithOptions(context.Background(), "", document, cluster.StorageWriteOptions{})
+	return stored, err
+}
+
+func (s *fakeRuntimeStore) SetStorageWithOptions(_ context.Context, _ string, document json.RawMessage, options cluster.StorageWriteOptions) (json.RawMessage, uint64, error) {
 	if s.setStorageErr != nil {
-		return nil, s.setStorageErr
+		return nil, 0, s.setStorageErr
+	}
+	if options.ExpectedSequenceSet && s.storageSequence != options.ExpectedSequence {
+		return nil, 0, cluster.ErrStorageConflict
 	}
 	stored, err := compactRuntimeTestJSON(document)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if options.MaxBytes > 0 && len(stored) > options.MaxBytes {
+		return nil, 0, cluster.ErrStoragePatch
 	}
 	s.storage = append(json.RawMessage(nil), stored...)
-	return append(json.RawMessage(nil), stored...), nil
+	s.storageSequence++
+	return append(json.RawMessage(nil), stored...), s.storageSequence, nil
 }
 
 func (s *fakeRuntimeStore) DeleteStorage(context.Context, string) error {
@@ -2870,22 +2941,34 @@ func (s *fakeRuntimeStore) DeleteStorage(context.Context, string) error {
 }
 
 func (s *fakeRuntimeStore) ApplyStoragePatch(_ context.Context, _ string, operations []cluster.JSONPatchOperation, _ int) (json.RawMessage, error) {
+	patched, _, err := s.ApplyStoragePatchWithOptions(context.Background(), "", operations, cluster.StorageWriteOptions{})
+	return patched, err
+}
+
+func (s *fakeRuntimeStore) ApplyStoragePatchWithOptions(_ context.Context, _ string, operations []cluster.JSONPatchOperation, options cluster.StorageWriteOptions) (json.RawMessage, uint64, error) {
 	if s.patchStorageErr != nil {
-		return nil, s.patchStorageErr
+		return nil, 0, s.patchStorageErr
 	}
 	if s.storage == nil {
-		return nil, cluster.ErrStorageNotFound
+		return nil, 0, cluster.ErrStorageNotFound
+	}
+	if options.ExpectedSequenceSet && s.storageSequence != options.ExpectedSequence {
+		return nil, 0, cluster.ErrStorageConflict
 	}
 	patched, err := cluster.ApplyJSONPatch(s.storage, operations)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if options.MaxBytes > 0 && len(patched) > options.MaxBytes {
+		return nil, 0, cluster.ErrStoragePatch
 	}
 	if err := cluster.ValidateStorageDocument(patched); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	s.storagePatchOperations = append([]cluster.JSONPatchOperation(nil), operations...)
 	s.storage = append(json.RawMessage(nil), patched...)
-	return append(json.RawMessage(nil), patched...), nil
+	s.storageSequence++
+	return append(json.RawMessage(nil), patched...), s.storageSequence, nil
 }
 
 func (s *fakeRuntimeStore) LoadYJSDocument(context.Context, string) (cluster.YJSDocument, error) {

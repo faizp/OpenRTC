@@ -15,6 +15,7 @@ const (
 	CodeInboxNotificationNotFound Code = "INBOX_NOTIFICATION_NOT_FOUND"
 	CodeInboxNotificationConflict Code = "INBOX_NOTIFICATION_CONFLICT"
 	CodeStorageNotFound           Code = "STORAGE_NOT_FOUND"
+	CodeStorageConflict           Code = "STORAGE_CONFLICT"
 	CodePatchFailed               Code = "PATCH_FAILED"
 	CodeRateLimited               Code = "RATE_LIMITED"
 	CodePayloadTooLarge           Code = "PAYLOAD_TOO_LARGE"
@@ -41,6 +42,7 @@ var catalog = map[Code]Descriptor{
 	CodeInboxNotificationNotFound: {Code: CodeInboxNotificationNotFound, HTTPStatus: 404, WSCloseCode: 4416, Retryable: false},
 	CodeInboxNotificationConflict: {Code: CodeInboxNotificationConflict, HTTPStatus: 409, WSCloseCode: 4417, Retryable: false},
 	CodeStorageNotFound:           {Code: CodeStorageNotFound, HTTPStatus: 404, WSCloseCode: 4412, Retryable: false},
+	CodeStorageConflict:           {Code: CodeStorageConflict, HTTPStatus: 409, WSCloseCode: 4418, Retryable: false},
 	CodePatchFailed:               {Code: CodePatchFailed, HTTPStatus: 422, WSCloseCode: 4413, Retryable: false},
 	CodeRateLimited:               {Code: CodeRateLimited, HTTPStatus: 429, WSCloseCode: 4408, Retryable: true},
 	CodePayloadTooLarge:           {Code: CodePayloadTooLarge, HTTPStatus: 413, WSCloseCode: 4409, Retryable: false},

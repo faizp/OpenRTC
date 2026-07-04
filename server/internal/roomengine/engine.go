@@ -260,15 +260,19 @@ type EventFanout struct {
 }
 
 type StorageMutationOptions struct {
-	MaxBytes     int
-	OpID         string
-	OriginConnID string
+	MaxBytes            int
+	OpID                string
+	OriginConnID        string
+	Sequence            uint64
+	ExpectedSequence    uint64
+	ExpectedSequenceSet bool
 }
 
 type StorageMutation struct {
 	Kind         string                       `json:"kind"`
 	OpID         string                       `json:"op_id,omitempty"`
 	OriginConnID string                       `json:"origin_conn_id,omitempty"`
+	Sequence     uint64                       `json:"seq,omitempty"`
 	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
 	Document     json.RawMessage              `json:"document"`
 }
@@ -1295,28 +1299,46 @@ func (e *Engine) GetStorage(room string) (json.RawMessage, error) {
 }
 
 func (e *Engine) SetStorage(room string, document json.RawMessage, maxBytes int) (json.RawMessage, error) {
+	stored, _, err := e.SetStorageWithOptions(room, document, StorageMutationOptions{MaxBytes: maxBytes})
+	return stored, err
+}
+
+func (e *Engine) SetStorageWithOptions(room string, document json.RawMessage, options StorageMutationOptions) (json.RawMessage, uint64, error) {
 	compacted, err := compactJSON(document)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	if maxBytes > 0 && len(compacted) > maxBytes {
-		return nil, cluster.ErrStoragePatch
+	if options.MaxBytes > 0 && len(compacted) > options.MaxBytes {
+		return nil, 0, cluster.ErrStoragePatch
 	}
 	if err := cluster.ValidateStorageDocument(compacted); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	currentSequence := e.storageSeq[room]
+	if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+		return nil, 0, cluster.ErrStorageConflict
+	}
+	sequence := options.Sequence
+	if sequence > 0 && sequence <= currentSequence {
+		return nil, 0, cluster.ErrStorageConflict
+	}
+	if sequence == 0 {
+		sequence = currentSequence + 1
+	}
 	e.storage[room] = append(json.RawMessage(nil), compacted...)
-	e.mu.Unlock()
-	return append(json.RawMessage(nil), compacted...), nil
+	e.storageSeq[room] = sequence
+	return append(json.RawMessage(nil), compacted...), sequence, nil
 }
 
 func (e *Engine) SetStorageMutation(room string, document json.RawMessage, options StorageMutationOptions) (StorageMutation, error) {
-	stored, err := e.SetStorage(room, document, options.MaxBytes)
+	stored, sequence, err := e.SetStorageWithOptions(room, document, options)
 	if err != nil {
 		return StorageMutation{}, err
 	}
+	options.Sequence = sequence
 	return newStorageMutation(StorageMutationSet, stored, nil, options), nil
 }
 
@@ -1325,37 +1347,55 @@ func (e *Engine) SetStorageMutationPlan(room string, document json.RawMessage, m
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
-	eventOptions.Sequence = e.nextStorageSequence(room)
+	eventOptions.Sequence = mutation.Sequence
 	return e.StorageMutationPlan(room, mutation, eventOptions)
 }
 
 func (e *Engine) ApplyStoragePatch(room string, operations []cluster.JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
+	patched, _, err := e.ApplyStoragePatchWithOptions(room, operations, StorageMutationOptions{MaxBytes: maxBytes})
+	return patched, err
+}
+
+func (e *Engine) ApplyStoragePatchWithOptions(room string, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (json.RawMessage, uint64, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	current := e.storage[room]
 	if current == nil {
-		return nil, cluster.ErrStorageNotFound
+		return nil, 0, cluster.ErrStorageNotFound
+	}
+	currentSequence := e.storageSeq[room]
+	if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+		return nil, 0, cluster.ErrStorageConflict
+	}
+	if options.Sequence > 0 && options.Sequence <= currentSequence {
+		return nil, 0, cluster.ErrStorageConflict
 	}
 	patched, err := cluster.ApplyJSONPatch(current, operations)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	if maxBytes > 0 && len(patched) > maxBytes {
-		return nil, cluster.ErrStoragePatch
+	if options.MaxBytes > 0 && len(patched) > options.MaxBytes {
+		return nil, 0, cluster.ErrStoragePatch
 	}
 	if err := cluster.ValidateStorageDocument(patched); err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	sequence := options.Sequence
+	if sequence == 0 {
+		sequence = currentSequence + 1
 	}
 	e.storage[room] = append(json.RawMessage(nil), patched...)
-	return append(json.RawMessage(nil), patched...), nil
+	e.storageSeq[room] = sequence
+	return append(json.RawMessage(nil), patched...), sequence, nil
 }
 
 func (e *Engine) ApplyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
-	patched, err := e.ApplyStoragePatch(room, operations, options.MaxBytes)
+	patched, sequence, err := e.ApplyStoragePatchWithOptions(room, operations, options)
 	if err != nil {
 		return StorageMutation{}, err
 	}
+	options.Sequence = sequence
 	return newStorageMutation(StorageMutationPatch, patched, operations, options), nil
 }
 
@@ -1364,7 +1404,7 @@ func (e *Engine) ApplyStoragePatchMutationPlan(room string, operations []cluster
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
-	eventOptions.Sequence = e.nextStorageSequence(room)
+	eventOptions.Sequence = mutation.Sequence
 	return e.StorageMutationPlan(room, mutation, eventOptions)
 }
 
@@ -1372,10 +1412,12 @@ func (e *Engine) RecordStorageMutation(room string, kind string, document json.R
 	if !validStorageMutationKind(kind) {
 		return StorageMutation{}, ErrStorageMutationKind
 	}
-	stored, err := e.SetStorage(room, document, options.MaxBytes)
+	options.ExpectedSequenceSet = false
+	stored, sequence, err := e.SetStorageWithOptions(room, document, options)
 	if err != nil {
 		return StorageMutation{}, err
 	}
+	options.Sequence = sequence
 	return NewStorageMutation(kind, stored, operations, options)
 }
 
@@ -1392,19 +1434,25 @@ func (e *Engine) RecordStorageEvent(event cluster.PublishedEvent, maxBytes int) 
 	if err := json.Unmarshal(event.Payload, &mutation); err != nil {
 		return StorageMutationPlan{}, err
 	}
+	sequence := mutation.Sequence
+	if sequence == 0 {
+		sequence = event.Sequence
+	}
 	plan, err := e.RecordStorageMutationPlan(event.Room, mutation.Kind, mutation.Document, mutation.Operations, StorageMutationOptions{
 		MaxBytes:     maxBytes,
 		OpID:         mutation.OpID,
 		OriginConnID: mutation.OriginConnID,
+		Sequence:     sequence,
 	}, StorageEventOptions{
 		OriginNode:          event.OriginNode,
 		ExcludeSenderConnID: event.ExcludeSenderConnID,
+		Sequence:            sequence,
 	})
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
 	plan.Event.Sequence = event.Sequence
-	plan.Fanout.Sequence = event.Sequence
+	plan.Fanout.Sequence = sequence
 	return plan, nil
 }
 
@@ -1425,6 +1473,9 @@ func (e *Engine) StorageMutationPlan(room string, update StorageMutation, option
 	}
 	fanout := e.StorageFanout(room, update, options.ExcludeSenderConnID)
 	fanout.Sequence = options.Sequence
+	if fanout.Sequence == 0 {
+		fanout.Sequence = update.Sequence
+	}
 	return StorageMutationPlan{
 		Mutation: cloneStorageMutation(update),
 		Fanout:   fanout,
@@ -1446,7 +1497,9 @@ func (plan StorageMutationPlan) WithEvent(event cluster.PublishedEvent) StorageM
 		Fanout:   cloneStorageFanout(plan.Fanout),
 		Event:    clonePublishedEvent(event),
 	}
-	next.Fanout.Sequence = event.Sequence
+	if next.Fanout.Sequence == 0 {
+		next.Fanout.Sequence = event.Sequence
+	}
 	return next
 }
 
@@ -1510,6 +1563,7 @@ func newStorageMutation(kind string, document json.RawMessage, operations []clus
 		Kind:         kind,
 		OpID:         options.OpID,
 		OriginConnID: options.OriginConnID,
+		Sequence:     options.Sequence,
 		Operations:   cloneStorageOperations(operations),
 		Document:     append(json.RawMessage(nil), document...),
 	}
@@ -1552,6 +1606,7 @@ func cloneStorageMutation(update StorageMutation) StorageMutation {
 		Kind:         update.Kind,
 		OpID:         update.OpID,
 		OriginConnID: update.OriginConnID,
+		Sequence:     update.Sequence,
 		Operations:   cloneStorageOperations(update.Operations),
 		Document:     append(json.RawMessage(nil), update.Document...),
 	}

@@ -40,7 +40,9 @@ type EmitMeta struct {
 }
 
 type StorageMeta struct {
-	OpID string `json:"op_id,omitempty"`
+	OpID                string `json:"op_id,omitempty"`
+	ExpectedSequence    uint64 `json:"expected_seq,omitempty"`
+	ExpectedSequenceSet bool   `json:"-"`
 }
 
 type Message struct {
@@ -219,7 +221,7 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 				return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Meta must be an object when present"}
 			}
 			for key := range storageMeta {
-				if key != "op_id" {
+				if key != "op_id" && key != "expected_seq" {
 					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("%s meta includes unsupported fields", message.Type)}
 				}
 			}
@@ -231,6 +233,12 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 				if err := ValidateMessageID(parsed.OpID); err != nil {
 					return Message{}, err
 				}
+			}
+			if expectedSequenceRaw, ok := storageMeta["expected_seq"]; ok {
+				if err := json.Unmarshal(expectedSequenceRaw, &parsed.ExpectedSequence); err != nil {
+					return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("%s meta.expected_seq must be an integer greater than or equal to 0", message.Type)}
+				}
+				parsed.ExpectedSequenceSet = true
 			}
 			message.StorageMeta = parsed
 		}
