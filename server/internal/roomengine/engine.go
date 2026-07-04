@@ -2,6 +2,8 @@ package roomengine
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -72,6 +74,7 @@ type Engine struct {
 	yjsDocs     map[string]*memoryYJSDocument
 	storage     map[string]json.RawMessage
 	storageSeq  map[string]uint64
+	storageOps  map[string]map[string]storageOpRecord
 }
 
 type memoryYJSDocument struct {
@@ -286,9 +289,14 @@ type StorageFanout struct {
 }
 
 type StorageMutationPlan struct {
-	Mutation StorageMutation
-	Fanout   StorageFanout
-	Event    cluster.PublishedEvent
+	Mutation  StorageMutation
+	Fanout    StorageFanout
+	Event     cluster.PublishedEvent
+	Duplicate bool
+}
+
+type StorageMutationPlanOptions struct {
+	Duplicate bool
 }
 
 type StorageMutationEventPlan struct {
@@ -329,6 +337,11 @@ type NotificationEventPayload struct {
 	Notification   *cluster.InboxNotificationRecord `json:"notification,omitempty"`
 }
 
+type storageOpRecord struct {
+	Fingerprint string
+	Mutation    StorageMutation
+}
+
 type ConnectionsSnapshot struct {
 	Connections     []ConnectionSnapshot
 	YJSConnections  []YJSConnectionSnapshot
@@ -360,6 +373,7 @@ func New() *Engine {
 		yjsDocs:     make(map[string]*memoryYJSDocument),
 		storage:     make(map[string]json.RawMessage),
 		storageSeq:  make(map[string]uint64),
+		storageOps:  make(map[string]map[string]storageOpRecord),
 	}
 }
 
@@ -1339,22 +1353,55 @@ func (e *Engine) SetStorageWithOptions(room string, document json.RawMessage, op
 	return append(json.RawMessage(nil), compacted...), sequence, nil
 }
 
-func (e *Engine) SetStorageMutation(room string, document json.RawMessage, options StorageMutationOptions) (StorageMutation, error) {
-	stored, sequence, err := e.SetStorageWithOptions(room, document, options)
+func (e *Engine) setStorageMutation(room string, document json.RawMessage, options StorageMutationOptions) (StorageMutation, bool, error) {
+	compacted, err := compactJSON(document)
 	if err != nil {
-		return StorageMutation{}, err
+		return StorageMutation{}, false, err
+	}
+	if options.MaxBytes > 0 && len(compacted) > options.MaxBytes {
+		return StorageMutation{}, false, cluster.ErrStoragePatch
+	}
+	if err := cluster.ValidateStorageDocument(compacted); err != nil {
+		return StorageMutation{}, false, err
+	}
+	fingerprint := storageDocumentFingerprint(StorageMutationSet, compacted)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if mutation, ok, err := e.storageOpMutationLocked(room, options.OpID, fingerprint); ok || err != nil {
+		return mutation, ok, err
+	}
+	currentSequence := e.storageSeq[room]
+	if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	sequence := options.Sequence
+	if sequence > 0 && sequence <= currentSequence {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	if sequence == 0 {
+		sequence = currentSequence + 1
 	}
 	options.Sequence = sequence
-	return newStorageMutation(StorageMutationSet, stored, nil, options), nil
+	e.storage[room] = append(json.RawMessage(nil), compacted...)
+	e.storageSeq[room] = sequence
+	mutation := newStorageMutation(StorageMutationSet, compacted, nil, options)
+	e.rememberStorageOpLocked(room, options.OpID, fingerprint, mutation)
+	return mutation, false, nil
+}
+
+func (e *Engine) SetStorageMutation(room string, document json.RawMessage, options StorageMutationOptions) (StorageMutation, error) {
+	mutation, _, err := e.setStorageMutation(room, document, options)
+	return mutation, err
 }
 
 func (e *Engine) SetStorageMutationPlan(room string, document json.RawMessage, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
-	mutation, err := e.SetStorageMutation(room, document, mutationOptions)
+	mutation, duplicate, err := e.setStorageMutation(room, document, mutationOptions)
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
 	eventOptions.Sequence = mutation.Sequence
-	return e.StorageMutationPlan(room, mutation, eventOptions)
+	return e.StorageMutationPlanWithOptions(room, mutation, eventOptions, StorageMutationPlanOptions{Duplicate: duplicate})
 }
 
 func (e *Engine) ApplyStoragePatch(room string, operations []cluster.JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
@@ -1396,22 +1443,62 @@ func (e *Engine) ApplyStoragePatchWithOptions(room string, operations []cluster.
 	return append(json.RawMessage(nil), patched...), sequence, nil
 }
 
-func (e *Engine) ApplyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
-	patched, sequence, err := e.ApplyStoragePatchWithOptions(room, operations, options)
+func (e *Engine) applyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, bool, error) {
+	fingerprint, err := storagePatchFingerprint(operations)
 	if err != nil {
-		return StorageMutation{}, err
+		return StorageMutation{}, false, err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if mutation, ok, err := e.storageOpMutationLocked(room, options.OpID, fingerprint); ok || err != nil {
+		return mutation, ok, err
+	}
+	current := e.storage[room]
+	if current == nil {
+		return StorageMutation{}, false, cluster.ErrStorageNotFound
+	}
+	currentSequence := e.storageSeq[room]
+	if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	if options.Sequence > 0 && options.Sequence <= currentSequence {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	patched, err := cluster.ApplyJSONPatch(current, operations)
+	if err != nil {
+		return StorageMutation{}, false, err
+	}
+	if options.MaxBytes > 0 && len(patched) > options.MaxBytes {
+		return StorageMutation{}, false, cluster.ErrStoragePatch
+	}
+	if err := cluster.ValidateStorageDocument(patched); err != nil {
+		return StorageMutation{}, false, err
+	}
+	sequence := options.Sequence
+	if sequence == 0 {
+		sequence = currentSequence + 1
 	}
 	options.Sequence = sequence
-	return newStorageMutation(StorageMutationPatch, patched, operations, options), nil
+	e.storage[room] = append(json.RawMessage(nil), patched...)
+	e.storageSeq[room] = sequence
+	mutation := newStorageMutation(StorageMutationPatch, patched, operations, options)
+	e.rememberStorageOpLocked(room, options.OpID, fingerprint, mutation)
+	return mutation, false, nil
+}
+
+func (e *Engine) ApplyStoragePatchMutation(room string, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
+	mutation, _, err := e.applyStoragePatchMutation(room, operations, options)
+	return mutation, err
 }
 
 func (e *Engine) ApplyStoragePatchMutationPlan(room string, operations []cluster.JSONPatchOperation, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
-	mutation, err := e.ApplyStoragePatchMutation(room, operations, mutationOptions)
+	mutation, duplicate, err := e.applyStoragePatchMutation(room, operations, mutationOptions)
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
 	eventOptions.Sequence = mutation.Sequence
-	return e.StorageMutationPlan(room, mutation, eventOptions)
+	return e.StorageMutationPlanWithOptions(room, mutation, eventOptions, StorageMutationPlanOptions{Duplicate: duplicate})
 }
 
 func (e *Engine) DeleteStorageWithOptions(room string, options StorageMutationOptions) (uint64, error) {
@@ -1442,22 +1529,49 @@ func (e *Engine) deleteStorageWithOptions(room string, options StorageMutationOp
 	return sequence, nil
 }
 
-func (e *Engine) DeleteStorageMutation(room string, options StorageMutationOptions) (StorageMutation, error) {
-	sequence, err := e.DeleteStorageWithOptions(room, options)
-	if err != nil {
-		return StorageMutation{}, err
+func (e *Engine) deleteStorageMutation(room string, options StorageMutationOptions, requireExisting bool) (StorageMutation, bool, error) {
+	fingerprint := storageDeleteFingerprint()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if mutation, ok, err := e.storageOpMutationLocked(room, options.OpID, fingerprint); ok || err != nil {
+		return mutation, ok, err
+	}
+	current := e.storage[room]
+	if requireExisting && current == nil {
+		return StorageMutation{}, false, cluster.ErrStorageNotFound
+	}
+	currentSequence := e.storageSeq[room]
+	if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	if options.Sequence > 0 && options.Sequence <= currentSequence {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	sequence := options.Sequence
+	if sequence == 0 {
+		sequence = currentSequence + 1
 	}
 	options.Sequence = sequence
-	return newStorageMutation(StorageMutationDelete, nil, nil, options), nil
+	delete(e.storage, room)
+	e.storageSeq[room] = sequence
+	mutation := newStorageMutation(StorageMutationDelete, nil, nil, options)
+	e.rememberStorageOpLocked(room, options.OpID, fingerprint, mutation)
+	return mutation, false, nil
+}
+
+func (e *Engine) DeleteStorageMutation(room string, options StorageMutationOptions) (StorageMutation, error) {
+	mutation, _, err := e.deleteStorageMutation(room, options, true)
+	return mutation, err
 }
 
 func (e *Engine) DeleteStorageMutationPlan(room string, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
-	mutation, err := e.DeleteStorageMutation(room, mutationOptions)
+	mutation, duplicate, err := e.deleteStorageMutation(room, mutationOptions, true)
 	if err != nil {
 		return StorageMutationPlan{}, err
 	}
 	eventOptions.Sequence = mutation.Sequence
-	return e.StorageMutationPlan(room, mutation, eventOptions)
+	return e.StorageMutationPlanWithOptions(room, mutation, eventOptions, StorageMutationPlanOptions{Duplicate: duplicate})
 }
 
 func (e *Engine) RecordStorageMutation(room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
@@ -1530,6 +1644,10 @@ func NewStorageMutation(kind string, document json.RawMessage, operations []clus
 }
 
 func (e *Engine) StorageMutationPlan(room string, update StorageMutation, options StorageEventOptions) (StorageMutationPlan, error) {
+	return e.StorageMutationPlanWithOptions(room, update, options, StorageMutationPlanOptions{})
+}
+
+func (e *Engine) StorageMutationPlanWithOptions(room string, update StorageMutation, options StorageEventOptions, planOptions StorageMutationPlanOptions) (StorageMutationPlan, error) {
 	event, err := NewStorageEvent(room, update, options)
 	if err != nil {
 		return StorageMutationPlan{}, err
@@ -1540,9 +1658,10 @@ func (e *Engine) StorageMutationPlan(room string, update StorageMutation, option
 		fanout.Sequence = update.Sequence
 	}
 	return StorageMutationPlan{
-		Mutation: cloneStorageMutation(update),
-		Fanout:   fanout,
-		Event:    event,
+		Mutation:  cloneStorageMutation(update),
+		Fanout:    fanout,
+		Event:     event,
+		Duplicate: planOptions.Duplicate,
 	}, nil
 }
 
@@ -1556,9 +1675,10 @@ func (e *Engine) nextStorageSequence(room string) uint64 {
 
 func (plan StorageMutationPlan) WithEvent(event cluster.PublishedEvent) StorageMutationPlan {
 	next := StorageMutationPlan{
-		Mutation: cloneStorageMutation(plan.Mutation),
-		Fanout:   cloneStorageFanout(plan.Fanout),
-		Event:    clonePublishedEvent(event),
+		Mutation:  cloneStorageMutation(plan.Mutation),
+		Fanout:    cloneStorageFanout(plan.Fanout),
+		Event:     clonePublishedEvent(event),
+		Duplicate: plan.Duplicate,
 	}
 	if next.Fanout.Sequence == 0 {
 		next.Fanout.Sequence = event.Sequence
@@ -1682,6 +1802,54 @@ func cloneStorageFanout(fanout StorageFanout) StorageFanout {
 		Sequence:      fanout.Sequence,
 		TargetConnIDs: append([]string(nil), fanout.TargetConnIDs...),
 	}
+}
+
+func (e *Engine) storageOpMutationLocked(room string, opID string, fingerprint string) (StorageMutation, bool, error) {
+	if opID == "" {
+		return StorageMutation{}, false, nil
+	}
+	record := e.storageOps[room][opID]
+	if record.Fingerprint == "" {
+		return StorageMutation{}, false, nil
+	}
+	if record.Fingerprint != fingerprint {
+		return StorageMutation{}, false, cluster.ErrStorageConflict
+	}
+	return cloneStorageMutation(record.Mutation), true, nil
+}
+
+func (e *Engine) rememberStorageOpLocked(room string, opID string, fingerprint string, mutation StorageMutation) {
+	if opID == "" {
+		return
+	}
+	ops := e.storageOps[room]
+	if ops == nil {
+		ops = make(map[string]storageOpRecord)
+		e.storageOps[room] = ops
+	}
+	ops[opID] = storageOpRecord{
+		Fingerprint: fingerprint,
+		Mutation:    cloneStorageMutation(mutation),
+	}
+}
+
+func storageDocumentFingerprint(kind string, document json.RawMessage) string {
+	sum := sha256.Sum256([]byte(kind + "\x00" + string(document)))
+	return hex.EncodeToString(sum[:])
+}
+
+func storagePatchFingerprint(operations []cluster.JSONPatchOperation) (string, error) {
+	raw, err := json.Marshal(operations)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(append([]byte(StorageMutationPatch+"\x00"), raw...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func storageDeleteFingerprint() string {
+	sum := sha256.Sum256([]byte(StorageMutationDelete + "\x00"))
+	return hex.EncodeToString(sum[:])
 }
 
 func cloneRoomRecord(room cluster.RoomRecord) cluster.RoomRecord {

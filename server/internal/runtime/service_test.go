@@ -1825,6 +1825,23 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 		t.Fatalf("expected sequenced storage set ack metadata, got %#v", setAck.Meta)
 	}
 
+	if err := service.handleStorageSet(sender, protocol.Message{
+		ID:          "storage-set-retry",
+		Room:        "tenant-a:room-1",
+		Payload:     json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Draft"}}`),
+		StorageMeta: &protocol.StorageMeta{OpID: "op-set", ExpectedSequence: 0, ExpectedSequenceSet: true},
+	}); err != nil {
+		t.Fatalf("duplicate storage set should ack without fanout, got %v", err)
+	}
+	duplicateSetAck := readRuntimeOutbound(t, sender)
+	if duplicateSetAck.T != "STORAGE_ACK" || duplicateSetAck.ID != "storage-set-retry" {
+		t.Fatalf("unexpected duplicate storage set ack: %+v", duplicateSetAck)
+	}
+	if meta, ok := duplicateSetAck.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected duplicate set ack metadata seq=1, got %#v", duplicateSetAck.Meta)
+	}
+	assertRuntimeNoOutbound(t, receiver)
+
 	if err := service.handleStorageGet(sender, protocol.Message{ID: "storage-get", Room: "tenant-a:room-1"}); err != nil {
 		t.Fatalf("storage get: %v", err)
 	}
@@ -1867,6 +1884,27 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if meta, ok := patchAck.Meta.(map[string]any); !ok || meta["seq"] != uint64(2) {
 		t.Fatalf("expected sequenced storage patch ack metadata, got %#v", patchAck.Meta)
 	}
+
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-patch-retry",
+		Room:    "tenant-a:room-1",
+		Payload: json.RawMessage(`[{"op":"replace","path":"/data/title","value":"Published"}]`),
+		StorageMeta: &protocol.StorageMeta{
+			OpID:                "op-patch",
+			ExpectedSequence:    1,
+			ExpectedSequenceSet: true,
+		},
+	}); err != nil {
+		t.Fatalf("duplicate storage patch should ack without fanout, got %v", err)
+	}
+	duplicatePatchAck := readRuntimeOutbound(t, sender)
+	if duplicatePatchAck.T != "STORAGE_ACK" || duplicatePatchAck.ID != "storage-patch-retry" {
+		t.Fatalf("unexpected duplicate storage patch ack: %+v", duplicatePatchAck)
+	}
+	if meta, ok := duplicatePatchAck.Meta.(map[string]any); !ok || meta["seq"] != uint64(2) {
+		t.Fatalf("expected duplicate patch ack metadata seq=2, got %#v", duplicatePatchAck.Meta)
+	}
+	assertRuntimeNoOutbound(t, receiver)
 
 	if err := service.handleStoragePatch(sender, protocol.Message{
 		ID:      "storage-conflict",
@@ -1966,6 +2004,28 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	}
 	if string(stored) != `{"title":"Published"}` {
 		t.Fatalf("unexpected room engine storage after store-backed patch: %s", stored)
+	}
+
+	if err := service.handleStoragePatch(sender, protocol.Message{
+		ID:      "storage-patch-store-retry",
+		Room:    "tenant-a:room-1",
+		Payload: json.RawMessage(`[{"op":"replace","path":"/title","value":"Published"}]`),
+		StorageMeta: &protocol.StorageMeta{
+			OpID:                "op-store",
+			ExpectedSequence:    0,
+			ExpectedSequenceSet: true,
+		},
+	}); err != nil {
+		t.Fatalf("duplicate store backed patch should ack without publish, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, sender); got.T != "STORAGE_ACK" || got.ID != "storage-patch-store-retry" {
+		t.Fatalf("unexpected duplicate store backed storage ack: %+v", got)
+	} else if meta, ok := got.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected duplicate store backed ack seq=1, got %#v", got.Meta)
+	}
+	assertRuntimeNoOutbound(t, receiver)
+	if len(store.publishedEvents) != 1 {
+		t.Fatalf("duplicate store backed patch should not publish, got %#v", store.publishedEvents)
 	}
 
 	if err := service.handleStorageGet(sender, protocol.Message{
@@ -2758,6 +2818,8 @@ type fakeRuntimeStore struct {
 	subscribeYJSErr        error
 	storage                json.RawMessage
 	storageSequence        uint64
+	storageOpResults       map[string]cluster.StorageWriteResult
+	storageOpFingerprints  map[string]string
 	getStorageErr          error
 	setStorageErr          error
 	patchStorageErr        error
@@ -2988,22 +3050,43 @@ func (s *fakeRuntimeStore) SetStorage(_ context.Context, _ string, document json
 }
 
 func (s *fakeRuntimeStore) SetStorageWithOptions(_ context.Context, _ string, document json.RawMessage, options cluster.StorageWriteOptions) (json.RawMessage, uint64, error) {
-	if s.setStorageErr != nil {
-		return nil, 0, s.setStorageErr
-	}
-	if options.ExpectedSequenceSet && s.storageSequence != options.ExpectedSequence {
-		return nil, 0, cluster.ErrStorageConflict
-	}
-	stored, err := compactRuntimeTestJSON(document)
+	result, err := s.SetStorageWithResult(context.Background(), "", document, options)
 	if err != nil {
 		return nil, 0, err
 	}
+	return result.Document, result.Sequence, nil
+}
+
+func (s *fakeRuntimeStore) SetStorageWithResult(_ context.Context, _ string, document json.RawMessage, options cluster.StorageWriteOptions) (cluster.StorageWriteResult, error) {
+	if s.setStorageErr != nil {
+		return cluster.StorageWriteResult{}, s.setStorageErr
+	}
+	stored, err := compactRuntimeTestJSON(document)
+	if err != nil {
+		return cluster.StorageWriteResult{}, err
+	}
 	if options.MaxBytes > 0 && len(stored) > options.MaxBytes {
-		return nil, 0, cluster.ErrStoragePatch
+		return cluster.StorageWriteResult{}, cluster.ErrStoragePatch
+	}
+	if err := cluster.ValidateStorageDocument(stored); err != nil {
+		return cluster.StorageWriteResult{}, err
+	}
+	fingerprint := fakeStorageOpFingerprint("set", stored)
+	if result, duplicate, err := s.fakeStorageOpResult(options.OpID, fingerprint); duplicate || err != nil {
+		return result, err
+	}
+	if options.ExpectedSequenceSet && s.storageSequence != options.ExpectedSequence {
+		return cluster.StorageWriteResult{}, cluster.ErrStorageConflict
 	}
 	s.storage = append(json.RawMessage(nil), stored...)
 	s.storageSequence++
-	return append(json.RawMessage(nil), stored...), s.storageSequence, nil
+	result := cluster.StorageWriteResult{
+		Kind:     "set",
+		Document: append(json.RawMessage(nil), stored...),
+		Sequence: s.storageSequence,
+	}
+	s.rememberFakeStorageOp(options.OpID, fingerprint, result)
+	return result, nil
 }
 
 func (s *fakeRuntimeStore) DeleteStorage(context.Context, string) error {
@@ -3016,29 +3099,85 @@ func (s *fakeRuntimeStore) ApplyStoragePatch(_ context.Context, _ string, operat
 }
 
 func (s *fakeRuntimeStore) ApplyStoragePatchWithOptions(_ context.Context, _ string, operations []cluster.JSONPatchOperation, options cluster.StorageWriteOptions) (json.RawMessage, uint64, error) {
-	if s.patchStorageErr != nil {
-		return nil, 0, s.patchStorageErr
-	}
-	if s.storage == nil {
-		return nil, 0, cluster.ErrStorageNotFound
-	}
-	if options.ExpectedSequenceSet && s.storageSequence != options.ExpectedSequence {
-		return nil, 0, cluster.ErrStorageConflict
-	}
-	patched, err := cluster.ApplyJSONPatch(s.storage, operations)
+	result, err := s.ApplyStoragePatchWithResult(context.Background(), "", operations, options)
 	if err != nil {
 		return nil, 0, err
 	}
+	return result.Document, result.Sequence, nil
+}
+
+func (s *fakeRuntimeStore) ApplyStoragePatchWithResult(_ context.Context, _ string, operations []cluster.JSONPatchOperation, options cluster.StorageWriteOptions) (cluster.StorageWriteResult, error) {
+	if s.patchStorageErr != nil {
+		return cluster.StorageWriteResult{}, s.patchStorageErr
+	}
+	if s.storage == nil {
+		return cluster.StorageWriteResult{}, cluster.ErrStorageNotFound
+	}
+	fingerprint := fakeStoragePatchFingerprint(operations)
+	if result, duplicate, err := s.fakeStorageOpResult(options.OpID, fingerprint); duplicate || err != nil {
+		return result, err
+	}
+	if options.ExpectedSequenceSet && s.storageSequence != options.ExpectedSequence {
+		return cluster.StorageWriteResult{}, cluster.ErrStorageConflict
+	}
+	patched, err := cluster.ApplyJSONPatch(s.storage, operations)
+	if err != nil {
+		return cluster.StorageWriteResult{}, err
+	}
 	if options.MaxBytes > 0 && len(patched) > options.MaxBytes {
-		return nil, 0, cluster.ErrStoragePatch
+		return cluster.StorageWriteResult{}, cluster.ErrStoragePatch
 	}
 	if err := cluster.ValidateStorageDocument(patched); err != nil {
-		return nil, 0, err
+		return cluster.StorageWriteResult{}, err
 	}
 	s.storagePatchOperations = append([]cluster.JSONPatchOperation(nil), operations...)
 	s.storage = append(json.RawMessage(nil), patched...)
 	s.storageSequence++
-	return append(json.RawMessage(nil), patched...), s.storageSequence, nil
+	result := cluster.StorageWriteResult{
+		Kind:     "patch",
+		Document: append(json.RawMessage(nil), patched...),
+		Sequence: s.storageSequence,
+	}
+	s.rememberFakeStorageOp(options.OpID, fingerprint, result)
+	return result, nil
+}
+
+func (s *fakeRuntimeStore) fakeStorageOpResult(opID string, fingerprint string) (cluster.StorageWriteResult, bool, error) {
+	if opID == "" {
+		return cluster.StorageWriteResult{}, false, nil
+	}
+	result, ok := s.storageOpResults[opID]
+	if !ok {
+		return cluster.StorageWriteResult{}, false, nil
+	}
+	if s.storageOpFingerprints[opID] != fingerprint {
+		return cluster.StorageWriteResult{}, false, cluster.ErrStorageConflict
+	}
+	result.Document = append(json.RawMessage(nil), result.Document...)
+	result.Duplicate = true
+	return result, true, nil
+}
+
+func (s *fakeRuntimeStore) rememberFakeStorageOp(opID string, fingerprint string, result cluster.StorageWriteResult) {
+	if opID == "" {
+		return
+	}
+	if s.storageOpResults == nil {
+		s.storageOpResults = make(map[string]cluster.StorageWriteResult)
+		s.storageOpFingerprints = make(map[string]string)
+	}
+	result.Document = append(json.RawMessage(nil), result.Document...)
+	s.storageOpResults[opID] = result
+	s.storageOpFingerprints[opID] = fingerprint
+}
+
+func fakeStorageOpFingerprint(kind string, document json.RawMessage) string {
+	return kind + "\x00" + string(document)
+}
+
+func fakeStoragePatchFingerprint(operations []cluster.JSONPatchOperation) string {
+	raw, _ := json.Marshal(operations)
+	return "patch\x00" + string(raw)
 }
 
 func (s *fakeRuntimeStore) LoadYJSDocument(context.Context, string) (cluster.YJSDocument, error) {

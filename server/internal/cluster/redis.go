@@ -3,6 +3,8 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -319,13 +321,29 @@ type Store interface {
 
 type StorageWriteOptions struct {
 	MaxBytes            int
+	OpID                string
 	ExpectedSequence    uint64
 	ExpectedSequenceSet bool
 }
 
 type StorageDeleteOptions struct {
+	OpID                string
 	ExpectedSequence    uint64
 	ExpectedSequenceSet bool
+}
+
+type StorageWriteResult struct {
+	Kind      string
+	Document  json.RawMessage
+	Sequence  uint64
+	Duplicate bool
+}
+
+type storageOpRecord struct {
+	Kind        string          `json:"kind"`
+	Fingerprint string          `json:"fingerprint"`
+	Document    json.RawMessage `json:"document,omitempty"`
+	Sequence    uint64          `json:"seq"`
 }
 
 type SequencedStorageReader interface {
@@ -335,6 +353,11 @@ type SequencedStorageReader interface {
 type SequencedStorageWriter interface {
 	SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error)
 	ApplyStoragePatchWithOptions(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (json.RawMessage, uint64, error)
+}
+
+type IdempotentStorageWriter interface {
+	SetStorageWithResult(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (StorageWriteResult, error)
+	ApplyStoragePatchWithResult(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (StorageWriteResult, error)
 }
 
 type SequencedStorageDeleter interface {
@@ -1232,8 +1255,23 @@ func (s *RedisStore) DeleteStorage(ctx context.Context, room string) error {
 func (s *RedisStore) DeleteStorageWithOptions(ctx context.Context, room string, options StorageDeleteOptions) (uint64, error) {
 	key := roomStorageKey(room)
 	sequenceKey := roomStorageSequenceKey(room)
+	opKey := roomStorageOpKey(room, options.OpID)
+	fingerprint := storageDeleteFingerprint()
 	var sequence uint64
 	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		if options.OpID != "" {
+			record, found, err := loadStorageOpRecord(ctx, tx, opKey)
+			if err != nil {
+				return err
+			}
+			if found {
+				if record.Fingerprint != fingerprint {
+					return fmt.Errorf("%w: storage op id reused with different mutation", ErrStorageConflict)
+				}
+				sequence = record.Sequence
+				return nil
+			}
+		}
 		exists, err := tx.Exists(ctx, key).Result()
 		if err != nil {
 			return err
@@ -1248,18 +1286,28 @@ func (s *RedisStore) DeleteStorageWithOptions(ctx context.Context, room string, 
 		if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
 			return fmt.Errorf("%w: expected %d, got %d", ErrStorageConflict, options.ExpectedSequence, currentSequence)
 		}
-		var increment *redis.IntCmd
+		sequence = currentSequence + 1
+		record, err := encodeStorageOpRecord(storageOpRecord{
+			Kind:        "delete",
+			Fingerprint: fingerprint,
+			Sequence:    sequence,
+		})
+		if err != nil {
+			return err
+		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Del(ctx, key)
-			increment = pipe.Incr(ctx, sequenceKey)
+			pipe.Set(ctx, sequenceKey, strconv.FormatUint(sequence, 10), 0)
+			if options.OpID != "" {
+				pipe.Set(ctx, opKey, record, 0)
+			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		sequence = uint64(increment.Val())
 		return nil
-	}, key, sequenceKey)
+	}, key, sequenceKey, opKey)
 	if err != nil {
 		return 0, err
 	}
@@ -1267,21 +1315,44 @@ func (s *RedisStore) DeleteStorageWithOptions(ctx context.Context, room string, 
 }
 
 func (s *RedisStore) SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error) {
-	compacted, err := compactJSON(document)
+	result, err := s.SetStorageWithResult(ctx, room, document, options)
 	if err != nil {
 		return nil, 0, err
 	}
+	return result.Document, result.Sequence, nil
+}
+
+func (s *RedisStore) SetStorageWithResult(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (StorageWriteResult, error) {
+	compacted, err := compactJSON(document)
+	if err != nil {
+		return StorageWriteResult{}, err
+	}
 	if options.MaxBytes > 0 && len(compacted) > options.MaxBytes {
-		return nil, 0, fmt.Errorf("%w: storage exceeds max size", ErrStoragePatch)
+		return StorageWriteResult{}, fmt.Errorf("%w: storage exceeds max size", ErrStoragePatch)
 	}
 	if err := ValidateStorageDocument(compacted); err != nil {
-		return nil, 0, err
+		return StorageWriteResult{}, err
 	}
 
 	key := roomStorageKey(room)
 	sequenceKey := roomStorageSequenceKey(room)
-	var sequence uint64
+	opKey := roomStorageOpKey(room, options.OpID)
+	fingerprint := storageDocumentFingerprint("set", compacted)
+	var result StorageWriteResult
 	err = s.client.Watch(ctx, func(tx *redis.Tx) error {
+		if options.OpID != "" {
+			record, found, err := loadStorageOpRecord(ctx, tx, opKey)
+			if err != nil {
+				return err
+			}
+			if found {
+				if record.Fingerprint != fingerprint {
+					return fmt.Errorf("%w: storage op id reused with different mutation", ErrStorageConflict)
+				}
+				result = storageWriteResultFromRecord(record, true)
+				return nil
+			}
+		}
 		currentSequence, err := redisStorageSequence(ctx, tx, sequenceKey)
 		if err != nil {
 			return err
@@ -1289,22 +1360,38 @@ func (s *RedisStore) SetStorageWithOptions(ctx context.Context, room string, doc
 		if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
 			return fmt.Errorf("%w: expected %d, got %d", ErrStorageConflict, options.ExpectedSequence, currentSequence)
 		}
-		var increment *redis.IntCmd
+		sequence := currentSequence + 1
+		record, err := encodeStorageOpRecord(storageOpRecord{
+			Kind:        "set",
+			Fingerprint: fingerprint,
+			Document:    compacted,
+			Sequence:    sequence,
+		})
+		if err != nil {
+			return err
+		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, key, string(compacted), 0)
-			increment = pipe.Incr(ctx, sequenceKey)
+			pipe.Set(ctx, sequenceKey, strconv.FormatUint(sequence, 10), 0)
+			if options.OpID != "" {
+				pipe.Set(ctx, opKey, record, 0)
+			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		sequence = uint64(increment.Val())
+		result = StorageWriteResult{
+			Kind:     "set",
+			Document: append(json.RawMessage(nil), compacted...),
+			Sequence: sequence,
+		}
 		return nil
-	}, key, sequenceKey)
+	}, key, sequenceKey, opKey)
 	if err != nil {
-		return nil, 0, err
+		return StorageWriteResult{}, err
 	}
-	return append(json.RawMessage(nil), compacted...), sequence, nil
+	return result, nil
 }
 
 func (s *RedisStore) ApplyStoragePatch(ctx context.Context, room string, operations []JSONPatchOperation, maxBytes int) (json.RawMessage, error) {
@@ -1313,11 +1400,36 @@ func (s *RedisStore) ApplyStoragePatch(ctx context.Context, room string, operati
 }
 
 func (s *RedisStore) ApplyStoragePatchWithOptions(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (json.RawMessage, uint64, error) {
+	result, err := s.ApplyStoragePatchWithResult(ctx, room, operations, options)
+	if err != nil {
+		return nil, 0, err
+	}
+	return result.Document, result.Sequence, nil
+}
+
+func (s *RedisStore) ApplyStoragePatchWithResult(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (StorageWriteResult, error) {
 	key := roomStorageKey(room)
 	sequenceKey := roomStorageSequenceKey(room)
-	var patched json.RawMessage
-	var sequence uint64
-	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+	opKey := roomStorageOpKey(room, options.OpID)
+	fingerprint, err := storagePatchFingerprint(operations)
+	if err != nil {
+		return StorageWriteResult{}, err
+	}
+	var result StorageWriteResult
+	err = s.client.Watch(ctx, func(tx *redis.Tx) error {
+		if options.OpID != "" {
+			record, found, err := loadStorageOpRecord(ctx, tx, opKey)
+			if err != nil {
+				return err
+			}
+			if found {
+				if record.Fingerprint != fingerprint {
+					return fmt.Errorf("%w: storage op id reused with different mutation", ErrStorageConflict)
+				}
+				result = storageWriteResultFromRecord(record, true)
+				return nil
+			}
+		}
 		raw, err := tx.Get(ctx, key).Result()
 		if err == redis.Nil {
 			return ErrStorageNotFound
@@ -1332,33 +1444,48 @@ func (s *RedisStore) ApplyStoragePatchWithOptions(ctx context.Context, room stri
 		if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
 			return fmt.Errorf("%w: expected %d, got %d", ErrStorageConflict, options.ExpectedSequence, currentSequence)
 		}
-		result, err := ApplyJSONPatch(json.RawMessage(raw), operations)
+		patched, err := ApplyJSONPatch(json.RawMessage(raw), operations)
 		if err != nil {
 			return err
 		}
-		if options.MaxBytes > 0 && len(result) > options.MaxBytes {
+		if options.MaxBytes > 0 && len(patched) > options.MaxBytes {
 			return fmt.Errorf("%w: patched storage exceeds max size", ErrStoragePatch)
 		}
-		if err := ValidateStorageDocument(result); err != nil {
+		if err := ValidateStorageDocument(patched); err != nil {
 			return err
 		}
-		var increment *redis.IntCmd
+		sequence := currentSequence + 1
+		record, err := encodeStorageOpRecord(storageOpRecord{
+			Kind:        "patch",
+			Fingerprint: fingerprint,
+			Document:    patched,
+			Sequence:    sequence,
+		})
+		if err != nil {
+			return err
+		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Set(ctx, key, string(result), 0)
-			increment = pipe.Incr(ctx, sequenceKey)
+			pipe.Set(ctx, key, string(patched), 0)
+			pipe.Set(ctx, sequenceKey, strconv.FormatUint(sequence, 10), 0)
+			if options.OpID != "" {
+				pipe.Set(ctx, opKey, record, 0)
+			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		patched = result
-		sequence = uint64(increment.Val())
+		result = StorageWriteResult{
+			Kind:     "patch",
+			Document: append(json.RawMessage(nil), patched...),
+			Sequence: sequence,
+		}
 		return nil
-	}, key, sequenceKey)
+	}, key, sequenceKey, opKey)
 	if err != nil {
-		return nil, 0, err
+		return StorageWriteResult{}, err
 	}
-	return patched, sequence, nil
+	return result, nil
 }
 
 func redisStorageSequence(ctx context.Context, tx *redis.Tx, key string) (uint64, error) {
@@ -1378,6 +1505,63 @@ func parseStorageSequence(raw string) (uint64, error) {
 		return 0, fmt.Errorf("%w: invalid storage sequence", ErrStoragePatch)
 	}
 	return sequence, nil
+}
+
+func loadStorageOpRecord(ctx context.Context, tx *redis.Tx, key string) (storageOpRecord, bool, error) {
+	raw, err := tx.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return storageOpRecord{}, false, nil
+	}
+	if err != nil {
+		return storageOpRecord{}, false, err
+	}
+	var record storageOpRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return storageOpRecord{}, false, fmt.Errorf("%w: invalid storage op record", ErrStoragePatch)
+	}
+	if record.Kind == "" || record.Sequence == 0 {
+		return storageOpRecord{}, false, fmt.Errorf("%w: invalid storage op record", ErrStoragePatch)
+	}
+	if len(record.Document) > 0 {
+		record.Document = append(json.RawMessage(nil), record.Document...)
+	}
+	return record, true, nil
+}
+
+func encodeStorageOpRecord(record storageOpRecord) (string, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func storageWriteResultFromRecord(record storageOpRecord, duplicate bool) StorageWriteResult {
+	return StorageWriteResult{
+		Kind:      record.Kind,
+		Document:  append(json.RawMessage(nil), record.Document...),
+		Sequence:  record.Sequence,
+		Duplicate: duplicate,
+	}
+}
+
+func storageDocumentFingerprint(kind string, document json.RawMessage) string {
+	sum := sha256.Sum256([]byte(kind + "\x00" + string(document)))
+	return hex.EncodeToString(sum[:])
+}
+
+func storagePatchFingerprint(operations []JSONPatchOperation) (string, error) {
+	raw, err := json.Marshal(operations)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(append([]byte("patch\x00"), raw...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func storageDeleteFingerprint() string {
+	sum := sha256.Sum256([]byte("delete\x00"))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *RedisStore) LoadYJSDocument(ctx context.Context, room string) (YJSDocument, error) {
@@ -2503,6 +2687,10 @@ func roomStorageKey(room string) string {
 
 func roomStorageSequenceKey(room string) string {
 	return fmt.Sprintf("room:%s:storage:seq", room)
+}
+
+func roomStorageOpKey(room string, opID string) string {
+	return fmt.Sprintf("room:%s:storage:op:%s", room, opID)
 }
 
 func roomEventLogKey(room string) string {

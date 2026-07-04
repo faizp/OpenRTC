@@ -203,7 +203,11 @@ base document. Conflict errors include the authoritative storage document and
 sequence when available, and the SDK applies that repair snapshot before
 rejecting the stale mutation so later pending mutations can rebase cleanly.
 Storage mutations send an `op_id` automatically when one is not provided, so
-optimistic, ack, and rollback events can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
+optimistic, ack, and rollback events can be correlated. The runtime treats a
+retry with the same `op_id` and same normalized mutation as idempotent: it
+replays the original ACK document/sequence without incrementing storage sequence
+or fanning out a second update. Reusing an `op_id` for a different mutation is a
+`STORAGE_CONFLICT`. Typed storage helpers build Liveblocks-style `LiveObject`,
 `LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
 reserved envelope JSON. `room.mutateLiveStorage` and `liveStorageMutation`

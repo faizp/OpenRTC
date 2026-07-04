@@ -1454,6 +1454,31 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 		t.Fatalf("set plan fanout should have its own mutation copy, got %s", setPlan.Fanout.Update.Document)
 	}
 
+	duplicateSetPlan, err := engine.SetStorageMutationPlan("room-a", json.RawMessage(`{
+		"liveblocksType":"LiveObject",
+		"data":{"title":"Draft"}
+	}`), StorageMutationOptions{
+		OpID:                "op-set",
+		OriginConnID:        "conn-sender",
+		ExpectedSequence:    0,
+		ExpectedSequenceSet: true,
+	}, StorageEventOptions{
+		OriginNode:          "node-a",
+		ExcludeSenderConnID: "conn-sender",
+	})
+	if err != nil {
+		t.Fatalf("duplicate set storage mutation plan: %v", err)
+	}
+	if !duplicateSetPlan.Duplicate || duplicateSetPlan.Mutation.Sequence != 1 || string(duplicateSetPlan.Mutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Draft"}}` {
+		t.Fatalf("unexpected duplicate set plan: %+v", duplicateSetPlan)
+	}
+	if _, err := engine.SetStorageMutationPlan("room-a", json.RawMessage(`{
+		"liveblocksType":"LiveObject",
+		"data":{"title":"Different"}
+	}`), StorageMutationOptions{OpID: "op-set"}, StorageEventOptions{}); !errors.Is(err, cluster.ErrStorageConflict) {
+		t.Fatalf("expected reused set op id conflict, got %v", err)
+	}
+
 	patchPlan, err := engine.ApplyStoragePatchMutationPlan("room-a", []cluster.JSONPatchOperation{
 		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
 	}, StorageMutationOptions{
@@ -1477,6 +1502,28 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	}
 	if patchPlan.Event.Sequence != 2 || patchPlan.Fanout.Sequence != 2 {
 		t.Fatalf("expected local patch storage sequence 2, got event=%+v fanout=%+v", patchPlan.Event, patchPlan.Fanout)
+	}
+	duplicatePatchPlan, err := engine.ApplyStoragePatchMutationPlan("room-a", []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
+	}, StorageMutationOptions{
+		OpID:                "op-patch",
+		OriginConnID:        "conn-sender",
+		ExpectedSequence:    1,
+		ExpectedSequenceSet: true,
+	}, StorageEventOptions{
+		OriginNode:          "node-a",
+		ExcludeSenderConnID: "conn-sender",
+	})
+	if err != nil {
+		t.Fatalf("duplicate patch storage mutation plan: %v", err)
+	}
+	if !duplicatePatchPlan.Duplicate || duplicatePatchPlan.Mutation.Sequence != 2 || string(duplicatePatchPlan.Mutation.Document) != `{"data":{"title":"Published"},"liveblocksType":"LiveObject"}` {
+		t.Fatalf("unexpected duplicate patch plan: %+v", duplicatePatchPlan)
+	}
+	if _, err := engine.ApplyStoragePatchMutationPlan("room-a", []cluster.JSONPatchOperation{
+		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Different"`)},
+	}, StorageMutationOptions{OpID: "op-patch"}, StorageEventOptions{}); !errors.Is(err, cluster.ErrStorageConflict) {
+		t.Fatalf("expected reused patch op id conflict, got %v", err)
 	}
 	if _, err := engine.ApplyStoragePatchMutationPlan("room-a", []cluster.JSONPatchOperation{
 		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Stale"`)},

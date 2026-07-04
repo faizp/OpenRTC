@@ -1931,6 +1931,84 @@ func TestRedisStorageLifecycleAndPatch(t *testing.T) {
 	}
 }
 
+func TestRedisStorageWriteOpIDIdempotency(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	setResult, err := store.SetStorageWithResult(ctx, "tenant-a:doc-1", json.RawMessage(`{"title":"Draft"}`), StorageWriteOptions{
+		OpID: "op-set-1",
+	})
+	if err != nil {
+		t.Fatalf("set storage with op id: %v", err)
+	}
+	if setResult.Duplicate || setResult.Sequence != 1 || string(setResult.Document) != `{"title":"Draft"}` {
+		t.Fatalf("unexpected set result: %+v", setResult)
+	}
+	duplicateSet, err := store.SetStorageWithResult(ctx, "tenant-a:doc-1", json.RawMessage(`{"title":"Draft"}`), StorageWriteOptions{
+		OpID:                "op-set-1",
+		ExpectedSequence:    0,
+		ExpectedSequenceSet: true,
+	})
+	if err != nil {
+		t.Fatalf("duplicate set storage with op id: %v", err)
+	}
+	if !duplicateSet.Duplicate || duplicateSet.Sequence != 1 || string(duplicateSet.Document) != `{"title":"Draft"}` {
+		t.Fatalf("unexpected duplicate set result: %+v", duplicateSet)
+	}
+	if _, err := store.SetStorageWithResult(ctx, "tenant-a:doc-1", json.RawMessage(`{"title":"Different"}`), StorageWriteOptions{
+		OpID: "op-set-1",
+	}); !errors.Is(err, ErrStorageConflict) {
+		t.Fatalf("expected reused set op id conflict, got %v", err)
+	}
+
+	patchOps := []JSONPatchOperation{{Op: "replace", Path: "/title", Value: json.RawMessage(`"Published"`)}}
+	patchResult, err := store.ApplyStoragePatchWithResult(ctx, "tenant-a:doc-1", patchOps, StorageWriteOptions{
+		OpID:                "op-patch-1",
+		ExpectedSequence:    1,
+		ExpectedSequenceSet: true,
+	})
+	if err != nil {
+		t.Fatalf("patch storage with op id: %v", err)
+	}
+	if patchResult.Duplicate || patchResult.Sequence != 2 || string(patchResult.Document) != `{"title":"Published"}` {
+		t.Fatalf("unexpected patch result: %+v", patchResult)
+	}
+	duplicatePatch, err := store.ApplyStoragePatchWithResult(ctx, "tenant-a:doc-1", patchOps, StorageWriteOptions{
+		OpID:                "op-patch-1",
+		ExpectedSequence:    1,
+		ExpectedSequenceSet: true,
+	})
+	if err != nil {
+		t.Fatalf("duplicate patch storage with op id: %v", err)
+	}
+	if !duplicatePatch.Duplicate || duplicatePatch.Sequence != 2 || string(duplicatePatch.Document) != `{"title":"Published"}` {
+		t.Fatalf("unexpected duplicate patch result: %+v", duplicatePatch)
+	}
+	if _, err := store.ApplyStoragePatchWithResult(ctx, "tenant-a:doc-1", []JSONPatchOperation{
+		{Op: "replace", Path: "/title", Value: json.RawMessage(`"Different"`)},
+	}, StorageWriteOptions{OpID: "op-patch-1"}); !errors.Is(err, ErrStorageConflict) {
+		t.Fatalf("expected reused patch op id conflict, got %v", err)
+	}
+
+	snapshot, sequence, err := store.GetStorageWithSequence(ctx, "tenant-a:doc-1")
+	if err != nil {
+		t.Fatalf("get storage with sequence: %v", err)
+	}
+	if sequence != 2 || string(snapshot) != `{"title":"Published"}` {
+		t.Fatalf("duplicate writes should not advance storage: sequence=%d document=%s", sequence, snapshot)
+	}
+}
+
 func TestRedisStorageValidatesTypedLiveblocksStorage(t *testing.T) {
 	redisServer, err := miniredis.Run()
 	if err != nil {

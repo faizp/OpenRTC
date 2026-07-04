@@ -779,8 +779,10 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 	if err != nil {
 		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
-	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
-		return err
+	if !plan.Duplicate {
+		if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
+			return err
+		}
 	}
 	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document, plan.Fanout.Sequence))
 }
@@ -811,8 +813,10 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 	if err != nil {
 		return conn.enqueue(s.storageErrorMessage(message.ID, message.Room, err))
 	}
-	if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
-		return err
+	if !plan.Duplicate {
+		if err := s.broadcastStorageFanout(plan.Fanout); err != nil {
+			return err
+		}
 	}
 	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document, plan.Fanout.Sequence))
 }
@@ -1172,6 +1176,13 @@ func (s *Service) getStorageSnapshot(room string) (json.RawMessage, uint64, erro
 
 func (s *Service) setStorageMutationPlan(room string, document json.RawMessage, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
 	if s.store != nil {
+		if idempotent, ok := s.store.(cluster.IdempotentStorageWriter); ok {
+			result, err := idempotent.SetStorageWithResult(s.ctx, room, document, storageWriteOptions(mutationOptions))
+			if err != nil {
+				return roomengine.StorageMutationPlan{}, err
+			}
+			return s.storageMutationPlanFromWriteResult(room, roomengine.StorageMutationSet, result, nil, mutationOptions, eventOptions)
+		}
 		if sequenced, ok := s.store.(cluster.SequencedStorageWriter); ok {
 			stored, sequence, err := sequenced.SetStorageWithOptions(s.ctx, room, document, storageWriteOptions(mutationOptions))
 			if err != nil {
@@ -1194,6 +1205,13 @@ func (s *Service) setStorageMutationPlan(room string, document json.RawMessage, 
 
 func (s *Service) applyStoragePatchMutationPlan(room string, operations []cluster.JSONPatchOperation, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
 	if s.store != nil {
+		if idempotent, ok := s.store.(cluster.IdempotentStorageWriter); ok {
+			result, err := idempotent.ApplyStoragePatchWithResult(s.ctx, room, operations, storageWriteOptions(mutationOptions))
+			if err != nil {
+				return roomengine.StorageMutationPlan{}, err
+			}
+			return s.storageMutationPlanFromWriteResult(room, roomengine.StorageMutationPatch, result, operations, mutationOptions, eventOptions)
+		}
 		if sequenced, ok := s.store.(cluster.SequencedStorageWriter); ok {
 			patched, sequence, err := sequenced.ApplyStoragePatchWithOptions(s.ctx, room, operations, storageWriteOptions(mutationOptions))
 			if err != nil {
@@ -1214,8 +1232,25 @@ func (s *Service) applyStoragePatchMutationPlan(room string, operations []cluste
 	return s.roomEngine().ApplyStoragePatchMutationPlan(room, operations, mutationOptions, eventOptions)
 }
 
+func (s *Service) storageMutationPlanFromWriteResult(room string, kind string, result cluster.StorageWriteResult, operations []cluster.JSONPatchOperation, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {
+	mutationOptions.Sequence = result.Sequence
+	if result.Duplicate {
+		mutationKind := kind
+		if result.Kind != "" {
+			mutationKind = result.Kind
+		}
+		mutation, err := roomengine.NewStorageMutation(mutationKind, result.Document, operations, mutationOptions)
+		if err != nil {
+			return roomengine.StorageMutationPlan{}, err
+		}
+		eventOptions.Sequence = result.Sequence
+		return s.roomEngine().StorageMutationPlanWithOptions(room, mutation, eventOptions, roomengine.StorageMutationPlanOptions{Duplicate: true})
+	}
+	return s.roomEngine().RecordStorageMutationPlan(room, kind, result.Document, operations, mutationOptions, eventOptions)
+}
+
 func (s *Service) publishStoragePlan(plan roomengine.StorageMutationPlan) (roomengine.StorageMutationPlan, error) {
-	if s.store == nil {
+	if s.store == nil || plan.Duplicate {
 		return plan, nil
 	}
 	event, err := s.store.PublishEvent(s.ctx, plan.Event)
@@ -1498,6 +1533,7 @@ func storageExpectedSequenceSet(message protocol.Message) bool {
 func storageWriteOptions(options roomengine.StorageMutationOptions) cluster.StorageWriteOptions {
 	return cluster.StorageWriteOptions{
 		MaxBytes:            options.MaxBytes,
+		OpID:                options.OpID,
 		ExpectedSequence:    options.ExpectedSequence,
 		ExpectedSequenceSet: options.ExpectedSequenceSet,
 	}
