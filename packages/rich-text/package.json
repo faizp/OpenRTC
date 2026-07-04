@@ -4,16 +4,30 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./react": "./src/react.ts"
   },
   "peerDependencies": {
     "@openrtc/client": "workspace:*",
+    "@openrtc/react": "workspace:*",
     "@openrtc/yjs": "workspace:*",
+    "react": "^18.0.0 || ^19.0.0",
     "yjs": "13.6.27"
+  },
+  "peerDependenciesMeta": {
+    "@openrtc/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@openrtc/client": "workspace:*",
+    "@openrtc/react": "workspace:*",
     "@openrtc/yjs": "workspace:*",
+    "@types/react": "19.1.14",
+    "react": "19.1.1",
     "yjs": "13.6.27"
   },
   "scripts": {

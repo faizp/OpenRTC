@@ -16,7 +16,11 @@ import {
   isTextSelectionPresence,
   subscribeRemoteTextSelections,
 } from "./index.ts";
+import { useRemoteTextSelections, useSelectionPresenceController } from "./react.ts";
 import type { PresenceState } from "@openrtc/client";
+
+assert.equal(typeof useRemoteTextSelections, "function");
+assert.equal(typeof useSelectionPresenceController, "function");
 
 class FakeClient {
   updates: Array<{ room: string; state: PresenceState }> = [];

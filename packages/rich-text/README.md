@@ -225,6 +225,39 @@ const unsubscribeSelections = subscribeRemoteTextSelections(roomHandle, (selecti
 });
 ```
 
+## React Selection Hooks
+
+React apps can import `@openrtc/rich-text/react` to avoid writing room
+subscription glue in every editor canvas:
+
+```ts
+import {
+  useRemoteTextSelections,
+  useSelectionPresenceController,
+} from "@openrtc/rich-text/react";
+import { useEffect } from "react";
+
+const selections = useRemoteTextSelections(room, {
+  editor: "tiptap",
+  maxAgeMs: 30_000,
+});
+
+const selectionPresence = useSelectionPresenceController({
+  room,
+  editor: "tiptap",
+  extraState: () => ({ user }),
+  readSelection: () => {
+    const { anchor, head, from, to } = editor.state.selection;
+    return { anchor, head, from, to };
+  },
+});
+
+useEffect(() => {
+  editor.on("selectionUpdate", selectionPresence.flush);
+  return () => editor.off("selectionUpdate", selectionPresence.flush);
+}, [editor, selectionPresence]);
+```
+
 Yjs awareness is still available through `provider.awareness` for editor plugins
 that expect provider-style awareness. OpenRTC presence remains the source for
 app-level user metadata and diagnostics.

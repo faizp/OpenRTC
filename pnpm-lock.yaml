@@ -37,9 +37,18 @@ importers:
       '@openrtc/client':
         specifier: workspace:*
         version: link:../client
+      '@openrtc/react':
+        specifier: workspace:*
+        version: link:../react
       '@openrtc/yjs':
         specifier: workspace:*
         version: link:../yjs
+      '@types/react':
+        specifier: 19.1.14
+        version: 19.1.14
+      react:
+        specifier: 19.1.1
+        version: 19.1.1
       yjs:
         specifier: 13.6.27
         version: 13.6.27

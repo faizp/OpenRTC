@@ -209,6 +209,10 @@ For rich-text editors, `@openrtc/rich-text` exports Tiptap, Lexical, and
 BlockNote integration helpers that wire `OpenRTCClient`, `OpenRTCYjsProvider`,
 Yjs document bindings, editor selection presence, remote-selection filtering,
 and cleanup without adding editor dependencies to the OpenRTC package itself.
+React apps can import `@openrtc/rich-text/react` for
+`useRemoteTextSelections()` and `useSelectionPresenceController()` so Tiptap,
+Lexical, and BlockNote canvases can render remote selections and flush local
+selection presence without custom room subscription glue.
 
 The React package exposes the same lifecycle through `useEnterRoom`,
 `usePresence`, `useOthers`, `useOthersMapped`, `useOthersConnectionIds`,
