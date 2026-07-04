@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,23 @@ func TestMainRejectsUnexpectedArgs(t *testing.T) {
 	}
 }
 
+func TestMainProbeHelpReturnsSuccess(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{"probe", "--help"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "Usage of openrtc dev probe") {
+		t.Fatalf("expected probe help on stdout, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
 func TestParseOptionsDefaultsToMemoryStorage(t *testing.T) {
 	clearDevStorageEnv(t)
 	var output bytes.Buffer
@@ -92,6 +110,86 @@ func TestParseOptionsRejectsUnknownStorage(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "storage must be memory or redis") {
 		t.Fatalf("expected storage validation error, got %v", err)
+	}
+}
+
+func TestParseProbeOptionsRejectsBadRestart(t *testing.T) {
+	var output bytes.Buffer
+
+	_, err := parseProbeOptions([]string{"--restart", "everything"}, &output)
+
+	if err == nil || !strings.Contains(err.Error(), "restart must be none, runtime, admin, or both") {
+		t.Fatalf("expected restart validation error, got %v", err)
+	}
+}
+
+func TestRunProbeReportsHealthyDevStack(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true})
+	defer server.Close()
+
+	result, err := runProbe(context.Background(), probeOptions{
+		baseURL:           server.URL,
+		room:              "demo:room-1",
+		restart:           probeRestartBoth,
+		timeout:           time.Second,
+		afterSequence:     4,
+		limit:             5,
+		expectSeedRoom:    true,
+		expectSeedStorage: true,
+	})
+
+	if err != nil {
+		t.Fatalf("run probe: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected healthy probe, got %+v", result.Checks)
+	}
+	if result.Room != "demo:room-1" {
+		t.Fatalf("unexpected room: %q", result.Room)
+	}
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,restart-runtime,restart-admin" {
+		t.Fatalf("unexpected checks: %v", got)
+	}
+	if result.Snapshots.Events == nil || result.Snapshots.Events.AfterSequence != 4 || result.Snapshots.Events.Limit != 5 {
+		t.Fatalf("expected event probe options to be forwarded, got %+v", result.Snapshots.Events)
+	}
+	if result.Snapshots.RuntimeRestart == nil || result.Snapshots.RuntimeRestart.Service != "runtime" {
+		t.Fatalf("expected runtime restart snapshot, got %+v", result.Snapshots.RuntimeRestart)
+	}
+	if result.Snapshots.AdminRestart == nil || result.Snapshots.AdminRestart.Service != "admin" {
+		t.Fatalf("expected admin restart snapshot, got %+v", result.Snapshots.AdminRestart)
+	}
+}
+
+func TestProbeMainWritesDegradedJSONAndFails(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: false})
+	defer server.Close()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := probeMain([]string{"--base-url", server.URL, "--json", "--timeout", "1s"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr for structured degraded report, got %q", stderr.String())
+	}
+	var result devProbeResult
+	if err := json.NewDecoder(&stdout).Decode(&result); err != nil {
+		t.Fatalf("decode probe JSON: %v\n%s", err, stdout.String())
+	}
+	if result.OK {
+		t.Fatalf("expected degraded probe result")
+	}
+	if probeCheckByName(result.Checks, "status").OK {
+		t.Fatalf("expected status check to fail: %+v", result.Checks)
+	}
+	if probeCheckByName(result.Checks, "storage").OK {
+		t.Fatalf("expected storage check to fail: %+v", result.Checks)
+	}
+	if !probeCheckByName(result.Checks, "events").OK {
+		t.Fatalf("expected events check to pass: %+v", result.Checks)
 	}
 }
 
@@ -922,6 +1020,203 @@ func (s *fakeDevStorageStore) ListPublishedEvents(_ context.Context, room string
 		}
 	}
 	return cluster.PublishedEventList{Events: events}, nil
+}
+
+type probeTestServerOptions struct {
+	healthy bool
+}
+
+type probeTestServer struct {
+	URL string
+}
+
+func (s *probeTestServer) Close() {}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestServer {
+	t.Helper()
+	mux := http.NewServeMux()
+	baseURL := "http://openrtc-dev.test"
+	config := func() devClientConfigSnapshot {
+		return devClientConfigSnapshot{
+			PublicKey:        localPublicKey,
+			TokenURL:         "/dev/token",
+			JWKSURL:          baseURL + "/jwks",
+			WSURL:            "ws://127.0.0.1:8080/ws",
+			YJSURL:           "ws://127.0.0.1:8080/yjs",
+			AdminURL:         "http://127.0.0.1:8090",
+			AdminProxyURL:    "/admin",
+			RuntimeURL:       "http://127.0.0.1:8080",
+			RuntimeProxyURL:  "/runtime",
+			StatusURL:        baseURL + "/dev/status",
+			ConnectionsURL:   baseURL + "/dev/connections?room=demo:room-1",
+			SocketsURL:       baseURL + "/dev/sockets",
+			StorageURL:       baseURL + "/dev/storage?room=demo:room-1",
+			YJSInspectionURL: baseURL + "/dev/yjs?room=demo:room-1",
+			EventsURL:        baseURL + "/dev/events?room=demo:room-1",
+			CrashRuntimeURL:  baseURL + "/dev/crash/runtime",
+			CrashAdminURL:    baseURL + "/dev/crash/admin",
+			SeedRooms:        []string{"demo:room-1", "demo:canvas-1"},
+		}
+	}
+	writeJSON := func(w http.ResponseWriter, status int, value any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(value)
+	}
+
+	mux.HandleFunc("/dev/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, config())
+	})
+	mux.HandleFunc("/dev/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		statusCode := http.StatusOK
+		body := devStatusSnapshot{
+			Status:         "ok",
+			StorageBackend: devStorageMemory,
+			Redis:          devDependencyStatus{Healthy: true},
+			Runtime:        devManagedServiceStatus{Running: true, URL: "http://127.0.0.1:8080", Health: "http://127.0.0.1:8080/healthz", Ready: "http://127.0.0.1:8080/readyz", Generation: 2},
+			Admin:          devManagedServiceStatus{Running: true, URL: "http://127.0.0.1:8090", Health: "http://127.0.0.1:8090/healthz", Ready: "http://127.0.0.1:8090/readyz", Generation: 1},
+			SeedRooms:      []devSeedRoomStatus{{Room: "demo:room-1", Exists: true, StorageFound: true}},
+			Endpoints:      devEndpointSnapshot{Sockets: baseURL + "/dev/sockets"},
+		}
+		if !opts.healthy {
+			statusCode = http.StatusServiceUnavailable
+			body.Status = "degraded"
+			body.Redis = devDependencyStatus{Healthy: false, Error: "redis ping failed"}
+			body.Runtime.Running = false
+			body.SeedRooms = []devSeedRoomStatus{{Room: "demo:room-1", Exists: true, StorageFound: false}}
+		}
+		writeJSON(w, statusCode, body)
+	})
+	mux.HandleFunc("/dev/connections", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"room":        r.URL.Query().Get("room"),
+			"connections": []map[string]any{{"type": "json", "connection_id": "conn-1", "id": "ada", "tenant": "demo"}},
+		})
+	})
+	mux.HandleFunc("/dev/sockets", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node_id":           "dev-runtime",
+			"connections":       []map[string]any{{"connection_id": "conn-1", "subject": "ada", "tenant": "demo", "rooms": []string{"demo:room-1"}}},
+			"yjs_connections":   []map[string]any{{"connection_id": "yjs-1", "subject": "ada", "tenant": "demo", "room": "demo:room-1"}},
+			"active_sockets":    2,
+			"active_room_count": 1,
+		})
+	})
+	mux.HandleFunc("/dev/storage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		found := opts.healthy
+		var document json.RawMessage
+		if found {
+			document = json.RawMessage(`{"title":"OpenRTC dev room"}`)
+		}
+		writeJSON(w, http.StatusOK, devStorageSnapshot{
+			Room:    r.URL.Query().Get("room"),
+			Durable: devStorageDocumentSnapshot{Found: found, Document: document},
+		})
+	})
+	mux.HandleFunc("/dev/yjs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, devYJSSnapshot{
+			Room: r.URL.Query().Get("room"),
+			Durable: devYJSDocumentSnapshot{
+				Found:              opts.healthy,
+				SnapshotFound:      opts.healthy,
+				SnapshotBytes:      10,
+				SnapshotHash:       "fnv1a64:abc",
+				SnapshotCheckpoint: 3,
+				UpdateCount:        1,
+				UpdateBytes:        10,
+			},
+		})
+	})
+	mux.HandleFunc("/dev/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		after, _ := strconv.ParseUint(r.URL.Query().Get("after_seq"), 10, 64)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		writeJSON(w, http.StatusOK, devEventsSnapshot{
+			Room:          r.URL.Query().Get("room"),
+			AfterSequence: after,
+			Limit:         limit,
+			Events:        []cluster.PublishedEvent{{Room: "demo:room-1", Event: "dev.probe", Sequence: after + 1}},
+		})
+	})
+	mux.HandleFunc("/dev/crash/runtime", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method must be POST", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, devRestartSnapshot{Status: "restarted", Service: "runtime", ServiceStatus: devManagedServiceStatus{Running: true, Generation: 3}})
+	})
+	mux.HandleFunc("/dev/crash/admin", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method must be POST", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, devRestartSnapshot{Status: "restarted", Service: "admin", ServiceStatus: devManagedServiceStatus{Running: true, Generation: 2}})
+	})
+
+	previousClient := probeHTTPClient
+	probeHTTPClient = func() *http.Client {
+		return &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, req)
+				return rec.Result(), nil
+			}),
+		}
+	}
+	t.Cleanup(func() {
+		probeHTTPClient = previousClient
+	})
+	return &probeTestServer{URL: baseURL}
+}
+
+func probeCheckNames(checks []devProbeCheck) []string {
+	names := make([]string, 0, len(checks))
+	for _, check := range checks {
+		names = append(names, check.Name)
+	}
+	return names
+}
+
+func probeCheckByName(checks []devProbeCheck, name string) devProbeCheck {
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return devProbeCheck{}
 }
 
 func hasAudience(value any, audience string) bool {

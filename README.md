@@ -41,6 +41,10 @@ go run ./server/cmd/openrtc dev
 
 # Optional: use external Redis instead of the embedded local store.
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
+
+# In another terminal, run a typed smoke probe against the live dev stack.
+go run ./server/cmd/openrtc dev probe --restart runtime
+go run ./server/cmd/openrtc dev probe --json
 ```
 
 Then open `http://127.0.0.1:3000`. The dev server exposes:
@@ -57,6 +61,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
+- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills and JSON output.
 - `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, sockets, storage, Yjs metadata, event logs, restart drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs.
 
 For a zero-config local client, let the SDK fetch the dev token response and

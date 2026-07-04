@@ -37,6 +37,9 @@ go run ./server/cmd/openrtc dev
 
 # Optional: use external Redis instead of the embedded local store.
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
+
+# In another terminal, run a terminal/CI smoke probe.
+go run ./server/cmd/openrtc dev probe --restart runtime
 ```
 
 Then open:
@@ -64,6 +67,7 @@ The dev server starts:
 - Yjs snapshot/update metadata reads at `http://127.0.0.1:3000/dev/yjs?room=demo:room-1`
 - Bounded room event-log reads at `http://127.0.0.1:3000/dev/events?room=demo:room-1`
 - Ops dev status, socket/event inspection, and reconnect drill with generation verification
+- Terminal smoke probe via `openrtc dev probe`, with `--json` for machine-readable CI output and `--restart runtime|admin|both` for failure drills
 
 The older reference server entrypoint still works from this directory:
 
