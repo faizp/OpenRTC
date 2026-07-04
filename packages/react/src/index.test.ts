@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { isValidElement, type ReactElement } from "react";
 import {
+  CommentsPanel,
   Cursor,
   OpenRTCAdminProvider,
   RoomProvider,
@@ -124,6 +125,7 @@ assert.equal(typeof useDeleteInboxNotification, "function");
 assert.equal(typeof useDeleteAllInboxNotifications, "function");
 assert.equal(typeof useUpdateRoomSubscriptionSettings, "function");
 assert.equal(typeof useResetRoomSubscriptionSettings, "function");
+assert.equal(typeof CommentsPanel, "function");
 assert.equal(typeof OpenRTCAdminProvider, "function");
 assert.equal(typeof useOpenRTCAdmin, "function");
 assert.equal(typeof RoomProvider, "function");
@@ -173,6 +175,7 @@ assert.equal(typeof roomContext.useAddCommentMention, "function");
 assert.equal(typeof roomContext.useRemoveCommentMention, "function");
 assert.equal(typeof roomContext.useUpdateRoomSubscriptionSettings, "function");
 assert.equal(typeof roomContext.useResetRoomSubscriptionSettings, "function");
+assert.equal(typeof roomContext.CommentsPanel, "function");
 
 const labeledCursor = asElement(
   Cursor({

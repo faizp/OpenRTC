@@ -49,6 +49,8 @@ Implemented:
 - Thread list query/pagination for resolved state and thread metadata filters.
 - Per-user thread read-state APIs, unread thread list filters, and
   client/React read-state hooks.
+- Embeddable React `CommentsPanel` hosted comments surface for durable room
+  threads, replies, read/unread state, and resolve/reopen actions.
 - Room broadcast from clients and admin service.
 - Multi-node fan-out through Redis Pub/Sub.
 - Binary `/yjs/{room}` endpoint with persisted snapshot/update replay and cross-node fan-out.
@@ -57,7 +59,7 @@ Implemented:
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
-- Thread subscription workflows and hosted comments UI.
+- Thread subscription workflows.
 - Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
   product features beyond the package-level Yjs binding, selection presence,
   remote-selection, and cleanup helpers.
@@ -129,6 +131,8 @@ Recommended target shape:
 - Added Redis-backed inbox notifications, notification settings, and room
   subscription settings with `notifications:` scoped authorization and durable
   read/reset state.
+- Added an embeddable React `CommentsPanel` hosted comments surface on top of
+  the durable thread/comment, read-state, and resolve/reopen APIs.
 - Added a lightweight Yjs awareness-compatible SDK bridge over existing
   OpenRTC presence so user/cursor state remains ephemeral and separate from
   persisted Yjs document updates.

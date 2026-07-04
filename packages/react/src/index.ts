@@ -9,8 +9,10 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type ChangeEvent,
   type Context,
   type DependencyList,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -33,6 +35,7 @@ import {
   type EnterRoomOptions,
   type JSONPatchOperation,
   type JoinOptions,
+  type OpenRTCAdminComment,
   type OpenRTCAdminCommentInput,
   type OpenRTCAdminCommentReaction,
   type OpenRTCAdminCommentUpdate,
@@ -143,6 +146,71 @@ export interface CommentMentionActionInput {
   currentMentions?: readonly string[];
 }
 
+export type CommentsPanelBodyKind = "thread" | "comment";
+
+export interface CommentsPanelBodyContext {
+  kind: CommentsPanelBodyKind;
+  thread?: OpenRTCAdminThread;
+}
+
+export interface CommentsPanelMetadataContext extends CommentsPanelBodyContext {
+  text: string;
+}
+
+export type CommentsPanelMetadataValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly CommentsPanelMetadataValue[]
+  | { readonly [key: string]: CommentsPanelMetadataValue };
+
+export type CommentsPanelMetadata =
+  | CommentsPanelMetadataValue
+  | ((context: CommentsPanelMetadataContext) => unknown);
+
+export interface CommentsPanelRenderCommentContext {
+  thread: OpenRTCAdminThread;
+  comment: OpenRTCAdminComment;
+  index: number;
+  text: ReactNode;
+}
+
+export interface CommentsPanelRenderThreadActionsContext {
+  thread: OpenRTCAdminThread;
+  pending: boolean;
+  markRead(): Promise<void>;
+  markUnread(): Promise<void>;
+  resolve(): Promise<void>;
+  unresolve(): Promise<void>;
+}
+
+export interface CommentsPanelProps extends RoomThreadsOptions {
+  room: string;
+  userId: string;
+  title?: ReactNode;
+  emptyState?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  composerPlaceholder?: string;
+  replyPlaceholder?: string;
+  showComposer?: boolean;
+  showResolved?: boolean;
+  showReadActions?: boolean;
+  showResolveActions?: boolean;
+  bodyFromText?: (text: string, context: CommentsPanelBodyContext) => unknown;
+  textFromBody?: (body: unknown, context: CommentsPanelBodyContext) => ReactNode;
+  threadMetadata?: CommentsPanelMetadata;
+  commentMetadata?: CommentsPanelMetadata;
+  renderComment?: (context: CommentsPanelRenderCommentContext) => ReactNode;
+  renderThreadActions?: (context: CommentsPanelRenderThreadActionsContext) => ReactNode;
+  onThreadCreated?: (thread: OpenRTCAdminThread) => void;
+  onCommentCreated?: (thread: OpenRTCAdminThread) => void;
+  onThreadUpdated?: (thread: OpenRTCAdminThread) => void;
+}
+
+export type RoomCommentsPanelProps = Omit<CommentsPanelProps, "room">;
+
 export interface EditCommentMetadataInput {
   threadId: string;
   commentId: string;
@@ -189,6 +257,7 @@ export interface OpenRTCMutationContext<TDocument = unknown> extends StorageMuta
 
 export interface OpenRTCRoomContextHooks {
   RoomProvider(props: OpenRTCRoomProviderProps): ReactNode;
+  CommentsPanel(props: RoomCommentsPanelProps): ReactNode;
   useRoom(): OpenRTCRoom;
   useStatus(): ConnectionStatus;
   useOthers(options?: JoinOptions): PresencePeer[];
@@ -422,6 +491,11 @@ export function createRoomContext(): OpenRTCRoomContextHooks {
 }
 
 function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRoomContextHooks {
+  function BoundCommentsPanel(props: RoomCommentsPanelProps): ReactNode {
+    const room = useRoomFromContext(context, "CommentsPanel").id;
+    return createElement(CommentsPanel, { ...props, room });
+  }
+
   function useBoundOther(connId: string, options?: JoinOptions): PresencePeer | undefined;
   function useBoundOther<T>(connId: string, selector: OtherSelector<T>, options?: JoinOptions): T | undefined;
   function useBoundOther<T>(
@@ -451,6 +525,7 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
 
   return {
     RoomProvider: (props) => renderRoomProvider(context, props),
+    CommentsPanel: BoundCommentsPanel,
     useRoom: () => useRoomFromContext(context, "useRoom"),
     useStatus: () => useRoomStatus(useRoomFromContext(context, "useStatus").id),
     useOthers: (options = {}) => useOthers(useRoomFromContext(context, "useOthers").id, options),
@@ -1553,6 +1628,775 @@ export function useResetRoomSubscriptionSettings(
   const admin = useAdminActionClient(options, "useResetRoomSubscriptionSettings");
   return useCallback(() => admin.deleteRoomSubscriptionSettings(room, userId), [admin, room, userId]);
 }
+
+export function CommentsPanel(props: CommentsPanelProps): ReactNode {
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = props.admin ?? contextAdmin ?? undefined;
+  const showComposer = props.showComposer ?? true;
+  const showResolved = props.showResolved ?? true;
+  const showReadActions = props.showReadActions ?? true;
+  const showResolveActions = props.showResolveActions ?? true;
+  const threadsState = useRoomThreadsState(props.room, {
+    ...(admin !== undefined ? { admin } : {}),
+    ...(props.initialThreads !== undefined ? { initialThreads: props.initialThreads } : {}),
+    ...(props.query !== undefined ? { query: props.query } : {}),
+    ...(props.limit !== undefined ? { limit: props.limit } : {}),
+    ...(props.cursor !== undefined ? { cursor: props.cursor } : {}),
+    ...(props.afterSequence !== undefined ? { afterSequence: props.afterSequence } : {}),
+    userId: props.userId,
+    fetch: props.fetch ?? admin !== undefined,
+  });
+  const [threadDraft, setThreadDraft] = useState("");
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [pendingAction, setPendingAction] = useState<string | undefined>();
+  const [actionError, setActionError] = useState<unknown>();
+  const threads = useMemo(
+    () => (showResolved ? threadsState.threads : threadsState.threads.filter((thread) => !thread.resolved)),
+    [showResolved, threadsState.threads],
+  );
+  const openCount = useMemo(() => threadsState.threads.filter((thread) => !thread.resolved).length, [threadsState.threads]);
+  const unreadCount = useMemo(() => threadsState.threads.filter((thread) => thread.unread).length, [threadsState.threads]);
+  const disabled = !admin || pendingAction !== undefined;
+
+  const runAction = useCallback(
+    async <T,>(key: string, action: (adminClient: OpenRTCAdminClient) => Promise<T>): Promise<T | undefined> => {
+      if (!admin) {
+        setActionError(new Error("CommentsPanel requires an OpenRTCAdminProvider or an admin prop"));
+        return undefined;
+      }
+      setPendingAction(key);
+      setActionError(undefined);
+      try {
+        const result = await action(admin);
+        await threadsState.refresh();
+        return result;
+      } catch (caught) {
+        setActionError(caught);
+        return undefined;
+      } finally {
+        setPendingAction(undefined);
+      }
+    },
+    [admin, threadsState],
+  );
+
+  const createThread = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const text = threadDraft.trim();
+      if (!text) {
+        return;
+      }
+      const created = await runAction("thread:create", (adminClient) =>
+        adminClient.createThread(props.room, {
+          ...commentsPanelMetadataField(props.threadMetadata, { kind: "thread", text }),
+          comment: {
+            userId: props.userId,
+            body: commentsPanelBodyFromText(props, text, { kind: "thread" }),
+            ...commentsPanelMetadataField(props.commentMetadata, { kind: "thread", text }),
+          },
+        }),
+      );
+      if (created) {
+        setThreadDraft("");
+        props.onThreadCreated?.(created);
+      }
+    },
+    [props, runAction, threadDraft],
+  );
+
+  const createReply = useCallback(
+    async (thread: OpenRTCAdminThread, event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const text = (replyDrafts[thread.id] ?? "").trim();
+      if (!text) {
+        return;
+      }
+      const updated = await runAction(`comment:create:${thread.id}`, (adminClient) =>
+        adminClient.addComment(props.room, thread.id, {
+          userId: props.userId,
+          body: commentsPanelBodyFromText(props, text, { kind: "comment", thread }),
+          ...commentsPanelMetadataField(props.commentMetadata, { kind: "comment", thread, text }),
+        }),
+      );
+      if (updated) {
+        setReplyDrafts((current) => ({ ...current, [thread.id]: "" }));
+        props.onCommentCreated?.(updated);
+      }
+    },
+    [props, replyDrafts, runAction],
+  );
+
+  const updateThread = useCallback(
+    async (thread: OpenRTCAdminThread, action: "read" | "unread" | "resolve" | "unresolve") => {
+      const updated = await runAction(`thread:${action}:${thread.id}`, async (adminClient) => {
+        switch (action) {
+          case "read":
+            await adminClient.markThreadRead(props.room, thread.id, props.userId);
+            return adminClient.getThread(props.room, thread.id);
+          case "unread":
+            await adminClient.markThreadUnread(props.room, thread.id, props.userId);
+            return adminClient.getThread(props.room, thread.id);
+          case "resolve":
+            return adminClient.markThreadResolved(props.room, thread.id);
+          case "unresolve":
+            return adminClient.markThreadUnresolved(props.room, thread.id);
+        }
+      });
+      if (updated) {
+        props.onThreadUpdated?.(updated);
+      }
+    },
+    [props, runAction],
+  );
+
+  return createElement(
+    "section",
+    {
+      className: props.className,
+      "aria-label": typeof props.title === "string" ? props.title : "Comments",
+      style: {
+        ...commentsPanelStyles.root,
+        ...props.style,
+      } satisfies CSSProperties,
+    },
+    createElement(
+      "header",
+      { style: commentsPanelStyles.header },
+      createElement(
+        "div",
+        { style: commentsPanelStyles.headingGroup },
+        createElement("div", { style: commentsPanelStyles.title }, props.title ?? "Comments"),
+        createElement(
+          "div",
+          { style: commentsPanelStyles.metrics },
+          createElement("span", { style: commentsPanelStyles.metric }, `${threadsState.threads.length} total`),
+          createElement("span", { style: commentsPanelStyles.metric }, `${openCount} open`),
+          createElement("span", { style: commentsPanelStyles.metric }, `${unreadCount} unread`),
+        ),
+      ),
+      createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => void threadsState.refresh().catch((caught) => setActionError(caught)),
+          disabled: threadsState.loading,
+          style: commentsPanelButtonStyle("ghost", threadsState.loading),
+        },
+        threadsState.loading ? "Refreshing" : "Refresh",
+      ),
+    ),
+    showComposer
+      ? createElement(
+          "form",
+          { onSubmit: createThread, style: commentsPanelStyles.composer },
+          createElement("textarea", {
+            "aria-label": "New thread",
+            placeholder: props.composerPlaceholder ?? "Start a thread",
+            value: threadDraft,
+            onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setThreadDraft(event.currentTarget.value),
+            rows: 3,
+            style: commentsPanelStyles.textarea,
+          }),
+          createElement(
+            "div",
+            { style: commentsPanelStyles.composerFooter },
+            createElement("span", { style: commentsPanelStyles.hint }, admin ? "Visible to room collaborators" : "Admin client unavailable"),
+            createElement(
+              "button",
+              {
+                type: "submit",
+                disabled: disabled || threadDraft.trim() === "",
+                style: commentsPanelButtonStyle("primary", disabled || threadDraft.trim() === ""),
+              },
+              pendingAction === "thread:create" ? "Posting" : "Post",
+            ),
+          ),
+        )
+      : null,
+    commentsPanelError(actionError ?? threadsState.error),
+    threads.length === 0
+      ? createElement("div", { style: commentsPanelStyles.empty }, props.emptyState ?? "No comments yet")
+      : createElement(
+          "div",
+          { style: commentsPanelStyles.threadList },
+          threads.map((thread) =>
+            commentsPanelThread(props, {
+              thread,
+              replyText: replyDrafts[thread.id] ?? "",
+              pending: pendingAction?.endsWith(`:${thread.id}`) ?? false,
+              disabled,
+              showReadActions,
+              showResolveActions,
+              onReplyTextChange: (value) => setReplyDrafts((current) => ({ ...current, [thread.id]: value })),
+              onCreateReply: (event) => void createReply(thread, event),
+              onMarkRead: () => updateThread(thread, "read"),
+              onMarkUnread: () => updateThread(thread, "unread"),
+              onResolve: () => updateThread(thread, "resolve"),
+              onUnresolve: () => updateThread(thread, "unresolve"),
+            }),
+          ),
+        ),
+  );
+}
+
+interface CommentsPanelThreadRenderState {
+  thread: OpenRTCAdminThread;
+  replyText: string;
+  pending: boolean;
+  disabled: boolean;
+  showReadActions: boolean;
+  showResolveActions: boolean;
+  onReplyTextChange(value: string): void;
+  onCreateReply(event: FormEvent<HTMLFormElement>): void;
+  onMarkRead(): Promise<void>;
+  onMarkUnread(): Promise<void>;
+  onResolve(): Promise<void>;
+  onUnresolve(): Promise<void>;
+}
+
+function commentsPanelThread(props: CommentsPanelProps, state: CommentsPanelThreadRenderState): ReactNode {
+  const thread = state.thread;
+  const actionControls = props.renderThreadActions
+    ? props.renderThreadActions({
+        thread,
+        pending: state.pending,
+        markRead: state.onMarkRead,
+        markUnread: state.onMarkUnread,
+        resolve: state.onResolve,
+        unresolve: state.onUnresolve,
+      })
+    : commentsPanelDefaultThreadActions(state);
+
+  return createElement(
+    "article",
+    {
+      key: thread.id,
+      "data-openrtc-thread": thread.id,
+      "data-openrtc-thread-state": thread.resolved ? "resolved" : "open",
+      style: {
+        ...commentsPanelStyles.thread,
+        borderColor: thread.unread ? "#2563eb" : "#d7dde8",
+        boxShadow: thread.unread ? "0 0 0 1px rgba(37,99,235,0.16)" : "none",
+      } satisfies CSSProperties,
+    },
+    createElement(
+      "div",
+      { style: commentsPanelStyles.threadHeader },
+      createElement(
+        "div",
+        { style: commentsPanelStyles.threadMeta },
+        createElement(
+          "div",
+          { style: commentsPanelStyles.threadTitle },
+          thread.resolved ? "Resolved thread" : "Open thread",
+        ),
+        createElement(
+          "div",
+          { style: commentsPanelStyles.threadSubtle },
+          `Updated ${commentsPanelTimestamp(thread.updatedAt)}`,
+        ),
+      ),
+      createElement(
+        "div",
+        { style: commentsPanelStyles.statusGroup },
+        thread.unread
+          ? createElement("span", { style: commentsPanelStatusStyle("unread") }, "Unread")
+          : createElement("span", { style: commentsPanelStatusStyle("read") }, "Read"),
+        thread.resolved
+          ? createElement("span", { style: commentsPanelStatusStyle("resolved") }, "Resolved")
+          : createElement("span", { style: commentsPanelStatusStyle("open") }, "Open"),
+      ),
+    ),
+    createElement(
+      "ol",
+      { style: commentsPanelStyles.comments },
+      thread.comments.map((comment, index) => commentsPanelComment(props, thread, comment, index)),
+    ),
+    createElement(
+      "div",
+      { style: commentsPanelStyles.threadActions },
+      actionControls,
+    ),
+    props.showComposer === false
+      ? null
+      : createElement(
+          "form",
+          { onSubmit: state.onCreateReply, style: commentsPanelStyles.replyComposer },
+          createElement("textarea", {
+            "aria-label": `Reply to thread ${thread.id}`,
+            placeholder: props.replyPlaceholder ?? "Reply",
+            value: state.replyText,
+            onChange: (event: ChangeEvent<HTMLTextAreaElement>) => state.onReplyTextChange(event.currentTarget.value),
+            rows: 2,
+            style: commentsPanelStyles.textarea,
+          }),
+          createElement(
+            "div",
+            { style: commentsPanelStyles.composerFooter },
+            createElement("span", { style: commentsPanelStyles.hint }, `${thread.comments.length} comment${thread.comments.length === 1 ? "" : "s"}`),
+            createElement(
+              "button",
+              {
+                type: "submit",
+                disabled: state.disabled || state.replyText.trim() === "",
+                style: commentsPanelButtonStyle("secondary", state.disabled || state.replyText.trim() === ""),
+              },
+              state.pending ? "Posting" : "Reply",
+            ),
+          ),
+        ),
+  );
+}
+
+function commentsPanelComment(
+  props: CommentsPanelProps,
+  thread: OpenRTCAdminThread,
+  comment: OpenRTCAdminComment,
+  index: number,
+): ReactNode {
+  const context: CommentsPanelBodyContext = { kind: index === 0 ? "thread" : "comment", thread };
+  const text = commentsPanelTextFromBody(props, comment.body, context);
+  const rendered = props.renderComment?.({ thread, comment, index, text });
+  const defaultComment = createElement(
+    "div",
+    { style: commentsPanelStyles.commentInner },
+    createElement(
+      "div",
+      { style: commentsPanelStyles.commentHeader },
+      createElement("span", { style: commentsPanelStyles.commentAuthor }, comment.userId),
+      createElement("span", { style: commentsPanelStyles.threadSubtle }, commentsPanelTimestamp(comment.createdAt)),
+      comment.editedAt ? createElement("span", { style: commentsPanelStyles.threadSubtle }, "Edited") : null,
+    ),
+    createElement("div", { style: commentsPanelStyles.commentBody }, text),
+    commentsPanelCommentFooter(comment),
+  );
+
+  return createElement(
+    "li",
+    { key: comment.id, style: commentsPanelStyles.comment },
+    rendered !== undefined ? rendered : defaultComment,
+  );
+}
+
+function commentsPanelCommentFooter(comment: OpenRTCAdminComment): ReactNode {
+  const reactions = comment.reactions ?? [];
+  const mentions = comment.mentions ?? [];
+  if (reactions.length === 0 && mentions.length === 0 && !comment.deletedAt) {
+    return null;
+  }
+
+  return createElement(
+    "div",
+    { style: commentsPanelStyles.commentFooter },
+    comment.deletedAt ? createElement("span", { style: commentsPanelStyles.metaPill }, "Deleted") : null,
+    mentions.map((mention) =>
+      createElement("span", { key: `mention:${mention}`, style: commentsPanelStyles.metaPill }, `@${mention}`),
+    ),
+    reactions.map((reaction, index) =>
+      createElement(
+        "span",
+        { key: `reaction:${reaction.emoji}:${reaction.userId}:${index}`, style: commentsPanelStyles.metaPill },
+        `${reaction.emoji} ${reaction.userId}`,
+      ),
+    ),
+  );
+}
+
+function commentsPanelDefaultThreadActions(state: CommentsPanelThreadRenderState): ReactNode {
+  return createElement(
+    "div",
+    { style: commentsPanelStyles.actionGroup },
+    state.showReadActions
+      ? createElement(
+          "button",
+          {
+            type: "button",
+            disabled: state.disabled || state.pending,
+            onClick: () => void (state.thread.unread ? state.onMarkRead() : state.onMarkUnread()),
+            style: commentsPanelButtonStyle("ghost", state.disabled || state.pending),
+          },
+          state.thread.unread ? "Mark read" : "Mark unread",
+        )
+      : null,
+    state.showResolveActions
+      ? createElement(
+          "button",
+          {
+            type: "button",
+            disabled: state.disabled || state.pending,
+            onClick: () => void (state.thread.resolved ? state.onUnresolve() : state.onResolve()),
+            style: commentsPanelButtonStyle("ghost", state.disabled || state.pending),
+          },
+          state.thread.resolved ? "Reopen" : "Resolve",
+        )
+      : null,
+  );
+}
+
+function commentsPanelBodyFromText(
+  props: CommentsPanelProps,
+  text: string,
+  context: CommentsPanelBodyContext,
+): unknown {
+  return props.bodyFromText ? props.bodyFromText(text, context) : { type: "text", text };
+}
+
+function commentsPanelTextFromBody(
+  props: CommentsPanelProps,
+  body: unknown,
+  context: CommentsPanelBodyContext,
+): ReactNode {
+  if (props.textFromBody) {
+    return props.textFromBody(body, context);
+  }
+  const text = commentsPanelBodyText(body);
+  return text === "" ? createElement("span", { style: commentsPanelStyles.mutedText }, "No text") : text;
+}
+
+function commentsPanelBodyText(body: unknown, depth = 0): string {
+  if (depth > 4 || body === null || body === undefined) {
+    return "";
+  }
+  if (typeof body === "string") {
+    return body;
+  }
+  if (typeof body === "number" || typeof body === "boolean" || typeof body === "bigint") {
+    return String(body);
+  }
+  if (Array.isArray(body)) {
+    return body.map((item) => commentsPanelBodyText(item, depth + 1)).filter(Boolean).join(" ");
+  }
+  if (commentsPanelIsRecord(body)) {
+    const directText = body["text"] ?? body["plainText"] ?? body["value"];
+    if (typeof directText === "string") {
+      return directText;
+    }
+    const content = body["content"] ?? body["children"];
+    if (Array.isArray(content)) {
+      const text = content.map((item) => commentsPanelBodyText(item, depth + 1)).filter(Boolean).join(" ");
+      if (text !== "") {
+        return text;
+      }
+    }
+    if (depth === 0) {
+      try {
+        return JSON.stringify(body);
+      } catch {
+        return "";
+      }
+    }
+  }
+  return "";
+}
+
+function commentsPanelMetadataField(
+  input: CommentsPanelMetadata | undefined,
+  context: CommentsPanelMetadataContext,
+): { metadata?: unknown } {
+  if (input === undefined) {
+    return {};
+  }
+  const metadata = typeof input === "function" ? input(context) : input;
+  return metadata === undefined ? {} : { metadata };
+}
+
+function commentsPanelError(error: unknown): ReactNode {
+  if (error === undefined || error === null) {
+    return null;
+  }
+  return createElement(
+    "div",
+    { role: "alert", style: commentsPanelStyles.error },
+    commentsPanelErrorMessage(error),
+  );
+}
+
+function commentsPanelErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Comment action failed";
+  }
+}
+
+function commentsPanelTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function commentsPanelIsRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function commentsPanelButtonStyle(
+  variant: "primary" | "secondary" | "ghost",
+  disabled: boolean,
+): CSSProperties {
+  const primary = variant === "primary";
+  const secondary = variant === "secondary";
+  return {
+    appearance: "none",
+    border: primary ? "1px solid #111827" : "1px solid #cbd5e1",
+    borderRadius: 6,
+    background: primary ? "#111827" : secondary ? "#ffffff" : "#f8fafc",
+    color: primary ? "#ffffff" : "#1f2937",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1,
+    minHeight: 32,
+    padding: "8px 10px",
+    opacity: disabled ? 0.55 : 1,
+  };
+}
+
+function commentsPanelStatusStyle(kind: "open" | "resolved" | "read" | "unread"): CSSProperties {
+  const palette = {
+    open: { background: "#ecfdf5", border: "#a7f3d0", color: "#065f46" },
+    resolved: { background: "#f1f5f9", border: "#cbd5e1", color: "#475569" },
+    read: { background: "#f8fafc", border: "#d7dde8", color: "#64748b" },
+    unread: { background: "#eff6ff", border: "#bfdbfe", color: "#1d4ed8" },
+  }[kind];
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    minHeight: 22,
+    border: `1px solid ${palette.border}`,
+    borderRadius: 999,
+    background: palette.background,
+    color: palette.color,
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1,
+    padding: "4px 8px",
+  };
+}
+
+const commentsPanelStyles = {
+  root: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #d7dde8",
+    borderRadius: 8,
+    background: "#ffffff",
+    color: "#111827",
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    padding: 16,
+  } satisfies CSSProperties,
+  header: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  } satisfies CSSProperties,
+  headingGroup: {
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  } satisfies CSSProperties,
+  title: {
+    color: "#111827",
+    fontSize: 16,
+    fontWeight: 800,
+    lineHeight: 1.2,
+  } satisfies CSSProperties,
+  metrics: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 6,
+  } satisfies CSSProperties,
+  metric: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 999,
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1,
+    padding: "4px 8px",
+  } satisfies CSSProperties,
+  composer: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  } satisfies CSSProperties,
+  replyComposer: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    paddingTop: 2,
+  } satisfies CSSProperties,
+  textarea: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #cbd5e1",
+    borderRadius: 6,
+    color: "#111827",
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    fontSize: 14,
+    lineHeight: 1.45,
+    minHeight: 72,
+    outline: "none",
+    padding: "10px 11px",
+    resize: "vertical",
+  } satisfies CSSProperties,
+  composerFooter: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  } satisfies CSSProperties,
+  hint: {
+    color: "#64748b",
+    fontSize: 12,
+    lineHeight: 1.3,
+  } satisfies CSSProperties,
+  error: {
+    border: "1px solid #fecaca",
+    borderRadius: 6,
+    background: "#fef2f2",
+    color: "#991b1b",
+    fontSize: 13,
+    lineHeight: 1.4,
+    padding: "9px 10px",
+  } satisfies CSSProperties,
+  empty: {
+    border: "1px dashed #cbd5e1",
+    borderRadius: 8,
+    color: "#64748b",
+    fontSize: 14,
+    lineHeight: 1.4,
+    padding: 18,
+    textAlign: "center",
+  } satisfies CSSProperties,
+  threadList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  } satisfies CSSProperties,
+  thread: {
+    border: "1px solid #d7dde8",
+    borderRadius: 8,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    padding: 12,
+  } satisfies CSSProperties,
+  threadHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  } satisfies CSSProperties,
+  threadMeta: {
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 3,
+  } satisfies CSSProperties,
+  threadTitle: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: 800,
+    lineHeight: 1.25,
+  } satisfies CSSProperties,
+  threadSubtle: {
+    color: "#64748b",
+    fontSize: 12,
+    lineHeight: 1.35,
+  } satisfies CSSProperties,
+  statusGroup: {
+    display: "flex",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 6,
+  } satisfies CSSProperties,
+  comments: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+  } satisfies CSSProperties,
+  comment: {
+    margin: 0,
+  } satisfies CSSProperties,
+  commentInner: {
+    borderLeft: "2px solid #e2e8f0",
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+    paddingLeft: 10,
+  } satisfies CSSProperties,
+  commentHeader: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 7,
+  } satisfies CSSProperties,
+  commentAuthor: {
+    color: "#111827",
+    fontSize: 13,
+    fontWeight: 800,
+    lineHeight: 1.2,
+  } satisfies CSSProperties,
+  commentBody: {
+    color: "#1f2937",
+    fontSize: 14,
+    lineHeight: 1.45,
+    overflowWrap: "anywhere",
+    whiteSpace: "pre-wrap",
+  } satisfies CSSProperties,
+  commentFooter: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 5,
+    paddingTop: 2,
+  } satisfies CSSProperties,
+  metaPill: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 999,
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1,
+    padding: "3px 7px",
+  } satisfies CSSProperties,
+  threadActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+  } satisfies CSSProperties,
+  actionGroup: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+  } satisfies CSSProperties,
+  mutedText: {
+    color: "#94a3b8",
+    fontStyle: "italic",
+  } satisfies CSSProperties,
+} as const;
 
 export function useLostConnectionListener(
   room: string,

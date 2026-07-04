@@ -228,8 +228,8 @@ For product-surface state, `@openrtc/client` exports
 `applyCommentEventToThreads` and `applyNotificationDeltaToInbox` reducers so
 apps can seed from REST thread/inbox lists and apply realtime deltas
 immutably. `@openrtc/react` exposes `useRoomThreads`, `useRoomThread`,
-`useInboxNotifications`, and `useUnreadInboxCount` for the same materialized
-comment and notification state in React. It also exposes action hooks for
+`useInboxNotifications`, `useUnreadInboxCount`, and `CommentsPanel` for the same
+materialized comment and notification state in React. It also exposes action hooks for
 getting threads, creating threads/comments, editing thread metadata/resolved
 state, reading and marking per-user thread read state, deleting threads,
 editing comment body/metadata, adding or removing reactions and mentions,
@@ -243,6 +243,9 @@ the admin client before writing the derived update.
 Thread list hooks and `admin.listThreads()` accept `query`, `limit`, `cursor`,
 and `userId` options for resolved-state, unread-state, and thread metadata
 searches.
+`CommentsPanel` renders an embeddable hosted comments surface over the same
+thread APIs, including create/reply, read/unread, resolve/reopen, refresh,
+custom body serialization, metadata factories, and custom comment/action renderers.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
@@ -284,11 +287,11 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useRemoveCommentMention`, `useTriggerInboxNotification`,
 `useMarkInboxNotificationAsRead`, `useDeleteInboxNotification`,
 `useDeleteAllInboxNotifications`, `useUpdateRoomSubscriptionSettings`, and
-`useResetRoomSubscriptionSettings`. It also exports `RoomProvider`, `useCurrentRoom`, and
+`useResetRoomSubscriptionSettings`, plus `CommentsPanel`. It also exports `RoomProvider`, `useCurrentRoom`, and
 `createRoomContext()` for Liveblocks-style room-bound hooks where components call
 `useOthers()`, `useStorage()`, and `useMutation()` without passing a room ID
 through every hook; the room context also binds the room-scoped comment and
-subscription action hooks. It also exports Liveblocks-style `Cursors`, `Cursor`, and
+subscription action hooks and `CommentsPanel`. It also exports Liveblocks-style `Cursors`, `Cursor`, and
 `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with
@@ -348,6 +351,22 @@ export function CanvasPresence() {
       </button>
       <Canvas onPing={() => broadcastWithAck({ type: "canvas.ping", at: Date.now() })} />
     </Cursors>
+  );
+}
+```
+
+For a hosted comments surface, wrap an admin client once and render the panel
+against the active room:
+
+```tsx
+import type { OpenRTCAdminClient } from "@openrtc/client";
+import { CommentsPanel, OpenRTCAdminProvider } from "@openrtc/react";
+
+export function CanvasComments({ admin }: { admin: OpenRTCAdminClient }) {
+  return (
+    <OpenRTCAdminProvider admin={admin}>
+      <CommentsPanel room="tenant-a:canvas-1" userId="user-1" query="resolved:false" />
+    </OpenRTCAdminProvider>
   );
 }
 ```

@@ -20,6 +20,7 @@ import type {
 import type { ReactNode } from "react";
 import {
   AvatarStack,
+  CommentsPanel,
   Cursor,
   Cursors,
   RoomProvider,
@@ -337,6 +338,20 @@ function ProductSurfaceActionTypes() {
     updateRoomSubscriptionSettings({ threads: "all", textMentions: "mine" }),
   );
   expectType<Promise<void>>(resetRoomSubscriptionSettings());
+  expectType<ReactNode>(
+    CommentsPanel({
+      room: roomId,
+      userId: "user-1",
+      initialThreads: [],
+      fetch: false,
+      bodyFromText: (text, context) => ({ type: "text", text, kind: context.kind }),
+      textFromBody: (_body, context) => (context.kind === "thread" ? "Thread" : "Reply"),
+      threadMetadata: ({ kind, text }) => ({ kind, text }),
+      commentMetadata: { source: "panel" },
+      renderComment: ({ text }) => text,
+      renderThreadActions: ({ pending }) => (pending ? "Pending" : null),
+    }),
+  );
 
   return null;
 }
@@ -445,6 +460,14 @@ function RoomContextIntegrationTypes() {
   );
   expectType<Promise<void>>(boundRoom.useResetRoomSubscriptionSettings("user-1")());
   expectType<Promise<CanvasStorage>>(boundRoom.useSetStorage<CanvasStorage>()({ title: "Draft", items: [] }));
+  expectType<ReactNode>(
+    boundRoom.CommentsPanel({
+      userId: "user-1",
+      initialThreads: [],
+      fetch: false,
+      showResolved: false,
+    }),
+  );
 
   const boundMutation = boundRoom.useMutation<CanvasStorage, [title: string], Promise<void>>(
     async ({ room, storage, self, others, myPresence, updateMyPresence, broadcastEventWithAck, setStorage }, title) => {
