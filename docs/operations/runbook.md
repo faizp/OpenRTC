@@ -133,6 +133,24 @@ redis-cli hdel "room:<room>:presence" "<conn_id>"
 2. If needed, increase the limit (consider server capacity)
 3. Client should implement backoff on `RATE_LIMITED` errors
 
+### Room Capacity
+
+**Symptoms:**
+- JSON clients receiving retryable ERROR code `ROOM_CAPACITY`
+- Yjs clients receiving HTTP `429` during `/yjs/{room}` upgrade
+
+**Context:**
+- `OPENRTC_LIMIT_ROOM_CONNECTIONS=0` disables the JSON room-member cap.
+- `OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS=0` disables the Yjs room-socket cap.
+- `/dev/sockets` reports per-room JSON/Yjs socket counts plus configured caps
+  for local integration debugging.
+
+**Steps:**
+1. Inspect `/dev/sockets?room=<room>` during local reproduction.
+2. Confirm whether the cap is intentionally lower than expected load.
+3. Increase the matching cap or split traffic across rooms.
+4. Keep client retry/backoff enabled for `ROOM_CAPACITY` and Yjs HTTP 429.
+
 ## Redis Key Reference
 
 | Key Pattern | Type | TTL | Purpose |

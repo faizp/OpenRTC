@@ -26,6 +26,8 @@ Environment variables map into the config contract as follows:
 - `OPENRTC_LIMIT_ENVELOPE_MAX_BYTES` -> `limits.envelope_max_bytes`
 - `OPENRTC_LIMIT_YJS_MAX_BYTES` -> `limits.yjs_max_bytes`
 - `OPENRTC_LIMIT_ROOMS_PER_CONNECTION` -> `limits.rooms_per_connection`
+- `OPENRTC_LIMIT_ROOM_CONNECTIONS` -> `limits.room_connections`
+- `OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS` -> `limits.yjs_room_connections`
 - `OPENRTC_LIMIT_EMITS_PER_SECOND` -> `limits.emits_per_second`
 - `OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH` -> `limits.outbound_queue_depth`
 

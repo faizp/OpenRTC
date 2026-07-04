@@ -37,6 +37,13 @@
       "description": "Requested durable room record already exists or conflicts with current state."
     },
     {
+      "code": "ROOM_CAPACITY",
+      "http_status": 429,
+      "ws_close_code": 4429,
+      "retryable": true,
+      "description": "Runtime room admission limit is currently full for the requested room."
+    },
+    {
       "code": "THREAD_NOT_FOUND",
       "http_status": 404,
       "ws_close_code": 4414,

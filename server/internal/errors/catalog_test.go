@@ -15,6 +15,10 @@ func TestDescriptorFor(t *testing.T) {
 	if conflict.HTTPStatus != 409 || conflict.WSCloseCode != 4411 || conflict.Retryable {
 		t.Fatalf("unexpected room conflict descriptor: %+v", conflict)
 	}
+	capacity := DescriptorFor(CodeRoomCapacity)
+	if capacity.HTTPStatus != 429 || capacity.WSCloseCode != 4429 || !capacity.Retryable {
+		t.Fatalf("unexpected room capacity descriptor: %+v", capacity)
+	}
 	threadNotFound := DescriptorFor(CodeThreadNotFound)
 	if threadNotFound.HTTPStatus != 404 || threadNotFound.WSCloseCode != 4414 || threadNotFound.Retryable {
 		t.Fatalf("unexpected thread not found descriptor: %+v", threadNotFound)

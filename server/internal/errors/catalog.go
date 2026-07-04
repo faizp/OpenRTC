@@ -10,6 +10,7 @@ const (
 	CodeRoomForbidden             Code = "ROOM_FORBIDDEN"
 	CodeRoomNotFound              Code = "ROOM_NOT_FOUND"
 	CodeRoomConflict              Code = "ROOM_CONFLICT"
+	CodeRoomCapacity              Code = "ROOM_CAPACITY"
 	CodeThreadNotFound            Code = "THREAD_NOT_FOUND"
 	CodeThreadConflict            Code = "THREAD_CONFLICT"
 	CodeInboxNotificationNotFound Code = "INBOX_NOTIFICATION_NOT_FOUND"
@@ -37,6 +38,7 @@ var catalog = map[Code]Descriptor{
 	CodeRoomForbidden:             {Code: CodeRoomForbidden, HTTPStatus: 403, WSCloseCode: 4403, Retryable: false},
 	CodeRoomNotFound:              {Code: CodeRoomNotFound, HTTPStatus: 404, WSCloseCode: 4404, Retryable: false},
 	CodeRoomConflict:              {Code: CodeRoomConflict, HTTPStatus: 409, WSCloseCode: 4411, Retryable: false},
+	CodeRoomCapacity:              {Code: CodeRoomCapacity, HTTPStatus: 429, WSCloseCode: 4429, Retryable: true},
 	CodeThreadNotFound:            {Code: CodeThreadNotFound, HTTPStatus: 404, WSCloseCode: 4414, Retryable: false},
 	CodeThreadConflict:            {Code: CodeThreadConflict, HTTPStatus: 409, WSCloseCode: 4415, Retryable: false},
 	CodeInboxNotificationNotFound: {Code: CodeInboxNotificationNotFound, HTTPStatus: 404, WSCloseCode: 4416, Retryable: false},

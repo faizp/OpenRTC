@@ -78,6 +78,30 @@ func TestEngineJoinLeaveAndDisconnect(t *testing.T) {
 	}
 }
 
+func TestEngineJoinWithRoomCapacity(t *testing.T) {
+	engine := New()
+
+	if _, err := engine.JoinWithLimits("conn-1", "room-a", JoinLimits{RoomConnections: 1}); err != nil {
+		t.Fatalf("join first room member: %v", err)
+	}
+	duplicate, err := engine.JoinWithLimits("conn-1", "room-a", JoinLimits{RoomConnections: 1})
+	if err != nil {
+		t.Fatalf("duplicate join should not trip capacity: %v", err)
+	}
+	if !duplicate.AlreadyJoined {
+		t.Fatalf("expected duplicate join")
+	}
+	if _, err := engine.JoinWithLimits("conn-2", "room-a", JoinLimits{RoomConnections: 1}); !errors.Is(err, ErrRoomCapacityExceeded) {
+		t.Fatalf("expected room capacity error, got %v", err)
+	}
+	if got := engine.MemberIDs("room-a", ""); !reflect.DeepEqual(got, []string{"conn-1"}) {
+		t.Fatalf("capacity rejection should not mutate room membership: %#v", got)
+	}
+	if _, err := engine.JoinWithLimits("conn-2", "room-b", JoinLimits{RoomsPerConnection: 1, RoomConnections: 1}); err != nil {
+		t.Fatalf("room capacity should be per room, got %v", err)
+	}
+}
+
 func TestEngineJoinResultSnapshotCopiesRoomState(t *testing.T) {
 	engine := New()
 	if _, err := engine.Join("conn-1", "room-a", 0); err != nil {
@@ -926,8 +950,16 @@ func TestEngineConnectionsSnapshot(t *testing.T) {
 	engine.RegisterYJSSession(YJSSessionInfo{ConnID: "yjs-a", Subject: "editor-a", Tenant: "tenant-a", Room: "doc-1"})
 
 	snapshot := engine.ConnectionsSnapshot()
-	if snapshot.ActiveRoomCount != 2 {
+	if snapshot.ActiveRoomCount != 4 {
 		t.Fatalf("unexpected active room count: %d", snapshot.ActiveRoomCount)
+	}
+	if !reflect.DeepEqual(snapshot.Rooms, []RoomActivitySnapshot{
+		{Room: "doc-1", Connections: 0, YJSConnections: 1, TotalSockets: 1},
+		{Room: "doc-2", Connections: 0, YJSConnections: 1, TotalSockets: 1},
+		{Room: "room-1", Connections: 2, YJSConnections: 0, TotalSockets: 2},
+		{Room: "room-2", Connections: 1, YJSConnections: 0, TotalSockets: 1},
+	}) {
+		t.Fatalf("unexpected room activity: %+v", snapshot.Rooms)
 	}
 	if len(snapshot.Connections) != 2 || snapshot.Connections[0].ConnectionID != "conn-a" || snapshot.Connections[1].ConnectionID != "conn-b" {
 		t.Fatalf("connections should be sorted by id: %+v", snapshot.Connections)
@@ -959,6 +991,32 @@ func TestEngineConnectionsSnapshot(t *testing.T) {
 	}
 	if len(again.YJSConnections) != 1 || again.YJSConnections[0].ConnectionID != "yjs-b" {
 		t.Fatalf("expected unregistered yjs session to be removed, got %+v", again.YJSConnections)
+	}
+}
+
+func TestEngineRegisterYJSSessionWithLimit(t *testing.T) {
+	engine := New()
+
+	if err := engine.RegisterYJSSessionWithLimit(YJSSessionInfo{ConnID: "yjs-1", Room: "room-a"}, 1); err != nil {
+		t.Fatalf("register first yjs session: %v", err)
+	}
+	if err := engine.RegisterYJSSessionWithLimit(YJSSessionInfo{ConnID: "yjs-1", Room: "room-a", Subject: "user-1"}, 1); err != nil {
+		t.Fatalf("same yjs connection should update metadata without tripping capacity: %v", err)
+	}
+	if err := engine.RegisterYJSSessionWithLimit(YJSSessionInfo{ConnID: "yjs-2", Room: "room-a"}, 1); !errors.Is(err, ErrYJSRoomCapacityExceeded) {
+		t.Fatalf("expected yjs room capacity error, got %v", err)
+	}
+	if got := engine.YJSTargetIDs("room-a", ""); !reflect.DeepEqual(got, []string{"yjs-1"}) {
+		t.Fatalf("capacity rejection should not mutate yjs room: %#v", got)
+	}
+	if err := engine.RegisterYJSSessionWithLimit(YJSSessionInfo{ConnID: "yjs-1", Room: "room-b"}, 1); err != nil {
+		t.Fatalf("move yjs session to another room: %v", err)
+	}
+	if got := engine.YJSTargetIDs("room-a", ""); len(got) != 0 {
+		t.Fatalf("move should remove old yjs room membership: %#v", got)
+	}
+	if got := engine.YJSTargetIDs("room-b", ""); !reflect.DeepEqual(got, []string{"yjs-1"}) {
+		t.Fatalf("move should add new yjs room membership: %#v", got)
 	}
 }
 

@@ -1282,6 +1282,7 @@ func TestFilterSocketSnapshotByRoom(t *testing.T) {
 	snapshot := runtimeapp.DevConnectionsSnapshot{
 		NodeID:          "node-a",
 		ActiveRoomCount: 3,
+		Limits:          runtimeapp.DevConnectionLimits{RoomConnections: 10, YJSRoomConnections: 5},
 		Connections: []runtimeapp.DevConnectionSnapshot{
 			{ConnectionID: "conn-a", Rooms: []string{"room-a", "room-b"}},
 			{ConnectionID: "conn-b", Rooms: []string{"room-c"}},
@@ -1290,10 +1291,15 @@ func TestFilterSocketSnapshotByRoom(t *testing.T) {
 			{ConnectionID: "yjs-a", Room: "room-b"},
 			{ConnectionID: "yjs-b", Room: "room-c"},
 		},
+		Rooms: []runtimeapp.DevRoomActivitySnapshot{
+			{Room: "room-a", Connections: 1, YJSConnections: 0, TotalSockets: 1},
+			{Room: "room-b", Connections: 1, YJSConnections: 1, TotalSockets: 2},
+			{Room: "room-c", Connections: 1, YJSConnections: 1, TotalSockets: 2},
+		},
 	}
 
 	filtered := filterSocketSnapshot(snapshot, "room-b")
-	if filtered.NodeID != "node-a" || filtered.ActiveRoomCount != 3 {
+	if filtered.NodeID != "node-a" || filtered.ActiveRoomCount != 3 || filtered.Limits.RoomConnections != 10 {
 		t.Fatalf("unexpected filtered metadata: %+v", filtered)
 	}
 	if filtered.ActiveSockets != 2 {
@@ -1304,6 +1310,9 @@ func TestFilterSocketSnapshotByRoom(t *testing.T) {
 	}
 	if len(filtered.YJSConnections) != 1 || filtered.YJSConnections[0].ConnectionID != "yjs-a" {
 		t.Fatalf("unexpected filtered yjs connections: %+v", filtered.YJSConnections)
+	}
+	if len(filtered.Rooms) != 1 || filtered.Rooms[0].Room != "room-b" || filtered.Rooms[0].TotalSockets != 2 {
+		t.Fatalf("unexpected filtered room activity: %+v", filtered.Rooms)
 	}
 }
 

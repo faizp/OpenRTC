@@ -12,6 +12,7 @@ Codes:
 - `ROOM_FORBIDDEN`
 - `ROOM_NOT_FOUND`
 - `ROOM_CONFLICT`
+- `ROOM_CAPACITY`
 - `THREAD_NOT_FOUND`
 - `THREAD_CONFLICT`
 - `INBOX_NOTIFICATION_NOT_FOUND`
@@ -34,6 +35,7 @@ Runtime should close with stable reason text matching code when protocol allows:
 - `4403 ROOM_FORBIDDEN`
 - `4404 ROOM_NOT_FOUND`
 - `4411 ROOM_CONFLICT`
+- `4429 ROOM_CAPACITY`
 - `4414 THREAD_NOT_FOUND`
 - `4415 THREAD_CONFLICT`
 - `4416 INBOX_NOTIFICATION_NOT_FOUND`
@@ -52,6 +54,8 @@ Runtime should close with stable reason text matching code when protocol allows:
 - Payload max size: `16 KB`.
 - Envelope max size: `20 KB`.
 - Max rooms per connection: `50`.
+- Max JSON room sockets per room: disabled by default (`0` means unlimited).
+- Max Yjs sockets per room: disabled by default (`0` means unlimited).
 - Max emits per connection: `100/sec`.
 - Max outbound queue depth per connection: `256` messages.
 
@@ -59,6 +63,8 @@ Runtime should close with stable reason text matching code when protocol allows:
 
 - Oversized payload/envelope: reject request with `PAYLOAD_TOO_LARGE`; retain socket unless gateway policy chooses close.
 - Rooms per connection exceeded: reject join with `BAD_REQUEST` and explanatory message.
+- JSON room admission cap exceeded: reject join with retryable `ROOM_CAPACITY`.
+- Yjs room admission cap exceeded before upgrade: reject the HTTP upgrade with status `429`.
 - Emit rate exceeded: reject emit with `RATE_LIMITED`; keep session active.
 - Outbound queue overflow: close connection with `QUEUE_OVERFLOW` and remove membership/presence records through normal disconnect cleanup.
 

@@ -148,6 +148,8 @@ All configuration is via environment variables:
 | `OPENRTC_LIMIT_ENVELOPE_MAX_BYTES` | `20480` | Max envelope size (bytes) |
 | `OPENRTC_LIMIT_YJS_MAX_BYTES` | `1048576` | Max binary Yjs frame size (bytes) |
 | `OPENRTC_LIMIT_ROOMS_PER_CONNECTION` | `50` | Max rooms per WebSocket connection |
+| `OPENRTC_LIMIT_ROOM_CONNECTIONS` | `0` | Max JSON WebSocket room members per room; `0` disables the cap |
+| `OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS` | `0` | Max Yjs WebSocket connections per room; `0` disables the cap |
 | `OPENRTC_LIMIT_EMITS_PER_SECOND` | `100` | Max emits per connection per second |
 | `OPENRTC_LIMIT_OUTBOUND_QUEUE_DEPTH` | `256` | Outbound message queue depth |
 | `OPENRTC_YJS_COMPACTOR_INTERVAL_MS` | `60000` | Compactor polling interval for all rooms |

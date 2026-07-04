@@ -149,6 +149,8 @@ type DevConnectionsSnapshot struct {
 	NodeID          string                     `json:"node_id"`
 	Connections     []DevConnectionSnapshot    `json:"connections"`
 	YJSConnections  []DevYJSConnectionSnapshot `json:"yjs_connections"`
+	Rooms           []DevRoomActivitySnapshot  `json:"rooms"`
+	Limits          DevConnectionLimits        `json:"limits"`
 	ActiveSockets   int                        `json:"active_sockets"`
 	ActiveRoomCount int                        `json:"active_room_count"`
 }
@@ -156,6 +158,13 @@ type DevConnectionsSnapshot struct {
 type DevConnectionSnapshot = roomengine.ConnectionSnapshot
 
 type DevYJSConnectionSnapshot = roomengine.YJSConnectionSnapshot
+
+type DevRoomActivitySnapshot = roomengine.RoomActivitySnapshot
+
+type DevConnectionLimits struct {
+	RoomConnections    int `json:"room_connections"`
+	YJSRoomConnections int `json:"yjs_room_connections"`
+}
 
 type DevStorageSnapshot struct {
 	NodeID      string          `json:"node_id"`
@@ -252,8 +261,17 @@ func (s *Service) DevConnectionsSnapshot() DevConnectionsSnapshot {
 		NodeID:          s.cfg.NodeID,
 		Connections:     snapshot.Connections,
 		YJSConnections:  snapshot.YJSConnections,
+		Rooms:           snapshot.Rooms,
+		Limits:          s.devConnectionLimits(),
 		ActiveSockets:   len(snapshot.Connections) + len(snapshot.YJSConnections),
 		ActiveRoomCount: snapshot.ActiveRoomCount,
+	}
+}
+
+func (s *Service) devConnectionLimits() DevConnectionLimits {
+	return DevConnectionLimits{
+		RoomConnections:    s.cfg.Limits.RoomConnections,
+		YJSRoomConnections: s.cfg.Limits.YJSRoomConnections,
 	}
 }
 
@@ -436,6 +454,23 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	connID := newConnID()
+	if err := s.roomEngine().RegisterYJSSessionWithLimit(roomengine.YJSSessionInfo{
+		ConnID:  connID,
+		Subject: claims.Subject,
+		Tenant:  claims.Tenant,
+		Room:    room,
+	}, s.cfg.Limits.YJSRoomConnections); errors.Is(err, roomengine.ErrYJSRoomCapacityExceeded) {
+		http.Error(w, "yjs room capacity exceeded", http.StatusTooManyRequests)
+		return
+	}
+	registered := true
+	defer func() {
+		if registered {
+			s.roomEngine().UnregisterYJSConn(connID, room)
+		}
+	}()
+
 	upgrader := websocket.Upgrader{
 		CheckOrigin: s.checkOrigin,
 	}
@@ -445,7 +480,7 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := &yjsConn{
-		id:      newConnID(),
+		id:      connID,
 		ws:      ws,
 		service: s,
 		claims:  claims,
@@ -455,7 +490,8 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 		limiter: &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
 	}
 
-	s.registerYJSConn(conn)
+	s.registerReservedYJSConn(conn)
+	registered = false
 	defer s.unregisterYJSConn(conn)
 
 	go conn.writeLoop()
@@ -569,7 +605,10 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		})
 	}
 
-	joinResult, err := s.roomEngine().Join(conn.id, message.Room, s.cfg.Limits.RoomsPerConnection)
+	joinResult, err := s.roomEngine().JoinWithLimits(conn.id, message.Room, roomengine.JoinLimits{
+		RoomsPerConnection: s.cfg.Limits.RoomsPerConnection,
+		RoomConnections:    s.cfg.Limits.RoomConnections,
+	})
 	if errors.Is(err, roomengine.ErrRoomLimitExceeded) {
 		return conn.enqueue(outboundMessage{
 			T:  "ERROR",
@@ -577,6 +616,17 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 			Payload: openrtcerr.APIError{
 				Code:      openrtcerr.CodeBadRequest,
 				Message:   "maximum rooms per connection exceeded",
+				RequestID: message.ID,
+			},
+		})
+	}
+	if errors.Is(err, roomengine.ErrRoomCapacityExceeded) {
+		return conn.enqueue(outboundMessage{
+			T:  "ERROR",
+			ID: message.ID,
+			Payload: openrtcerr.APIError{
+				Code:      openrtcerr.CodeRoomCapacity,
+				Message:   "room capacity exceeded",
 				RequestID: message.ID,
 			},
 		})
@@ -1271,11 +1321,18 @@ func (s *Service) registerConn(conn *clientConn) {
 	s.applyConnectionTouch(touch)
 }
 
-func (s *Service) registerYJSConn(conn *yjsConn) {
+func (s *Service) registerYJSConn(conn *yjsConn) error {
+	if err := s.roomEngine().RegisterYJSSessionWithLimit(yjsSessionInfoFromConn(conn), s.cfg.Limits.YJSRoomConnections); err != nil {
+		return err
+	}
+	s.registerReservedYJSConn(conn)
+	return nil
+}
+
+func (s *Service) registerReservedYJSConn(conn *yjsConn) {
 	s.mu.Lock()
 	s.yjsConns[conn.id] = conn
 	s.mu.Unlock()
-	s.roomEngine().RegisterYJSSession(yjsSessionInfoFromConn(conn))
 }
 
 func (s *Service) unregisterYJSConn(conn *yjsConn) {

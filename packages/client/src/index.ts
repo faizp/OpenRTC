@@ -240,10 +240,24 @@ export interface OpenRTCDevYJSSocketConnection {
   room: string;
 }
 
+export interface OpenRTCDevRoomActivitySnapshot {
+  room: string;
+  connections: number;
+  yjs_connections: number;
+  total_sockets: number;
+}
+
+export interface OpenRTCDevConnectionLimits {
+  room_connections: number;
+  yjs_room_connections: number;
+}
+
 export interface OpenRTCDevSocketSnapshot {
   node_id: string;
   connections: OpenRTCDevSocketConnection[];
   yjs_connections: OpenRTCDevYJSSocketConnection[];
+  rooms: OpenRTCDevRoomActivitySnapshot[];
+  limits: OpenRTCDevConnectionLimits;
   active_sockets: number;
   active_room_count: number;
 }
@@ -1755,6 +1769,9 @@ export async function runOpenRTCDevProbe(
       {
         activeSockets: sockets.active_sockets,
         activeRoomCount: sockets.active_room_count,
+        roomCount: sockets.rooms.length,
+        roomConnectionLimit: sockets.limits.room_connections,
+        yjsRoomConnectionLimit: sockets.limits.yjs_room_connections,
         roomInSockets,
       },
     );

@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	ErrRoomLimitExceeded   = errors.New("room limit exceeded")
-	ErrStorageMutationKind = errors.New("invalid storage mutation kind")
-	ErrYJSPersistenceKind  = errors.New("invalid yjs persistence kind")
+	ErrRoomLimitExceeded       = errors.New("room limit exceeded")
+	ErrRoomCapacityExceeded    = errors.New("room capacity exceeded")
+	ErrYJSRoomCapacityExceeded = errors.New("yjs room capacity exceeded")
+	ErrStorageMutationKind     = errors.New("invalid storage mutation kind")
+	ErrYJSPersistenceKind      = errors.New("invalid yjs persistence kind")
 )
 
 const (
@@ -106,6 +108,11 @@ type JoinPlan struct {
 	result          JoinResult
 	snapshotOptions SnapshotPageOptions
 	replayPlan      JoinReplayPlan
+}
+
+type JoinLimits struct {
+	RoomsPerConnection int
+	RoomConnections    int
 }
 
 type LeaveResult struct {
@@ -349,6 +356,7 @@ type storageOpRecord struct {
 type ConnectionsSnapshot struct {
 	Connections     []ConnectionSnapshot
 	YJSConnections  []YJSConnectionSnapshot
+	Rooms           []RoomActivitySnapshot
 	ActiveRoomCount int
 }
 
@@ -364,6 +372,13 @@ type YJSConnectionSnapshot struct {
 	Subject      string `json:"subject,omitempty"`
 	Tenant       string `json:"tenant,omitempty"`
 	Room         string `json:"room"`
+}
+
+type RoomActivitySnapshot struct {
+	Room           string `json:"room"`
+	Connections    int    `json:"connections"`
+	YJSConnections int    `json:"yjs_connections"`
+	TotalSockets   int    `json:"total_sockets"`
 }
 
 func New() *Engine {
@@ -404,6 +419,10 @@ func (e *Engine) TouchSession(connID string) *ConnectionTouch {
 }
 
 func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, error) {
+	return e.JoinWithLimits(connID, room, JoinLimits{RoomsPerConnection: roomLimit})
+}
+
+func (e *Engine) JoinWithLimits(connID string, room string, limits JoinLimits) (JoinResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -415,8 +434,11 @@ func (e *Engine) Join(connID string, room string, roomLimit int) (JoinResult, er
 	if _, exists := joinedRooms[room]; exists {
 		return JoinResult{AlreadyJoined: true, Snapshot: e.snapshotLocked(room)}, nil
 	}
-	if roomLimit > 0 && len(joinedRooms) >= roomLimit {
+	if limits.RoomsPerConnection > 0 && len(joinedRooms) >= limits.RoomsPerConnection {
 		return JoinResult{}, ErrRoomLimitExceeded
+	}
+	if limits.RoomConnections > 0 && len(e.rooms[room]) >= limits.RoomConnections {
+		return JoinResult{}, ErrRoomCapacityExceeded
 	}
 
 	joinedRooms[room] = struct{}{}
@@ -1089,7 +1111,39 @@ func (e *Engine) memberIDsLocked(room string, excludeConnID string) []string {
 func (e *Engine) ActiveRoomCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return len(e.rooms)
+	return len(e.roomActivityLocked())
+}
+
+func (e *Engine) RoomActivity() []RoomActivitySnapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.roomActivityLocked()
+}
+
+func (e *Engine) roomActivityLocked() []RoomActivitySnapshot {
+	roomNames := make(map[string]struct{}, len(e.rooms)+len(e.yjsRooms))
+	for room := range e.rooms {
+		roomNames[room] = struct{}{}
+	}
+	for room := range e.yjsRooms {
+		roomNames[room] = struct{}{}
+	}
+
+	rooms := make([]RoomActivitySnapshot, 0, len(roomNames))
+	for room := range roomNames {
+		jsonConnections := len(e.rooms[room])
+		yjsConnections := len(e.yjsRooms[room])
+		rooms = append(rooms, RoomActivitySnapshot{
+			Room:           room,
+			Connections:    jsonConnections,
+			YJSConnections: yjsConnections,
+			TotalSockets:   jsonConnections + yjsConnections,
+		})
+	}
+	sort.Slice(rooms, func(i int, j int) bool {
+		return rooms[i].Room < rooms[j].Room
+	})
+	return rooms
 }
 
 func (e *Engine) JoinedRooms(connID string) []string {
@@ -1114,12 +1168,23 @@ func (e *Engine) RegisterYJSConn(connID string, room string) {
 }
 
 func (e *Engine) RegisterYJSSession(info YJSSessionInfo) {
+	_ = e.RegisterYJSSessionWithLimit(info, 0)
+}
+
+func (e *Engine) RegisterYJSSessionWithLimit(info YJSSessionInfo, roomLimit int) error {
 	if info.ConnID == "" || info.Room == "" {
-		return
+		return nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if existing, ok := e.yjsSessions[info.ConnID]; ok && existing.Room == info.Room {
+		e.yjsSessions[info.ConnID] = info
+		return nil
+	}
+	if roomLimit > 0 && len(e.yjsRooms[info.Room]) >= roomLimit {
+		return ErrYJSRoomCapacityExceeded
+	}
 	if existing, ok := e.yjsSessions[info.ConnID]; ok && existing.Room != info.Room {
 		e.removeYJSConnLocked(info.ConnID, existing.Room)
 	}
@@ -1131,6 +1196,7 @@ func (e *Engine) RegisterYJSSession(info YJSSessionInfo) {
 		e.yjsRooms[info.Room] = members
 	}
 	members[info.ConnID] = struct{}{}
+	return nil
 }
 
 func (e *Engine) UnregisterYJSConn(connID string, room string) {
@@ -1188,10 +1254,12 @@ func (e *Engine) ConnectionsSnapshot() ConnectionsSnapshot {
 		return yjsConnections[i].ConnectionID < yjsConnections[j].ConnectionID
 	})
 
+	rooms := e.roomActivityLocked()
 	return ConnectionsSnapshot{
 		Connections:     connections,
 		YJSConnections:  yjsConnections,
-		ActiveRoomCount: len(e.rooms),
+		Rooms:           rooms,
+		ActiveRoomCount: len(rooms),
 	}
 }
 

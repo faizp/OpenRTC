@@ -21,6 +21,8 @@ type LimitsConfig struct {
 	EnvelopeMaxBytes   int
 	YJSMaxBytes        int
 	RoomsPerConnection int
+	RoomConnections    int
+	YJSRoomConnections int
 	EmitsPerSecond     int
 	OutboundQueueDepth int
 }
@@ -130,6 +132,14 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
+	roomConnections, err := readNonNegativeInt(env, "OPENRTC_LIMIT_ROOM_CONNECTIONS", 0)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	yjsRoomConnections, err := readNonNegativeInt(env, "OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS", 0)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
 	emitsPerSecond, err := readInt(env, "OPENRTC_LIMIT_EMITS_PER_SECOND", 100)
 	if err != nil {
 		return RuntimeConfig{}, err
@@ -152,6 +162,8 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 		EnvelopeMaxBytes:   envelopeMaxBytes,
 		YJSMaxBytes:        yjsMaxBytes,
 		RoomsPerConnection: roomsPerConnection,
+		RoomConnections:    roomConnections,
+		YJSRoomConnections: yjsRoomConnections,
 		EmitsPerSecond:     emitsPerSecond,
 		OutboundQueueDepth: outboundQueueDepth,
 	}
@@ -277,6 +289,18 @@ func readInt(env map[string]string, key string, defaultValue int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return 0, &Error{Message: fmt.Sprintf("%s must be a positive integer", key)}
+	}
+	return parsed, nil
+}
+
+func readNonNegativeInt(env map[string]string, key string, defaultValue int) (int, error) {
+	value := readString(env, key)
+	if value == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, &Error{Message: fmt.Sprintf("%s must be a non-negative integer", key)}
 	}
 	return parsed, nil
 }

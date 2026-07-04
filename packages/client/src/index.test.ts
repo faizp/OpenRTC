@@ -2148,6 +2148,8 @@ const devClient = await createOpenRTCDevClient({
               },
             ],
             yjs_connections: [{ connection_id: "yjs-dev-1", subject: "ada", tenant: "demo", room: "demo:canvas-1" }],
+            rooms: [{ room: "demo:canvas-1", connections: 1, yjs_connections: 1, total_sockets: 2 }],
+            limits: { room_connections: 250, yjs_room_connections: 125 },
             active_sockets: 2,
             active_room_count: 1,
           }),
@@ -2274,6 +2276,9 @@ assert.equal(devSockets.node_id, "openrtc-dev-runtime");
 assert.equal(devSockets.active_sockets, 2);
 assert.equal(devSockets.connections[0]?.rooms[0], "demo:canvas-1");
 assert.equal(devSockets.yjs_connections[0]?.room, "demo:canvas-1");
+assert.equal(devSockets.rooms[0]?.total_sockets, 2);
+assert.equal(devSockets.limits.room_connections, 250);
+assert.equal(devSockets.limits.yjs_room_connections, 125);
 const devStorage = await devClient.tools.fetchStorage();
 assert.equal(devStorage.room, "demo:canvas-1");
 assert.deepEqual(devStorage.durable.document, { title: "Draft" });
@@ -2426,6 +2431,8 @@ const degradedDevTools = createOpenRTCDevTools(devConfig, {
           node_id: "node-a",
           connections: [],
           yjs_connections: [],
+          rooms: [],
+          limits: { room_connections: 0, yjs_room_connections: 0 },
           active_sockets: 0,
           active_room_count: 0,
         }),

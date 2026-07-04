@@ -365,6 +365,17 @@ func TestHandleYJSAuthUpgradeAndDocumentBranches(t *testing.T) {
 	})
 	defer cleanup()
 	authorized.cfg.Limits.OutboundQueueDepth = 4
+	authorized.cfg.Limits.YJSRoomConnections = 1
+	if err := authorized.roomEngine().RegisterYJSSessionWithLimit(roomengine.YJSSessionInfo{ConnID: "yjs-existing", Room: "tenant-a:doc-1"}, 1); err != nil {
+		t.Fatalf("seed yjs capacity: %v", err)
+	}
+	recorder = httptest.NewRecorder()
+	authorized.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/tenant-a%3Adoc-1?token="+url.QueryEscape(token), nil))
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected yjs room capacity 429, got %d", recorder.Code)
+	}
+	authorized.roomEngine().UnregisterYJSConn("yjs-existing", "tenant-a:doc-1")
+
 	recorder = httptest.NewRecorder()
 	authorized.handleYJS(recorder, httptest.NewRequest(http.MethodGet, "/yjs/tenant-a%3Adoc-1?token="+url.QueryEscape(token), nil))
 	if recorder.Code != http.StatusBadRequest {
@@ -933,6 +944,7 @@ func TestRuntimeAllowsRoomActionWithRoomGrants(t *testing.T) {
 func TestRuntimeHandleJoinLocalBranches(t *testing.T) {
 	cfg := runtimeTestConfig()
 	cfg.Limits.RoomsPerConnection = 1
+	cfg.Limits.RoomConnections = 1
 	service, err := NewService(cfg, nil)
 	if err != nil {
 		t.Fatalf("new runtime service: %v", err)
@@ -972,6 +984,16 @@ func TestRuntimeHandleJoinLocalBranches(t *testing.T) {
 	}
 	if got := readRuntimeOutbound(t, conn); got.T != "ERROR" || got.ID != "join-cap" {
 		t.Fatalf("unexpected room cap response: %+v", got)
+	}
+
+	peer := runtimeTestConn(service, "conn-peer", claims, 1)
+	if err := service.handleJoin(peer, protocol.Message{ID: "join-room-full", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("room capacity join should enqueue an error, got %v", err)
+	}
+	if got := readRuntimeOutbound(t, peer); got.T != "ERROR" || got.ID != "join-room-full" {
+		t.Fatalf("unexpected room capacity response: %+v", got)
+	} else if payload, ok := got.Payload.(openrtcerr.APIError); !ok || payload.Code != openrtcerr.CodeRoomCapacity {
+		t.Fatalf("expected room capacity error payload, got %#v", got.Payload)
 	}
 
 	denied := runtimeTestConn(service, "conn-denied", &auth.Claims{Tenant: "tenant-a"}, 1)
@@ -1466,6 +1488,8 @@ func TestRuntimeUnregisterSkipsOfflinePresenceFanoutOnPublishFailure(t *testing.
 func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()
+	service.cfg.Limits.RoomConnections = 50
+	service.cfg.Limits.YJSRoomConnections = 25
 
 	connB := runtimeTestConn(service, "conn-b", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-b"}, Tenant: "tenant-a"}, 2)
 	connA := runtimeTestConn(service, "conn-a", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-a"}, Tenant: "tenant-a"}, 2)
@@ -1484,8 +1508,18 @@ func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	if snapshot.NodeID != "node-a" {
 		t.Fatalf("unexpected node id: %q", snapshot.NodeID)
 	}
-	if snapshot.ActiveSockets != 3 || snapshot.ActiveRoomCount != 2 {
+	if snapshot.ActiveSockets != 3 || snapshot.ActiveRoomCount != 3 {
 		t.Fatalf("unexpected counts: %+v", snapshot)
+	}
+	if snapshot.Limits.RoomConnections != 50 || snapshot.Limits.YJSRoomConnections != 25 {
+		t.Fatalf("unexpected dev connection limits: %+v", snapshot.Limits)
+	}
+	if !reflect.DeepEqual(snapshot.Rooms, []DevRoomActivitySnapshot{
+		{Room: "tenant-a:doc-1", Connections: 0, YJSConnections: 1, TotalSockets: 1},
+		{Room: "tenant-a:room-1", Connections: 2, YJSConnections: 0, TotalSockets: 2},
+		{Room: "tenant-a:room-2", Connections: 1, YJSConnections: 0, TotalSockets: 1},
+	}) {
+		t.Fatalf("unexpected room activity: %+v", snapshot.Rooms)
 	}
 	if len(snapshot.Connections) != 2 || snapshot.Connections[0].ConnectionID != "conn-a" || snapshot.Connections[1].ConnectionID != "conn-b" {
 		t.Fatalf("connections should be sorted by id: %+v", snapshot.Connections)
@@ -2257,8 +2291,12 @@ func TestRuntimeYJSDocumentAndBroadcastBranches(t *testing.T) {
 
 	sender := &yjsConn{id: "sender", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
 	receiver := &yjsConn{id: "receiver", room: "tenant-a:doc-1", send: make(chan []byte, 1), done: make(chan struct{})}
-	service.registerYJSConn(sender)
-	service.registerYJSConn(receiver)
+	if err := service.registerYJSConn(sender); err != nil {
+		t.Fatalf("register yjs sender: %v", err)
+	}
+	if err := service.registerYJSConn(receiver); err != nil {
+		t.Fatalf("register yjs receiver: %v", err)
+	}
 	if err := service.broadcastYJSEvent(cluster.YJSEvent{
 		Room:         "tenant-a:doc-1",
 		Kind:         cluster.YJSEventUpdate,

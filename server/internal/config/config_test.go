@@ -47,6 +47,8 @@ func TestLoadFromMapClusterMode(t *testing.T) {
 	env["OPENRTC_ALLOWED_ORIGINS"] = "https://app.example.com, https://admin.example.com"
 	env["OPENRTC_ADMIN_AUTH_JWKS_URL"] = "https://admin-issuer.example.com/jwks.json"
 	env["OPENRTC_LIMIT_YJS_MAX_BYTES"] = "2048"
+	env["OPENRTC_LIMIT_ROOM_CONNECTIONS"] = "250"
+	env["OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS"] = "125"
 	env["OPENRTC_SERVER_HOST"] = "127.0.0.1"
 	env["OPENRTC_SERVER_PORT"] = "9000"
 	env["OPENRTC_WS_PATH"] = "/rt"
@@ -77,6 +79,9 @@ func TestLoadFromMapClusterMode(t *testing.T) {
 	}
 	if cfg.Limits.YJSMaxBytes != 2048 {
 		t.Fatalf("unexpected yjs max bytes: %d", cfg.Limits.YJSMaxBytes)
+	}
+	if cfg.Limits.RoomConnections != 250 || cfg.Limits.YJSRoomConnections != 125 {
+		t.Fatalf("unexpected room connection limits: %+v", cfg.Limits)
 	}
 }
 
@@ -239,6 +244,20 @@ func TestLoadFromMapRejectsInvalidEnvironment(t *testing.T) {
 				env["OPENRTC_LIMIT_EMITS_PER_SECOND"] = "bad"
 			},
 			message: "OPENRTC_LIMIT_EMITS_PER_SECOND must be a positive integer",
+		},
+		{
+			name: "bad room connection limit",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_ROOM_CONNECTIONS"] = "-1"
+			},
+			message: "OPENRTC_LIMIT_ROOM_CONNECTIONS must be a non-negative integer",
+		},
+		{
+			name: "bad yjs room connection limit",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS"] = "bad"
+			},
+			message: "OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS must be a non-negative integer",
 		},
 		{
 			name: "bad outbound queue depth",

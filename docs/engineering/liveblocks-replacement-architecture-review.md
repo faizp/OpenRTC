@@ -62,6 +62,9 @@ Implemented:
 - Dependency-free rich-text editor canvas controllers for host-owned Tiptap,
   Lexical, BlockNote, and generic editor setup, combining OpenRTC room/Yjs
   lifecycle with durable anchored comment, thread, and subscription actions.
+- Runtime room admission controls for JSON and Yjs sockets, with configurable
+  per-room caps, retryable `ROOM_CAPACITY` JSON join errors, Yjs HTTP 429
+  upgrade rejection, and dev socket room activity/limit inspection.
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
@@ -70,8 +73,9 @@ Missing for parity:
   and packaged version-history UI.
 - Managed version history beyond local ACK-backed storage undo/redo and Yjs
   compaction snapshots.
-- Room-affine placement, load-shedding, and Yjs compactor retention alerts
-  tuned against production traffic.
+- Room-affine placement and Yjs compactor retention alerts tuned against
+  production traffic. Per-node JSON/Yjs room admission caps exist, but they are
+  not yet a regional placement or autoscaling policy.
 - Full resumable session protocol and delivery acks for non-Yjs events. Redis
   now assigns per-room event sequences, keeps a bounded event log, and
   `JOIN.meta.after_seq` can replay missed room `EVENT`s after `JOINED`; this is
@@ -127,6 +131,11 @@ Recommended target shape:
   lifecycle, selection-derived comment anchors, durable create/reply,
   resolve/reopen, and room subscription actions while leaving editor packages
   in the host application.
+- Added runtime room admission/load-shedding controls:
+  `OPENRTC_LIMIT_ROOM_CONNECTIONS` and
+  `OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS`, retryable `ROOM_CAPACITY` JSON join
+  errors, Yjs HTTP 429 upgrade rejection, and `/dev/sockets` room activity plus
+  limit metadata for integration debugging.
 - Added Redis-backed room metadata CRUD/list admin APIs with `rooms:` scoped authorization.
 - Added Liveblocks-style `defaultAccesses`, `usersAccesses`, and `groupsAccesses` room grants. Runtime and admin room data actions honor existing access-token scopes first, then fall back to room grants for ID-token-style subject/group authorization in cluster mode.
 - Added Redis-backed storage get/set/delete and atomic JSON Patch admin APIs with `storage:` scoped authorization and room-grant fallback.

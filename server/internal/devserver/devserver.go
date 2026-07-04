@@ -1082,6 +1082,8 @@ func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room strin
 		NodeID:         snapshot.NodeID,
 		Connections:    make([]runtimeapp.DevConnectionSnapshot, 0),
 		YJSConnections: make([]runtimeapp.DevYJSConnectionSnapshot, 0),
+		Rooms:          make([]runtimeapp.DevRoomActivitySnapshot, 0),
+		Limits:         snapshot.Limits,
 	}
 	for _, conn := range snapshot.Connections {
 		for _, joinedRoom := range conn.Rooms {
@@ -1094,6 +1096,12 @@ func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room strin
 	for _, conn := range snapshot.YJSConnections {
 		if conn.Room == room {
 			filtered.YJSConnections = append(filtered.YJSConnections, conn)
+		}
+	}
+	for _, activity := range snapshot.Rooms {
+		if activity.Room == room {
+			filtered.Rooms = append(filtered.Rooms, activity)
+			break
 		}
 	}
 	filtered.ActiveSockets = len(filtered.Connections) + len(filtered.YJSConnections)

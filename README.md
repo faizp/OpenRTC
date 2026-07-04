@@ -17,7 +17,7 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 
 - One Go image is built from `server/`.
 - The image runs either `openrtc-runtime` or `openrtc-admin` via command/args.
-- `openrtc-runtime` owns WebSocket traffic, access-grant checks, limits, and delivery; room-centered session, presence, storage mutation, Yjs, and fan-out planning live in `server/internal/roomengine`.
+- `openrtc-runtime` owns WebSocket traffic, access-grant checks, admission/load-shedding limits, and delivery; room-centered session, presence, storage mutation, Yjs, and fan-out planning live in `server/internal/roomengine`.
 - `openrtc-admin` owns room metadata/access grants, storage documents/patches, durable threads/comments, inbox notifications/settings, active-user reads, publish, presence, stats, and admin HTTP endpoints.
 
 ## Developer commands
@@ -61,7 +61,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
 - `http://127.0.0.1:8090` for the admin API.
 - `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.
-- `http://127.0.0.1:3000/dev/sockets` for local runtime WebSocket/Yjs socket inspection.
+- `http://127.0.0.1:3000/dev/sockets` for local runtime WebSocket/Yjs socket inspection, including per-room activity and configured room admission caps.
 - `http://127.0.0.1:3000/dev/storage?room=demo:room-1` for durable and runtime-observed room storage inspection, including storage sequence metadata when available.
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
