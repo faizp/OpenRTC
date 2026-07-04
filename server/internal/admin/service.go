@@ -153,7 +153,27 @@ type activeUsersResponse struct {
 }
 
 type threadListResponse struct {
-	Data []cluster.ThreadRecord `json:"data"`
+	Data       []cluster.ThreadRecord `json:"data"`
+	NextCursor string                 `json:"next_cursor,omitempty"`
+}
+
+type threadListQuery struct {
+	Clauses []threadListQueryClause
+}
+
+type threadListQueryField int
+
+const (
+	threadListQueryFieldResolved threadListQueryField = iota
+	threadListQueryFieldMetadata
+)
+
+type threadListQueryClause struct {
+	Field        threadListQueryField
+	MetadataPath []string
+	Value        any
+	Exists       bool
+	Resolved     bool
 }
 
 type inboxNotificationListResponse struct {
@@ -579,12 +599,33 @@ func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
 		return
 	}
+	limit, err := parseThreadListLimit(r.URL.Query().Get("limit"), r.URL.Query().Get("cursor"))
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	cursor, err := parseCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	query, parseErr := parseThreadListQuery(r.URL.Query().Get("query"))
+	if parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
 	threads, err := s.store.ListThreads(r.Context(), room)
 	if err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, threadListResponse{Data: threads})
+	threads = filterThreads(threads, query)
+	page, nextCursor := paginateThreads(threads, cursor, limit)
+	response := threadListResponse{Data: page}
+	if nextCursor != 0 {
+		response.NextCursor = strconv.FormatUint(nextCursor, 10)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Service) handleGetThread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
@@ -2228,6 +2269,20 @@ func parseListLimit(raw string) (int, error) {
 	return limit, nil
 }
 
+func parseThreadListLimit(raw string, cursor string) (int, error) {
+	if raw == "" {
+		if cursor == "" {
+			return 0, nil
+		}
+		return 50, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 200 {
+		return 0, errors.New("limit must be an integer between 1 and 200")
+	}
+	return limit, nil
+}
+
 func parseCursor(raw string) (uint64, error) {
 	if raw == "" {
 		return 0, nil
@@ -2259,6 +2314,32 @@ func parseRoomListQuery(raw string) (roomListQuery, *protocol.ParseError) {
 		clause, parseErr := parseRoomListQueryClause(part)
 		if parseErr != nil {
 			return roomListQuery{}, parseErr
+		}
+		query.Clauses = append(query.Clauses, clause)
+	}
+	return query, nil
+}
+
+func parseThreadListQuery(raw string) (threadListQuery, *protocol.ParseError) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return threadListQuery{}, nil
+	}
+	if len(raw) > maxRoomListQueryBytes {
+		return threadListQuery{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread query must be at most 1024 bytes"}
+	}
+	parts, parseErr := splitRoomListQuery(raw)
+	if parseErr != nil {
+		return threadListQuery{}, parseErr
+	}
+	if len(parts) > maxRoomListQueryClauses {
+		return threadListQuery{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread query supports at most 20 clauses"}
+	}
+	query := threadListQuery{Clauses: make([]threadListQueryClause, 0, len(parts))}
+	for _, part := range parts {
+		clause, parseErr := parseThreadListQueryClause(part)
+		if parseErr != nil {
+			return threadListQuery{}, parseErr
 		}
 		query.Clauses = append(query.Clauses, clause)
 	}
@@ -2333,6 +2414,39 @@ func parseRoomListQueryClause(raw string) (roomListQueryClause, *protocol.ParseE
 	return roomListQueryClause{Field: roomListQueryFieldMetadata, MetadataPath: path, Value: parsedValue}, nil
 }
 
+func parseThreadListQueryClause(raw string) (threadListQueryClause, *protocol.ParseError) {
+	field, value, ok := strings.Cut(raw, ":")
+	if !ok || field == "" || value == "" {
+		return threadListQueryClause{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread query clauses must use field:value"}
+	}
+	if field == "resolved" {
+		if value == "*" {
+			return threadListQueryClause{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "resolved thread query does not support wildcard exists"}
+		}
+		parsedValue, parseErr := parseRoomQueryScalarValue(value)
+		if parseErr != nil {
+			return threadListQueryClause{}, parseErr
+		}
+		resolved, ok := parsedValue.(bool)
+		if !ok {
+			return threadListQueryClause{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "resolved thread query value must be true or false"}
+		}
+		return threadListQueryClause{Field: threadListQueryFieldResolved, Resolved: resolved}, nil
+	}
+	path, parseErr := parseThreadQueryMetadataPath(field)
+	if parseErr != nil {
+		return threadListQueryClause{}, parseErr
+	}
+	if value == "*" {
+		return threadListQueryClause{Field: threadListQueryFieldMetadata, MetadataPath: path, Exists: true}, nil
+	}
+	parsedValue, parseErr := parseRoomQueryScalarValue(value)
+	if parseErr != nil {
+		return threadListQueryClause{}, parseErr
+	}
+	return threadListQueryClause{Field: threadListQueryFieldMetadata, MetadataPath: path, Value: parsedValue}, nil
+}
+
 func parseRoomQueryStringValue(raw string) (string, *protocol.ParseError) {
 	if raw == "*" {
 		return "", &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "id room query does not support wildcard exists"}
@@ -2386,6 +2500,17 @@ func parseRoomQueryMetadataPath(raw string) ([]string, *protocol.ParseError) {
 	return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "room query fields must be id or metadata paths"}
 }
 
+func parseThreadQueryMetadataPath(raw string) ([]string, *protocol.ParseError) {
+	if strings.HasPrefix(raw, "metadata.") {
+		path := strings.Split(strings.TrimPrefix(raw, "metadata."), ".")
+		return validateRoomQueryMetadataPath(path)
+	}
+	if strings.HasPrefix(raw, "metadata[") {
+		return parseRoomQueryBracketPath(raw)
+	}
+	return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread query fields must be resolved or metadata paths"}
+}
+
 func parseRoomQueryBracketPath(raw string) ([]string, *protocol.ParseError) {
 	rest := strings.TrimPrefix(raw, "metadata")
 	path := make([]string, 0, 2)
@@ -2429,6 +2554,19 @@ func (q roomListQuery) Matches(room cluster.RoomRecord) bool {
 	return true
 }
 
+func (q threadListQuery) Active() bool {
+	return len(q.Clauses) > 0
+}
+
+func (q threadListQuery) Matches(thread cluster.ThreadRecord) bool {
+	for _, clause := range q.Clauses {
+		if !clause.Matches(thread) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c roomListQueryClause) Matches(room cluster.RoomRecord) bool {
 	switch c.Field {
 	case roomListQueryFieldID:
@@ -2442,6 +2580,49 @@ func (c roomListQueryClause) Matches(room cluster.RoomRecord) bool {
 	default:
 		return false
 	}
+}
+
+func (c threadListQueryClause) Matches(thread cluster.ThreadRecord) bool {
+	switch c.Field {
+	case threadListQueryFieldResolved:
+		return thread.Resolved == c.Resolved
+	case threadListQueryFieldMetadata:
+		value, ok := roomMetadataValue(thread.Metadata, c.MetadataPath)
+		if c.Exists {
+			return ok
+		}
+		return ok && roomQueryScalarEqual(value, c.Value)
+	default:
+		return false
+	}
+}
+
+func filterThreads(threads []cluster.ThreadRecord, query threadListQuery) []cluster.ThreadRecord {
+	if !query.Active() {
+		return threads
+	}
+	filtered := make([]cluster.ThreadRecord, 0, len(threads))
+	for _, thread := range threads {
+		if query.Matches(thread) {
+			filtered = append(filtered, thread)
+		}
+	}
+	return filtered
+}
+
+func paginateThreads(threads []cluster.ThreadRecord, cursor uint64, limit int) ([]cluster.ThreadRecord, uint64) {
+	if cursor >= uint64(len(threads)) {
+		return []cluster.ThreadRecord{}, 0
+	}
+	start := int(cursor)
+	if limit <= 0 {
+		return threads[start:], 0
+	}
+	end := start + limit
+	if end >= len(threads) {
+		return threads[start:], 0
+	}
+	return threads[start:end], uint64(end)
 }
 
 func roomMetadataValue(metadata json.RawMessage, path []string) (any, bool) {

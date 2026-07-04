@@ -57,6 +57,8 @@ import {
   runOpenRTCDevProbe,
   sortCommentThreads,
   sortInboxNotifications,
+  threadQuery,
+  threadQueryExists,
   type OpenRTCAdminInboxNotification,
   type OpenRTCAdminThread,
   type OpenRTCCommentEvent,
@@ -225,6 +227,22 @@ assert.throws(() => roomQuery({ id: roomQueryExists }), /id field does not suppo
 assert.throws(() => roomQuery({ id: "" }), /id value must be a non-empty string/);
 assert.throws(() => roomQuery({ "metadata.bad/key": "x" }), /metadata path keys/);
 assert.throws(() => roomQuery({ "metadata.score": Number.NaN }), /number values must be finite/);
+
+assert.equal(
+  threadQuery({
+    resolved: false,
+    "metadata.status": "open",
+    "metadata.priority": 2,
+    "metadata.owner": threadQueryExists,
+  }),
+  'resolved:false metadata.status:"open" metadata.priority:2 metadata.owner:*',
+);
+assert.equal(threadQuery({}), "");
+assert.throws(() => threadQuery({ id: "thread-1" }), /fields must be resolved or metadata/);
+assert.throws(() => threadQuery({ resolved: threadQueryExists }), /resolved field does not support exists/);
+assert.throws(() => threadQuery({ resolved: "false" }), /resolved value must be a boolean/);
+assert.throws(() => threadQuery({ "metadata.bad/key": "x" }), /metadata path keys/);
+assert.throws(() => threadQuery({ "metadata.score": Number.NaN }), /number values must be finite/);
 
 assert.deepEqual(normalizeCommentMentions([" user-2 ", "", "user-2", "user-3"]), ["user-2", "user-3"]);
 assert.deepEqual(addCommentMention(["user-2"], " user-3 "), ["user-2", "user-3"]);
@@ -2680,6 +2698,15 @@ const adminClient = new OpenRTCAdminClient({
         JSON.stringify({ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [], resolved: false }),
       );
     }
+    if (input.includes("/threads?")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          data: [{ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [], resolved: false }],
+          next_cursor: "2",
+        }),
+      );
+    }
     if (input.endsWith("/threads/thread-1") && (!init?.method || init.method === "GET")) {
       return fakeResponse(
         200,
@@ -2784,6 +2811,18 @@ assert.equal(thread.id, "thread-1");
 assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
   comment: { userId: "user-1", body: { type: "text", text: "hello" }, mentions: ["user-2"] },
 });
+
+const queriedThreads = await adminClient.listThreads("tenant-a:room-1", {
+  limit: 20,
+  cursor: "1",
+  query: threadQuery({ resolved: false, "metadata.status": "open" }),
+});
+assert.equal(queriedThreads.data[0]?.id, "thread-1");
+assert.equal(queriedThreads.next_cursor, "2");
+assert.equal(
+  adminCalls.at(-1)?.input,
+  "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads?limit=20&cursor=1&query=resolved%3Afalse+metadata.status%3A%22open%22",
+);
 
 const fetchedThread = await adminClient.getThread("tenant-a:room-1", "thread-1");
 assert.equal(fetchedThread.id, "thread-1");

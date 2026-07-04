@@ -55,6 +55,7 @@ import {
   useUpdateLiveStorage,
   useUnreadInboxCount,
   useResetRoomSubscriptionSettings,
+  type RoomThreadsOptions,
 } from "./index.ts";
 
 type ElementProps = Record<string, unknown>;
@@ -121,6 +122,14 @@ assert.equal(typeof OpenRTCAdminProvider, "function");
 assert.equal(typeof useOpenRTCAdmin, "function");
 assert.equal(typeof RoomProvider, "function");
 assert.equal(typeof useCurrentRoom, "function");
+
+const queryThreadOptions = {
+  query: "resolved:false metadata.status:open",
+  limit: 20,
+  cursor: "1",
+  fetch: true,
+} satisfies RoomThreadsOptions;
+assert.equal(queryThreadOptions.query, "resolved:false metadata.status:open");
 
 const roomContext = createRoomContext();
 assert.equal(typeof roomContext.RoomProvider, "function");

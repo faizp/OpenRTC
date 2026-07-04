@@ -599,6 +599,14 @@ export interface OpenRTCRoomQueryExists {
 
 export const roomQueryExists: OpenRTCRoomQueryExists = Object.freeze({ exists: true });
 
+export type OpenRTCThreadQueryScalar = string | number | boolean | null;
+
+export interface OpenRTCThreadQueryExists {
+  readonly exists: true;
+}
+
+export const threadQueryExists: OpenRTCThreadQueryExists = Object.freeze({ exists: true });
+
 export interface OpenRTCPresenceUpdate {
   room: string;
   connId: string;
@@ -1003,6 +1011,73 @@ function isRoomQueryExists(value: OpenRTCRoomQueryScalar | OpenRTCRoomQueryExist
   return isRecordObject(value) && value.exists === true;
 }
 
+export function threadQuery(
+  clauses: Record<string, OpenRTCThreadQueryScalar | OpenRTCThreadQueryExists | undefined>,
+): string {
+  const parts: string[] = [];
+  for (const [field, value] of Object.entries(clauses)) {
+    if (value === undefined) {
+      continue;
+    }
+    parts.push(`${normalizeThreadQueryField(field, value)}:${formatThreadQueryValue(field, value)}`);
+  }
+  if (parts.length > 20) {
+    throw new Error("OpenRTC thread query supports at most 20 clauses");
+  }
+  return parts.join(" ");
+}
+
+function normalizeThreadQueryField(field: string, value: OpenRTCThreadQueryScalar | OpenRTCThreadQueryExists): string {
+  if (field === "resolved") {
+    if (isThreadQueryExists(value)) {
+      throw new Error("OpenRTC thread query resolved field does not support exists checks");
+    }
+    if (typeof value !== "boolean") {
+      throw new Error("OpenRTC thread query resolved value must be a boolean");
+    }
+    return field;
+  }
+  if (!field.startsWith("metadata.")) {
+    throw new Error("OpenRTC thread query fields must be resolved or metadata paths");
+  }
+  const path = field.slice("metadata.".length).split(".");
+  if (path.length === 0 || path.length > 8) {
+    throw new Error("OpenRTC thread query metadata path depth must be between 1 and 8");
+  }
+  for (const key of path) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
+      throw new Error("OpenRTC thread query metadata path keys must use letters, numbers, underscore, or dash");
+    }
+  }
+  return field;
+}
+
+function formatThreadQueryValue(field: string, value: OpenRTCThreadQueryScalar | OpenRTCThreadQueryExists): string {
+  if (isThreadQueryExists(value)) {
+    return "*";
+  }
+  if (field === "resolved") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("OpenRTC thread query number values must be finite");
+    }
+    return String(value);
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  return "null";
+}
+
+function isThreadQueryExists(value: OpenRTCThreadQueryScalar | OpenRTCThreadQueryExists): value is OpenRTCThreadQueryExists {
+  return isRecordObject(value) && value.exists === true;
+}
+
 export function normalizeCommentMentions(mentions: readonly string[] = []): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -1235,6 +1310,12 @@ export interface OpenRTCAdminThreadInput {
 export interface OpenRTCAdminThreadUpdate {
   metadata?: unknown;
   resolved?: boolean;
+}
+
+export interface OpenRTCAdminThreadListOptions {
+  limit?: number;
+  cursor?: string;
+  query?: string;
 }
 
 export interface OpenRTCAdminCommentInput {
@@ -3758,8 +3839,17 @@ export class OpenRTCAdminClient {
     );
   }
 
-  listThreads(room: string): Promise<OpenRTCListResponse<OpenRTCAdminThread>> {
-    return this.request<OpenRTCListResponse<OpenRTCAdminThread>>(`/v1/rooms/${encodeURIComponent(room)}/threads`);
+  listThreads(
+    room: string,
+    options: OpenRTCAdminThreadListOptions = {},
+  ): Promise<OpenRTCListResponse<OpenRTCAdminThread>> {
+    return this.request<OpenRTCListResponse<OpenRTCAdminThread>>(
+      this.pathWithQuery(`/v1/rooms/${encodeURIComponent(room)}/threads`, {
+        limit: options.limit,
+        cursor: options.cursor,
+        query: options.query,
+      }),
+    );
   }
 
   getThread(room: string, threadId: string): Promise<OpenRTCAdminThread> {

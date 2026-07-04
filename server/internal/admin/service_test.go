@@ -233,6 +233,18 @@ func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {
 	if _, err := parseListLimit("not-a-number"); err == nil {
 		t.Fatalf("expected non-numeric limit to fail")
 	}
+	if limit, err := parseThreadListLimit("", ""); err != nil || limit != 0 {
+		t.Fatalf("unexpected unbounded thread list limit: %d %v", limit, err)
+	}
+	if limit, err := parseThreadListLimit("", "20"); err != nil || limit != 50 {
+		t.Fatalf("unexpected cursor-backed default thread list limit: %d %v", limit, err)
+	}
+	if limit, err := parseThreadListLimit("200", ""); err != nil || limit != 200 {
+		t.Fatalf("unexpected explicit thread list limit: %d %v", limit, err)
+	}
+	if _, err := parseThreadListLimit("0", ""); err == nil {
+		t.Fatalf("expected zero thread list limit to fail")
+	}
 	if cursor, err := parseCursor(""); err != nil || cursor != 0 {
 		t.Fatalf("unexpected default cursor: %d %v", cursor, err)
 	}
@@ -265,6 +277,28 @@ func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {
 	}
 	if _, parseErr := parseRoomListQuery("metadata.bad/key:value"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
 		t.Fatalf("expected unsafe metadata path to fail, got %v", parseErr)
+	}
+
+	threadQuery, parseErr := parseThreadListQuery(`resolved:false metadata.status:open metadata.owner:* metadata["kind"]:"white board"`)
+	if parseErr != nil {
+		t.Fatalf("expected thread query to parse: %v", parseErr)
+	}
+	matchingThread := cluster.ThreadRecord{
+		ID:       "thread-1",
+		Resolved: false,
+		Metadata: json.RawMessage(`{"status":"open","owner":"user-1","kind":"white board"}`),
+	}
+	if !threadQuery.Matches(matchingThread) {
+		t.Fatalf("expected query to match thread")
+	}
+	if threadQuery.Matches(cluster.ThreadRecord{ID: "thread-2", Resolved: true, Metadata: matchingThread.Metadata}) {
+		t.Fatalf("expected resolved mismatch to fail query")
+	}
+	if _, parseErr := parseThreadListQuery("resolved:maybe"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected invalid resolved query to fail, got %v", parseErr)
+	}
+	if _, parseErr := parseThreadListQuery("id:thread-1"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected unsupported thread id query to fail, got %v", parseErr)
 	}
 }
 
@@ -1584,6 +1618,95 @@ func TestAdminThreadHandlers(t *testing.T) {
 	}
 	if !strings.HasPrefix(generatedStore.addedComment.ID, "cm_") {
 		t.Fatalf("expected generated comment id, got %+v", generatedStore.addedComment)
+	}
+}
+
+func TestAdminThreadListQueryAndPagination(t *testing.T) {
+	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "comments:tenant-a:*",
+	})
+	defer cleanup()
+
+	now := time.Unix(350, 0).UTC()
+	store := &fakeAdminStore{
+		listThreads: []cluster.ThreadRecord{
+			{
+				Type:      "thread",
+				ID:        "thread-open-1",
+				RoomID:    "tenant-a:room-1",
+				Metadata:  json.RawMessage(`{"status":"open","owner":"user-1","kind":"white board"}`),
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				Type:      "thread",
+				ID:        "thread-resolved",
+				RoomID:    "tenant-a:room-1",
+				Resolved:  true,
+				Metadata:  json.RawMessage(`{"status":"done","owner":"user-2","kind":"white board"}`),
+				CreatedAt: now.Add(time.Second),
+				UpdatedAt: now.Add(time.Second),
+			},
+			{
+				Type:      "thread",
+				ID:        "thread-open-2",
+				RoomID:    "tenant-a:room-1",
+				Metadata:  json.RawMessage(`{"status":"open","owner":"user-2"}`),
+				CreatedAt: now.Add(2 * time.Second),
+				UpdatedAt: now.Add(2 * time.Second),
+			},
+		},
+	}
+	handler := newTestAdminService(verifier, store).Handler()
+
+	firstPage := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?query=resolved:false%20metadata.status:open&limit=1", "")
+	if firstPage.Code != http.StatusOK {
+		t.Fatalf("expected first filtered page 200, got %d body=%q", firstPage.Code, firstPage.Body.String())
+	}
+	var first threadListResponse
+	if err := json.NewDecoder(firstPage.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first page: %v", err)
+	}
+	if len(first.Data) != 1 || first.Data[0].ID != "thread-open-1" || first.NextCursor != "1" {
+		t.Fatalf("unexpected first page: %+v", first)
+	}
+
+	secondPage := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?query=resolved:false%20metadata.status:open&limit=1&cursor=1", "")
+	if secondPage.Code != http.StatusOK {
+		t.Fatalf("expected second filtered page 200, got %d body=%q", secondPage.Code, secondPage.Body.String())
+	}
+	var second threadListResponse
+	if err := json.NewDecoder(secondPage.Body).Decode(&second); err != nil {
+		t.Fatalf("decode second page: %v", err)
+	}
+	if len(second.Data) != 1 || second.Data[0].ID != "thread-open-2" || second.NextCursor != "" {
+		t.Fatalf("unexpected second page: %+v", second)
+	}
+
+	existsResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?query=metadata.owner:*", "")
+	if existsResp.Code != http.StatusOK {
+		t.Fatalf("expected exists query 200, got %d body=%q", existsResp.Code, existsResp.Body.String())
+	}
+	var existsList threadListResponse
+	if err := json.NewDecoder(existsResp.Body).Decode(&existsList); err != nil {
+		t.Fatalf("decode exists list: %v", err)
+	}
+	if len(existsList.Data) != 3 {
+		t.Fatalf("expected all owner-backed threads, got %+v", existsList)
+	}
+
+	badQueryResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?query=resolved:maybe", "")
+	if badQueryResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid thread query 400, got %d", badQueryResp.Code)
+	}
+	badLimitResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?limit=0", "")
+	if badLimitResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid thread limit 400, got %d", badLimitResp.Code)
+	}
+	badCursorResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?cursor=-1", "")
+	if badCursorResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid thread cursor 400, got %d", badCursorResp.Code)
 	}
 }
 

@@ -46,6 +46,7 @@ Implemented:
 - Liveblocks-style `LiveObject`, `LiveList`, and `LiveMap` typed storage envelope validation for durable storage documents and patches.
 - Redis-backed room threads/comments with scoped `comments:` authorization and
   inbox notifications/settings with scoped `notifications:` authorization.
+- Thread list query/pagination for resolved state and thread metadata filters.
 - Room broadcast from clients and admin service.
 - Multi-node fan-out through Redis Pub/Sub.
 - Binary `/yjs/{room}` endpoint with persisted snapshot/update replay and cross-node fan-out.
@@ -54,7 +55,7 @@ Implemented:
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
-- Advanced thread search/subscription/read-state workflows and hosted comments UI.
+- Thread subscription/read-state workflows and hosted comments UI.
 - Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
   product features beyond the package-level Yjs binding, selection presence,
   remote-selection, and cleanup helpers.

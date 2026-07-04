@@ -239,6 +239,8 @@ and action hooks when the hook should fetch or mutate durable REST state before
 realtime deltas take over. Reaction and mention action hooks accept current
 arrays when the caller already has them; otherwise they load the comment through
 the admin client before writing the derived update.
+Thread list hooks and `admin.listThreads()` accept `query`, `limit`, and
+`cursor` options for resolved-state and thread metadata searches.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
@@ -424,6 +426,7 @@ import {
   addCommentMention,
   addCommentReaction,
   roomQuery,
+  threadQuery,
 } from "@openrtc/client";
 
 const admin = new OpenRTCAdminClient({
@@ -494,6 +497,10 @@ await admin.createThread("tenant-a:canvas-1", {
 await admin.markThreadResolved("tenant-a:canvas-1", "thread-1");
 await admin.editThreadMetadata("tenant-a:canvas-1", "thread-1", {
   status: "resolved",
+});
+const openReviewThreads = await admin.listThreads("tenant-a:canvas-1", {
+  query: threadQuery({ resolved: false, "metadata.status": "review" }),
+  limit: 50,
 });
 await admin.updateComment("tenant-a:canvas-1", "thread-1", "comment-1", {
   metadata: { status: "resolved" },

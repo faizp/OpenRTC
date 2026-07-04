@@ -43,6 +43,7 @@ import {
   type OpenRTCAdminRoomSubscriptionSettingsInput,
   type OpenRTCAdminThread,
   type OpenRTCAdminThreadInput,
+  type OpenRTCAdminThreadListOptions,
   type OpenRTCAdminThreadUpdate,
   type OpenRTCCursor,
   type OpenRTCCursorOptions,
@@ -97,6 +98,7 @@ export interface RoomThreadsOptions extends JoinOptions {
   initialThreads?: readonly OpenRTCAdminThread[];
   admin?: OpenRTCAdminClient | null;
   fetch?: boolean;
+  query?: string;
 }
 
 export interface RoomThreadsState {
@@ -547,6 +549,14 @@ function compactEnterRoomOptions(options: EnterRoomOptions = {}): EnterRoomOptio
     ...(options.cursor !== undefined ? { cursor: options.cursor } : {}),
     ...(options.afterSequence !== undefined ? { afterSequence: options.afterSequence } : {}),
     ...(options.initialPresence !== undefined ? { initialPresence: options.initialPresence } : {}),
+  };
+}
+
+function compactThreadListOptions(options: RoomThreadsOptions = {}): OpenRTCAdminThreadListOptions {
+  return {
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(options.cursor !== undefined ? { cursor: options.cursor } : {}),
+    ...(options.query !== undefined ? { query: options.query } : {}),
   };
 }
 
@@ -1107,6 +1117,7 @@ export function useRoomThreadsState(room: string, options: RoomThreadsOptions = 
   const admin = options.admin ?? contextAdmin ?? undefined;
   const initialThreads = useInitialThreads(room, options.initialThreads);
   const enterOptions = compactEnterRoomOptions(options);
+  const listOptions = compactThreadListOptions(options);
   const shouldFetch = options.fetch ?? admin !== undefined;
   const [threads, setThreads] = useState<OpenRTCAdminThread[]>(() => sortCommentThreads(initialThreads ?? []));
   const [loading, setLoading] = useState(false);
@@ -1121,7 +1132,7 @@ export function useRoomThreadsState(room: string, options: RoomThreadsOptions = 
     setLoading(true);
     setError(undefined);
     try {
-      const response = await admin.listThreads(room);
+      const response = await admin.listThreads(room, listOptions);
       const next = sortCommentThreads(response.data);
       setThreads(next);
       return next;
@@ -1131,7 +1142,7 @@ export function useRoomThreadsState(room: string, options: RoomThreadsOptions = 
     } finally {
       setLoading(false);
     }
-  }, [admin, room, initialThreads]);
+  }, [admin, room, initialThreads, listOptions.limit, listOptions.cursor, listOptions.query]);
 
   useEffect(() => {
     const entered = client.enterRoom(room, enterOptions);
