@@ -23,6 +23,7 @@ import {
   CommentsPanel,
   Cursor,
   Cursors,
+  RoomSubscriptionControls,
   RoomProvider,
   createRoomContext,
   useAddCommentMention,
@@ -46,12 +47,15 @@ import {
   useErrorListener,
   useGetThread,
   useGetThreadReadState,
+  useGetRoomSubscriptionSettings,
+  useListRoomSubscriptionSettings,
   useLostConnectionListener,
   useMarkInboxNotificationAsRead,
   useMarkThreadRead,
   useMarkThreadResolved,
   useMarkThreadUnresolved,
   useMarkThreadUnread,
+  useMuteRoomThreads,
   useMyPresence,
   useMyPresenceSelector,
   useMutation,
@@ -63,6 +67,8 @@ import {
   useOthersConnectionIds,
   useOthersMapped,
   useRoomReconnect,
+  useRoomSubscriptionSettings,
+  useRoomSubscriptionSettingsState,
   useRedo,
   useRemoveCommentMention,
   useRemoveReaction,
@@ -83,6 +89,10 @@ import {
   useStorageSequence,
   useStorageStatus,
   useTriggerInboxNotification,
+  useSubscribeRoomRepliesAndMentions,
+  useSubscribeRoomThreads,
+  useUserRoomSubscriptionSettings,
+  useUserRoomSubscriptionSettingsState,
   useHistory,
   useUndo,
   useUpdateRoomSubscriptionSettings,
@@ -272,7 +282,12 @@ function ProductSurfaceActionTypes() {
   const markInboxRead = useMarkInboxNotificationAsRead();
   const deleteInboxNotification = useDeleteInboxNotification("user-1");
   const deleteAllInboxNotifications = useDeleteAllInboxNotifications("user-1");
+  const getRoomSubscriptionSettings = useGetRoomSubscriptionSettings(roomId, "user-1");
+  const listRoomSubscriptionSettings = useListRoomSubscriptionSettings("user-1");
   const updateRoomSubscriptionSettings = useUpdateRoomSubscriptionSettings(roomId, "user-1");
+  const subscribeRoomThreads = useSubscribeRoomThreads(roomId, "user-1");
+  const subscribeRoomRepliesAndMentions = useSubscribeRoomRepliesAndMentions(roomId, "user-1");
+  const muteRoomThreads = useMuteRoomThreads(roomId, "user-1");
   const resetRoomSubscriptionSettings = useResetRoomSubscriptionSettings(roomId, "user-1");
 
   const threadInput: OpenRTCAdminThreadInput = {
@@ -337,7 +352,49 @@ function ProductSurfaceActionTypes() {
   expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(
     updateRoomSubscriptionSettings({ threads: "all", textMentions: "mine" }),
   );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(getRoomSubscriptionSettings());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings[]>>(
+    listRoomSubscriptionSettings({ limit: 10, cursor: "1" }),
+  );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(subscribeRoomThreads());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(subscribeRoomRepliesAndMentions());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(muteRoomThreads());
   expectType<Promise<void>>(resetRoomSubscriptionSettings());
+  const subscriptionState = useRoomSubscriptionSettingsState(roomId, "user-1", {
+    initialSettings: {
+      roomId,
+      userId: "user-1",
+      threads: "all",
+      textMentions: "mine",
+    },
+    fetch: false,
+  });
+  expectType<OpenRTCAdminRoomSubscriptionSettings | undefined>(subscriptionState.settings);
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>>(subscriptionState.subscribeAll());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>>(subscriptionState.subscribeRepliesAndMentions());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>>(subscriptionState.mute());
+  expectType<OpenRTCAdminRoomSubscriptionSettings | undefined>(
+    useRoomSubscriptionSettings(roomId, "user-1", { fetch: false }),
+  );
+  expectType<OpenRTCAdminRoomSubscriptionSettings[]>(
+    useUserRoomSubscriptionSettings("user-1", {
+      initialSettings: [],
+      fetch: false,
+    }),
+  );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings[]>>(
+    useUserRoomSubscriptionSettingsState("user-1", { fetch: false }).refresh(),
+  );
+  expectType<ReactNode>(
+    RoomSubscriptionControls({
+      room: roomId,
+      userId: "user-1",
+      fetch: false,
+      onSettingsChanged: (settings) => {
+        expectType<OpenRTCAdminRoomSubscriptionSettings>(settings);
+      },
+    }),
+  );
   expectType<ReactNode>(
     CommentsPanel({
       room: roomId,
@@ -458,8 +515,32 @@ function RoomContextIntegrationTypes() {
   expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(
     boundRoom.useUpdateRoomSubscriptionSettings("user-1")({ threads: "none" }),
   );
+  expectType<OpenRTCAdminRoomSubscriptionSettings | undefined>(
+    boundRoom.useRoomSubscriptionSettings("user-1", { fetch: false }),
+  );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>>(
+    boundRoom.useRoomSubscriptionSettingsState("user-1", { fetch: false }).mute(),
+  );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(boundRoom.useGetRoomSubscriptionSettings("user-1")());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(boundRoom.useSubscribeRoomThreads("user-1")());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(
+    boundRoom.useSubscribeRoomRepliesAndMentions("user-1")(),
+  );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(boundRoom.useMuteRoomThreads("user-1")());
   expectType<Promise<void>>(boundRoom.useResetRoomSubscriptionSettings("user-1")());
   expectType<Promise<CanvasStorage>>(boundRoom.useSetStorage<CanvasStorage>()({ title: "Draft", items: [] }));
+  expectType<ReactNode>(
+    boundRoom.RoomSubscriptionControls({
+      userId: "user-1",
+      initialSettings: {
+        roomId: "tenant-a:canvas-1",
+        userId: "user-1",
+        threads: "all",
+        textMentions: "mine",
+      },
+      fetch: false,
+    }),
+  );
   expectType<ReactNode>(
     boundRoom.CommentsPanel({
       userId: "user-1",

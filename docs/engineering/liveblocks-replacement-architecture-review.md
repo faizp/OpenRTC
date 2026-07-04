@@ -51,6 +51,9 @@ Implemented:
   client/React read-state hooks.
 - Embeddable React `CommentsPanel` hosted comments surface for durable room
   threads, replies, read/unread state, and resolve/reopen actions.
+- First-class client/React room thread subscription workflows over durable
+  room subscription settings, including subscribe-all, replies/mentions, mute,
+  reset, list, and embeddable controls.
 - Room broadcast from clients and admin service.
 - Multi-node fan-out through Redis Pub/Sub.
 - Binary `/yjs/{room}` endpoint with persisted snapshot/update replay and cross-node fan-out.
@@ -59,7 +62,6 @@ Implemented:
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
-- Thread subscription workflows.
 - Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
   product features beyond the package-level Yjs binding, selection presence,
   remote-selection, and cleanup helpers.
@@ -133,6 +135,8 @@ Recommended target shape:
   read/reset state.
 - Added an embeddable React `CommentsPanel` hosted comments surface on top of
   the durable thread/comment, read-state, and resolve/reopen APIs.
+- Added first-class SDK/React thread subscription workflows and
+  `RoomSubscriptionControls` on top of durable room subscription settings.
 - Added a lightweight Yjs awareness-compatible SDK bridge over existing
   OpenRTC presence so user/cursor state remains ephemeral and separate from
   persisted Yjs document updates.

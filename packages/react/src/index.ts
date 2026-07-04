@@ -26,6 +26,7 @@ import {
   getPresenceColor,
   getPresenceCursor,
   getPresenceUser,
+  roomSubscriptionSettingsInput,
   removeCommentMention,
   removeCommentReaction,
   sortCommentThreads,
@@ -128,6 +129,37 @@ export interface InboxNotificationsState {
   refresh(): Promise<OpenRTCAdminInboxNotification[]>;
 }
 
+export interface RoomSubscriptionSettingsOptions extends OpenRTCAdminActionOptions {
+  initialSettings?: OpenRTCAdminRoomSubscriptionSettings;
+  fetch?: boolean;
+}
+
+export interface RoomSubscriptionSettingsState {
+  settings?: OpenRTCAdminRoomSubscriptionSettings;
+  loading: boolean;
+  error?: unknown;
+  refresh(): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>;
+  update(settings: OpenRTCAdminRoomSubscriptionSettingsInput): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>;
+  reset(): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>;
+  subscribeAll(): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>;
+  subscribeRepliesAndMentions(): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>;
+  mute(): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>;
+}
+
+export interface UserRoomSubscriptionSettingsOptions extends OpenRTCAdminActionOptions {
+  initialSettings?: readonly OpenRTCAdminRoomSubscriptionSettings[];
+  fetch?: boolean;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface UserRoomSubscriptionSettingsState {
+  settings: OpenRTCAdminRoomSubscriptionSettings[];
+  loading: boolean;
+  error?: unknown;
+  refresh(): Promise<OpenRTCAdminRoomSubscriptionSettings[]>;
+}
+
 export interface OpenRTCAdminActionOptions {
   admin?: OpenRTCAdminClient | null;
 }
@@ -211,6 +243,19 @@ export interface CommentsPanelProps extends RoomThreadsOptions {
 
 export type RoomCommentsPanelProps = Omit<CommentsPanelProps, "room">;
 
+export interface RoomSubscriptionControlsProps extends RoomSubscriptionSettingsOptions {
+  room: string;
+  userId: string;
+  title?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  disabled?: boolean;
+  showReset?: boolean;
+  onSettingsChanged?: (settings: OpenRTCAdminRoomSubscriptionSettings) => void;
+}
+
+export type RoomSubscriptionControlsRoomProps = Omit<RoomSubscriptionControlsProps, "room">;
+
 export interface EditCommentMetadataInput {
   threadId: string;
   commentId: string;
@@ -258,6 +303,7 @@ export interface OpenRTCMutationContext<TDocument = unknown> extends StorageMuta
 export interface OpenRTCRoomContextHooks {
   RoomProvider(props: OpenRTCRoomProviderProps): ReactNode;
   CommentsPanel(props: RoomCommentsPanelProps): ReactNode;
+  RoomSubscriptionControls(props: RoomSubscriptionControlsRoomProps): ReactNode;
   useRoom(): OpenRTCRoom;
   useStatus(): ConnectionStatus;
   useOthers(options?: JoinOptions): PresencePeer[];
@@ -373,10 +419,31 @@ export interface OpenRTCRoomContextHooks {
   useRemoveCommentMention(
     options?: OpenRTCAdminActionOptions,
   ): (input: CommentMentionActionInput) => Promise<OpenRTCAdminThread>;
+  useRoomSubscriptionSettingsState(
+    userId: string,
+    options?: RoomSubscriptionSettingsOptions,
+  ): RoomSubscriptionSettingsState;
+  useRoomSubscriptionSettings(
+    userId: string,
+    options?: RoomSubscriptionSettingsOptions,
+  ): OpenRTCAdminRoomSubscriptionSettings | undefined;
+  useGetRoomSubscriptionSettings(
+    userId: string,
+    options?: OpenRTCAdminActionOptions,
+  ): () => Promise<OpenRTCAdminRoomSubscriptionSettings>;
   useUpdateRoomSubscriptionSettings(
     userId: string,
     options?: OpenRTCAdminActionOptions,
   ): (settings: OpenRTCAdminRoomSubscriptionSettingsInput) => Promise<OpenRTCAdminRoomSubscriptionSettings>;
+  useSubscribeRoomThreads(
+    userId: string,
+    options?: OpenRTCAdminActionOptions,
+  ): () => Promise<OpenRTCAdminRoomSubscriptionSettings>;
+  useSubscribeRoomRepliesAndMentions(
+    userId: string,
+    options?: OpenRTCAdminActionOptions,
+  ): () => Promise<OpenRTCAdminRoomSubscriptionSettings>;
+  useMuteRoomThreads(userId: string, options?: OpenRTCAdminActionOptions): () => Promise<OpenRTCAdminRoomSubscriptionSettings>;
   useResetRoomSubscriptionSettings(userId: string, options?: OpenRTCAdminActionOptions): () => Promise<void>;
   useLostConnectionListener(callback: (event: OpenRTCLostConnectionEvent) => void): void;
   useRoomReconnect(): () => Promise<void>;
@@ -496,6 +563,11 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
     return createElement(CommentsPanel, { ...props, room });
   }
 
+  function BoundRoomSubscriptionControls(props: RoomSubscriptionControlsRoomProps): ReactNode {
+    const room = useRoomFromContext(context, "RoomSubscriptionControls").id;
+    return createElement(RoomSubscriptionControls, { ...props, room });
+  }
+
   function useBoundOther(connId: string, options?: JoinOptions): PresencePeer | undefined;
   function useBoundOther<T>(connId: string, selector: OtherSelector<T>, options?: JoinOptions): T | undefined;
   function useBoundOther<T>(
@@ -526,6 +598,7 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
   return {
     RoomProvider: (props) => renderRoomProvider(context, props),
     CommentsPanel: BoundCommentsPanel,
+    RoomSubscriptionControls: BoundRoomSubscriptionControls,
     useRoom: () => useRoomFromContext(context, "useRoom"),
     useStatus: () => useRoomStatus(useRoomFromContext(context, "useStatus").id),
     useOthers: (options = {}) => useOthers(useRoomFromContext(context, "useOthers").id, options),
@@ -600,12 +673,32 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
       useAddCommentMention(useRoomFromContext(context, "useAddCommentMention").id, options),
     useRemoveCommentMention: (options = {}) =>
       useRemoveCommentMention(useRoomFromContext(context, "useRemoveCommentMention").id, options),
+    useRoomSubscriptionSettingsState: (userId, options = {}) =>
+      useRoomSubscriptionSettingsState(
+        useRoomFromContext(context, "useRoomSubscriptionSettingsState").id,
+        userId,
+        options,
+      ),
+    useRoomSubscriptionSettings: (userId, options = {}) =>
+      useRoomSubscriptionSettings(useRoomFromContext(context, "useRoomSubscriptionSettings").id, userId, options),
+    useGetRoomSubscriptionSettings: (userId, options = {}) =>
+      useGetRoomSubscriptionSettings(useRoomFromContext(context, "useGetRoomSubscriptionSettings").id, userId, options),
     useUpdateRoomSubscriptionSettings: (userId, options = {}) =>
       useUpdateRoomSubscriptionSettings(
         useRoomFromContext(context, "useUpdateRoomSubscriptionSettings").id,
         userId,
         options,
       ),
+    useSubscribeRoomThreads: (userId, options = {}) =>
+      useSubscribeRoomThreads(useRoomFromContext(context, "useSubscribeRoomThreads").id, userId, options),
+    useSubscribeRoomRepliesAndMentions: (userId, options = {}) =>
+      useSubscribeRoomRepliesAndMentions(
+        useRoomFromContext(context, "useSubscribeRoomRepliesAndMentions").id,
+        userId,
+        options,
+      ),
+    useMuteRoomThreads: (userId, options = {}) =>
+      useMuteRoomThreads(useRoomFromContext(context, "useMuteRoomThreads").id, userId, options),
     useResetRoomSubscriptionSettings: (userId, options = {}) =>
       useResetRoomSubscriptionSettings(
         useRoomFromContext(context, "useResetRoomSubscriptionSettings").id,
@@ -1607,6 +1700,208 @@ export function useDeleteAllInboxNotifications(
   return useCallback(() => admin.deleteAllInboxNotifications(userId), [admin, userId]);
 }
 
+export function useRoomSubscriptionSettingsState(
+  room: string,
+  userId: string,
+  options: RoomSubscriptionSettingsOptions = {},
+): RoomSubscriptionSettingsState {
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = options.admin ?? contextAdmin ?? undefined;
+  const initialSettings = useInitialRoomSubscriptionSettings(room, userId, options.initialSettings);
+  const shouldFetch = options.fetch ?? admin !== undefined;
+  const [settings, setSettings] = useState<OpenRTCAdminRoomSubscriptionSettings | undefined>(initialSettings);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>();
+
+  const refresh = useCallback(async (): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined> => {
+    if (!admin) {
+      setSettings(initialSettings);
+      return initialSettings;
+    }
+    setLoading(true);
+    setError(undefined);
+    try {
+      const next = await admin.getRoomSubscriptionSettings(room, userId);
+      setSettings(next);
+      return next;
+    } catch (caught) {
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  }, [admin, initialSettings, room, userId]);
+
+  const update = useCallback(
+    async (
+      input: OpenRTCAdminRoomSubscriptionSettingsInput,
+    ): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined> => {
+      if (!admin) {
+        const caught = new Error("useRoomSubscriptionSettingsState requires an OpenRTCAdminProvider or an admin option");
+        setError(caught);
+        return undefined;
+      }
+      setLoading(true);
+      setError(undefined);
+      try {
+        const next = await admin.setRoomSubscriptionSettings(room, userId, input);
+        setSettings(next);
+        return next;
+      } catch (caught) {
+        setError(caught);
+        throw caught;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [admin, room, userId],
+  );
+
+  const reset = useCallback(async (): Promise<OpenRTCAdminRoomSubscriptionSettings | undefined> => {
+    if (!admin) {
+      const caught = new Error("useRoomSubscriptionSettingsState requires an OpenRTCAdminProvider or an admin option");
+      setError(caught);
+      return undefined;
+    }
+    setLoading(true);
+    setError(undefined);
+    try {
+      await admin.deleteRoomSubscriptionSettings(room, userId);
+      const next = await admin.getRoomSubscriptionSettings(room, userId);
+      setSettings(next);
+      return next;
+    } catch (caught) {
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  }, [admin, room, userId]);
+
+  useEffect(() => {
+    setSettings(initialSettings);
+  }, [initialSettings]);
+
+  useEffect(() => {
+    if (!shouldFetch || !admin) {
+      return;
+    }
+    void refresh().catch(() => undefined);
+  }, [admin, refresh, shouldFetch]);
+
+  return useMemo(
+    () => ({
+      ...(settings !== undefined ? { settings } : {}),
+      loading,
+      ...(error !== undefined ? { error } : {}),
+      refresh,
+      update,
+      reset,
+      subscribeAll: () => update(roomSubscriptionSettingsInput("all")),
+      subscribeRepliesAndMentions: () => update(roomSubscriptionSettingsInput("replies_and_mentions")),
+      mute: () => update(roomSubscriptionSettingsInput("none")),
+    }),
+    [error, loading, refresh, reset, settings, update],
+  );
+}
+
+export function useRoomSubscriptionSettings(
+  room: string,
+  userId: string,
+  options: RoomSubscriptionSettingsOptions = {},
+): OpenRTCAdminRoomSubscriptionSettings | undefined {
+  return useRoomSubscriptionSettingsState(room, userId, options).settings;
+}
+
+export function useUserRoomSubscriptionSettingsState(
+  userId: string,
+  options: UserRoomSubscriptionSettingsOptions = {},
+): UserRoomSubscriptionSettingsState {
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = options.admin ?? contextAdmin ?? undefined;
+  const initialSettings = useInitialUserRoomSubscriptionSettings(userId, options.initialSettings);
+  const shouldFetch = options.fetch ?? admin !== undefined;
+  const limit = options.limit;
+  const cursor = options.cursor;
+  const [settings, setSettings] = useState<OpenRTCAdminRoomSubscriptionSettings[]>(() => [...(initialSettings ?? [])]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>();
+
+  const refresh = useCallback(async (): Promise<OpenRTCAdminRoomSubscriptionSettings[]> => {
+    if (!admin) {
+      const next = [...(initialSettings ?? [])];
+      setSettings(next);
+      return next;
+    }
+    setLoading(true);
+    setError(undefined);
+    try {
+      const response = await admin.listRoomSubscriptionSettings(userId, {
+        ...(typeof limit === "number" ? { limit } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      setSettings(response.data);
+      return response.data;
+    } catch (caught) {
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  }, [admin, cursor, initialSettings, limit, userId]);
+
+  useEffect(() => {
+    setSettings([...(initialSettings ?? [])]);
+  }, [initialSettings]);
+
+  useEffect(() => {
+    if (!shouldFetch || !admin) {
+      return;
+    }
+    void refresh().catch(() => undefined);
+  }, [admin, refresh, shouldFetch]);
+
+  return useMemo(
+    () => ({
+      settings,
+      loading,
+      ...(error !== undefined ? { error } : {}),
+      refresh,
+    }),
+    [error, loading, refresh, settings],
+  );
+}
+
+export function useUserRoomSubscriptionSettings(
+  userId: string,
+  options: UserRoomSubscriptionSettingsOptions = {},
+): OpenRTCAdminRoomSubscriptionSettings[] {
+  return useUserRoomSubscriptionSettingsState(userId, options).settings;
+}
+
+export function useGetRoomSubscriptionSettings(
+  room: string,
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): () => Promise<OpenRTCAdminRoomSubscriptionSettings> {
+  const admin = useAdminActionClient(options, "useGetRoomSubscriptionSettings");
+  return useCallback(() => admin.getRoomSubscriptionSettings(room, userId), [admin, room, userId]);
+}
+
+export function useListRoomSubscriptionSettings(
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): (listOptions?: { limit?: number; cursor?: string }) => Promise<OpenRTCAdminRoomSubscriptionSettings[]> {
+  const admin = useAdminActionClient(options, "useListRoomSubscriptionSettings");
+  return useCallback(
+    async (listOptions: { limit?: number; cursor?: string } = {}) => {
+      const response = await admin.listRoomSubscriptionSettings(userId, listOptions);
+      return response.data;
+    },
+    [admin, userId],
+  );
+}
+
 export function useUpdateRoomSubscriptionSettings(
   room: string,
   userId: string,
@@ -1620,6 +1915,33 @@ export function useUpdateRoomSubscriptionSettings(
   );
 }
 
+export function useSubscribeRoomThreads(
+  room: string,
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): () => Promise<OpenRTCAdminRoomSubscriptionSettings> {
+  const admin = useAdminActionClient(options, "useSubscribeRoomThreads");
+  return useCallback(() => admin.subscribeRoomThreads(room, userId), [admin, room, userId]);
+}
+
+export function useSubscribeRoomRepliesAndMentions(
+  room: string,
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): () => Promise<OpenRTCAdminRoomSubscriptionSettings> {
+  const admin = useAdminActionClient(options, "useSubscribeRoomRepliesAndMentions");
+  return useCallback(() => admin.subscribeRoomRepliesAndMentions(room, userId), [admin, room, userId]);
+}
+
+export function useMuteRoomThreads(
+  room: string,
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): () => Promise<OpenRTCAdminRoomSubscriptionSettings> {
+  const admin = useAdminActionClient(options, "useMuteRoomThreads");
+  return useCallback(() => admin.muteRoomThreads(room, userId), [admin, room, userId]);
+}
+
 export function useResetRoomSubscriptionSettings(
   room: string,
   userId: string,
@@ -1628,6 +1950,242 @@ export function useResetRoomSubscriptionSettings(
   const admin = useAdminActionClient(options, "useResetRoomSubscriptionSettings");
   return useCallback(() => admin.deleteRoomSubscriptionSettings(room, userId), [admin, room, userId]);
 }
+
+export function RoomSubscriptionControls(props: RoomSubscriptionControlsProps): ReactNode {
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = props.admin ?? contextAdmin ?? undefined;
+  const state = useRoomSubscriptionSettingsState(props.room, props.userId, props);
+  const current = state.settings?.threads ?? "all";
+  const disabled = props.disabled || state.loading || !admin;
+  const setMode = useCallback(
+    async (action: () => Promise<OpenRTCAdminRoomSubscriptionSettings | undefined>) => {
+      const next = await action();
+      if (next) {
+        props.onSettingsChanged?.(next);
+      }
+    },
+    [props],
+  );
+
+  return createElement(
+    "section",
+    {
+      className: props.className,
+      "aria-label": typeof props.title === "string" ? props.title : "Room subscription settings",
+      style: {
+        ...roomSubscriptionStyles.root,
+        ...props.style,
+      } satisfies CSSProperties,
+    },
+    createElement(
+      "div",
+      { style: roomSubscriptionStyles.header },
+      createElement("div", { style: roomSubscriptionStyles.title }, props.title ?? "Thread notifications"),
+      createElement(
+        "span",
+        { style: roomSubscriptionStyles.status },
+        state.loading ? "Updating" : roomSubscriptionStatusText(state.settings),
+      ),
+    ),
+    createElement(
+      "div",
+      { role: "group", style: roomSubscriptionStyles.segment },
+      roomSubscriptionOptionButton({
+        label: "All",
+        active: current === "all",
+        disabled,
+        onClick: () => void setMode(state.subscribeAll),
+      }),
+      roomSubscriptionOptionButton({
+        label: "Replies",
+        active: current === "replies_and_mentions",
+        disabled,
+        onClick: () => void setMode(state.subscribeRepliesAndMentions),
+      }),
+      roomSubscriptionOptionButton({
+        label: "Muted",
+        active: current === "none",
+        disabled,
+        onClick: () => void setMode(state.mute),
+      }),
+    ),
+    createElement(
+      "div",
+      { style: roomSubscriptionStyles.footer },
+      createElement(
+        "span",
+        { style: roomSubscriptionStyles.hint },
+        admin ? roomSubscriptionHintText(state.settings) : "Admin client unavailable",
+      ),
+      props.showReset === false
+        ? null
+        : createElement(
+            "button",
+            {
+              type: "button",
+              disabled,
+              onClick: () => void setMode(state.reset),
+              style: roomSubscriptionResetStyle(disabled),
+            },
+            "Reset",
+          ),
+    ),
+    state.error ? createElement("div", { role: "alert", style: roomSubscriptionStyles.error }, roomSubscriptionErrorText(state.error)) : null,
+  );
+}
+
+function roomSubscriptionOptionButton(props: {
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  onClick(): void;
+}): ReactNode {
+  return createElement(
+    "button",
+    {
+      type: "button",
+      "aria-pressed": props.active,
+      disabled: props.disabled,
+      onClick: props.onClick,
+      style: {
+        ...roomSubscriptionStyles.segmentButton,
+        ...(props.active ? roomSubscriptionStyles.segmentButtonActive : {}),
+        opacity: props.disabled ? 0.55 : 1,
+        cursor: props.disabled ? "not-allowed" : "pointer",
+      } satisfies CSSProperties,
+    },
+    props.label,
+  );
+}
+
+function roomSubscriptionStatusText(settings: OpenRTCAdminRoomSubscriptionSettings | undefined): string {
+  switch (settings?.threads ?? "all") {
+    case "all":
+      return "All activity";
+    case "replies_and_mentions":
+      return "Replies and mentions";
+    case "none":
+      return "Muted";
+  }
+}
+
+function roomSubscriptionHintText(settings: OpenRTCAdminRoomSubscriptionSettings | undefined): string {
+  switch (settings?.threads ?? "all") {
+    case "all":
+      return "Notify for new threads, replies, and mentions";
+    case "replies_and_mentions":
+      return "Notify for replies and direct mentions";
+    case "none":
+      return "Thread notifications are muted";
+  }
+}
+
+function roomSubscriptionErrorText(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Subscription update failed";
+}
+
+function roomSubscriptionResetStyle(disabled: boolean): CSSProperties {
+  return {
+    appearance: "none",
+    border: "1px solid #cbd5e1",
+    borderRadius: 6,
+    background: "#ffffff",
+    color: "#334155",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1,
+    minHeight: 28,
+    opacity: disabled ? 0.55 : 1,
+    padding: "7px 9px",
+  };
+}
+
+const roomSubscriptionStyles = {
+  root: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #d7dde8",
+    borderRadius: 8,
+    background: "#ffffff",
+    color: "#111827",
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    padding: 12,
+  } satisfies CSSProperties,
+  header: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  } satisfies CSSProperties,
+  title: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: 800,
+    lineHeight: 1.2,
+  } satisfies CSSProperties,
+  status: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    textAlign: "right",
+  } satisfies CSSProperties,
+  segment: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    border: "1px solid #cbd5e1",
+    borderRadius: 8,
+    overflow: "hidden",
+  } satisfies CSSProperties,
+  segmentButton: {
+    appearance: "none",
+    border: 0,
+    borderRight: "1px solid #cbd5e1",
+    background: "#f8fafc",
+    color: "#334155",
+    fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif",
+    fontSize: 12,
+    fontWeight: 800,
+    lineHeight: 1,
+    minHeight: 34,
+    padding: "10px 8px",
+  } satisfies CSSProperties,
+  segmentButtonActive: {
+    background: "#111827",
+    color: "#ffffff",
+  } satisfies CSSProperties,
+  footer: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  } satisfies CSSProperties,
+  hint: {
+    color: "#64748b",
+    fontSize: 12,
+    lineHeight: 1.35,
+  } satisfies CSSProperties,
+  error: {
+    border: "1px solid #fecaca",
+    borderRadius: 6,
+    background: "#fef2f2",
+    color: "#991b1b",
+    fontSize: 12,
+    lineHeight: 1.35,
+    padding: "7px 9px",
+  } satisfies CSSProperties,
+} as const;
 
 export function CommentsPanel(props: CommentsPanelProps): ReactNode {
   const contextAdmin = useContext(OpenRTCAdminContext);
@@ -2799,6 +3357,34 @@ function useInitialNotifications(
     ref.current = { key, notifications: initialNotifications };
   }
   return ref.current.notifications;
+}
+
+function useInitialRoomSubscriptionSettings(
+  room: string,
+  userId: string,
+  initialSettings: OpenRTCAdminRoomSubscriptionSettings | undefined,
+): OpenRTCAdminRoomSubscriptionSettings | undefined {
+  const key = `${room}\n${userId}`;
+  const ref =
+    useRef<{ key: string; settings: OpenRTCAdminRoomSubscriptionSettings | undefined } | undefined>(undefined);
+  if (!ref.current || ref.current.key !== key) {
+    ref.current = { key, settings: initialSettings };
+  }
+  return ref.current.settings;
+}
+
+function useInitialUserRoomSubscriptionSettings(
+  userId: string,
+  initialSettings: readonly OpenRTCAdminRoomSubscriptionSettings[] | undefined,
+): readonly OpenRTCAdminRoomSubscriptionSettings[] | undefined {
+  const ref =
+    useRef<{ userId: string; settings: readonly OpenRTCAdminRoomSubscriptionSettings[] | undefined } | undefined>(
+      undefined,
+    );
+  if (!ref.current || ref.current.userId !== userId) {
+    ref.current = { userId, settings: initialSettings };
+  }
+  return ref.current.settings;
 }
 
 function useAdminActionClient(options: OpenRTCAdminActionOptions, hookName: string): OpenRTCAdminClient {

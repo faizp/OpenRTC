@@ -1368,17 +1368,36 @@ export interface OpenRTCAdminInboxNotificationInput {
   activityData?: unknown;
 }
 
+export type OpenRTCRoomThreadSubscription = "all" | "replies_and_mentions" | "none";
+export type OpenRTCTextMentionSubscription = "mine" | "none";
+export type OpenRTCRoomSubscriptionPreset = "all" | "replies_and_mentions" | "none";
+
 export interface OpenRTCAdminRoomSubscriptionSettings {
   roomId: string;
   userId: string;
-  threads: "all" | "replies_and_mentions" | "none";
-  textMentions: "mine" | "none";
+  threads: OpenRTCRoomThreadSubscription;
+  textMentions: OpenRTCTextMentionSubscription;
   updatedAt?: string;
 }
 
 export interface OpenRTCAdminRoomSubscriptionSettingsInput {
-  threads?: "all" | "replies_and_mentions" | "none";
-  textMentions?: "mine" | "none";
+  threads?: OpenRTCRoomThreadSubscription;
+  textMentions?: OpenRTCTextMentionSubscription;
+}
+
+export const OPENRTC_ROOM_SUBSCRIPTION_PRESETS: Record<
+  OpenRTCRoomSubscriptionPreset,
+  Required<OpenRTCAdminRoomSubscriptionSettingsInput>
+> = {
+  all: { threads: "all", textMentions: "mine" },
+  replies_and_mentions: { threads: "replies_and_mentions", textMentions: "mine" },
+  none: { threads: "none", textMentions: "none" },
+};
+
+export function roomSubscriptionSettingsInput(
+  preset: OpenRTCRoomSubscriptionPreset,
+): OpenRTCAdminRoomSubscriptionSettingsInput {
+  return { ...OPENRTC_ROOM_SUBSCRIPTION_PRESETS[preset] };
 }
 
 export interface OpenRTCListResponse<T> {
@@ -4032,6 +4051,18 @@ export class OpenRTCAdminClient {
       `/v1/rooms/${encodeURIComponent(room)}/users/${encodeURIComponent(userId)}/subscription-settings`,
       { method: "POST", body: settings },
     );
+  }
+
+  subscribeRoomThreads(room: string, userId: string): Promise<OpenRTCAdminRoomSubscriptionSettings> {
+    return this.setRoomSubscriptionSettings(room, userId, roomSubscriptionSettingsInput("all"));
+  }
+
+  subscribeRoomRepliesAndMentions(room: string, userId: string): Promise<OpenRTCAdminRoomSubscriptionSettings> {
+    return this.setRoomSubscriptionSettings(room, userId, roomSubscriptionSettingsInput("replies_and_mentions"));
+  }
+
+  muteRoomThreads(room: string, userId: string): Promise<OpenRTCAdminRoomSubscriptionSettings> {
+    return this.setRoomSubscriptionSettings(room, userId, roomSubscriptionSettingsInput("none"));
   }
 
   async deleteRoomSubscriptionSettings(room: string, userId: string): Promise<void> {

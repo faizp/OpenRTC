@@ -234,7 +234,9 @@ getting threads, creating threads/comments, editing thread metadata/resolved
 state, reading and marking per-user thread read state, deleting threads,
 editing comment body/metadata, adding or removing reactions and mentions,
 triggering and clearing inbox notifications, marking notifications as read,
-and updating/resetting room subscription settings. Wrap
+reading/listing room subscription settings, subscribing to all thread activity,
+subscribing to replies and mentions, muting room threads, and resetting room
+subscription overrides. Wrap
 an `OpenRTCAdminClient` with `OpenRTCAdminProvider` or pass `admin` to the state
 and action hooks when the hook should fetch or mutate durable REST state before
 realtime deltas take over. Reaction and mention action hooks accept current
@@ -246,6 +248,8 @@ searches.
 `CommentsPanel` renders an embeddable hosted comments surface over the same
 thread APIs, including create/reply, read/unread, resolve/reopen, refresh,
 custom body serialization, metadata factories, and custom comment/action renderers.
+`RoomSubscriptionControls` renders the matching thread notification workflow
+over durable room subscription settings.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
@@ -286,12 +290,18 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useAddReaction`, `useRemoveReaction`, `useAddCommentMention`,
 `useRemoveCommentMention`, `useTriggerInboxNotification`,
 `useMarkInboxNotificationAsRead`, `useDeleteInboxNotification`,
-`useDeleteAllInboxNotifications`, `useUpdateRoomSubscriptionSettings`, and
-`useResetRoomSubscriptionSettings`, plus `CommentsPanel`. It also exports `RoomProvider`, `useCurrentRoom`, and
+`useDeleteAllInboxNotifications`, `useRoomSubscriptionSettingsState`,
+`useRoomSubscriptionSettings`, `useUserRoomSubscriptionSettingsState`,
+`useUserRoomSubscriptionSettings`, `useGetRoomSubscriptionSettings`,
+`useListRoomSubscriptionSettings`, `useUpdateRoomSubscriptionSettings`,
+`useSubscribeRoomThreads`, `useSubscribeRoomRepliesAndMentions`,
+`useMuteRoomThreads`, and `useResetRoomSubscriptionSettings`, plus
+`CommentsPanel` and `RoomSubscriptionControls`. It also exports `RoomProvider`, `useCurrentRoom`, and
 `createRoomContext()` for Liveblocks-style room-bound hooks where components call
 `useOthers()`, `useStorage()`, and `useMutation()` without passing a room ID
 through every hook; the room context also binds the room-scoped comment and
-subscription action hooks and `CommentsPanel`. It also exports Liveblocks-style `Cursors`, `Cursor`, and
+subscription state/action hooks, `CommentsPanel`, and
+`RoomSubscriptionControls`. It also exports Liveblocks-style `Cursors`, `Cursor`, and
 `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with
@@ -360,11 +370,12 @@ against the active room:
 
 ```tsx
 import type { OpenRTCAdminClient } from "@openrtc/client";
-import { CommentsPanel, OpenRTCAdminProvider } from "@openrtc/react";
+import { CommentsPanel, OpenRTCAdminProvider, RoomSubscriptionControls } from "@openrtc/react";
 
 export function CanvasComments({ admin }: { admin: OpenRTCAdminClient }) {
   return (
     <OpenRTCAdminProvider admin={admin}>
+      <RoomSubscriptionControls room="tenant-a:canvas-1" userId="user-1" />
       <CommentsPanel room="tenant-a:canvas-1" userId="user-1" query="resolved:false" />
     </OpenRTCAdminProvider>
   );

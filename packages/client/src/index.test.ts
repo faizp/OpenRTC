@@ -7,6 +7,7 @@ import {
   OPENRTC_COMMENT_EVENTS,
   OPENRTC_DEV_PUBLIC_KEY,
   OPENRTC_NOTIFICATION_EVENTS,
+  OPENRTC_ROOM_SUBSCRIPTION_PRESETS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
   accessMatrixPolicy,
@@ -54,6 +55,7 @@ import {
   removeCommentReaction,
   roomQuery,
   roomQueryExists,
+  roomSubscriptionSettingsInput,
   runOpenRTCDevProbe,
   sortCommentThreads,
   sortInboxNotifications,
@@ -276,6 +278,14 @@ assert.deepEqual(
   ),
   [{ emoji: "eyes", userId: "user-3" }],
 );
+assert.deepEqual(OPENRTC_ROOM_SUBSCRIPTION_PRESETS.all, { threads: "all", textMentions: "mine" });
+assert.deepEqual(roomSubscriptionSettingsInput("replies_and_mentions"), {
+  threads: "replies_and_mentions",
+  textMentions: "mine",
+});
+const mutableSubscriptionInput = roomSubscriptionSettingsInput("none");
+mutableSubscriptionInput.threads = "all";
+assert.deepEqual(roomSubscriptionSettingsInput("none"), { threads: "none", textMentions: "none" });
 
 const baseThread: OpenRTCAdminThread = {
   type: "thread",
@@ -2801,9 +2811,15 @@ const adminClient = new OpenRTCAdminClient({
       return fakeResponse(200, init.body ?? "{}");
     }
     if (input.endsWith("/subscription-settings") && init?.method === "POST") {
+      const body = JSON.parse(init.body ?? "{}");
       return fakeResponse(
         200,
-        JSON.stringify({ roomId: "tenant-a:room-1", userId: "user-1", threads: "none", textMentions: "none" }),
+        JSON.stringify({
+          roomId: "tenant-a:room-1",
+          userId: "user-1",
+          threads: body.threads ?? "all",
+          textMentions: body.textMentions ?? "mine",
+        }),
       );
     }
     if (input.endsWith("/v1/stats")) {
@@ -2956,6 +2972,30 @@ assert.deepEqual(await adminClient.setRoomSubscriptionSettings("tenant-a:room-1"
   threads: "none",
   textMentions: "none",
 });
+assert.deepEqual(await adminClient.subscribeRoomThreads("tenant-a:room-1", "user-1"), {
+  roomId: "tenant-a:room-1",
+  userId: "user-1",
+  threads: "all",
+  textMentions: "mine",
+});
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { threads: "all", textMentions: "mine" });
+assert.deepEqual(await adminClient.subscribeRoomRepliesAndMentions("tenant-a:room-1", "user-1"), {
+  roomId: "tenant-a:room-1",
+  userId: "user-1",
+  threads: "replies_and_mentions",
+  textMentions: "mine",
+});
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
+  threads: "replies_and_mentions",
+  textMentions: "mine",
+});
+assert.deepEqual(await adminClient.muteRoomThreads("tenant-a:room-1", "user-1"), {
+  roomId: "tenant-a:room-1",
+  userId: "user-1",
+  threads: "none",
+  textMentions: "none",
+});
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { threads: "none", textMentions: "none" });
 assert.deepEqual(await adminClient.stats(), { activeConnections: 1 });
 await adminClient.deleteRoom("tenant-a:room-1");
 
