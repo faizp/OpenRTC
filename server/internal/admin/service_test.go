@@ -279,13 +279,15 @@ func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {
 		t.Fatalf("expected unsafe metadata path to fail, got %v", parseErr)
 	}
 
-	threadQuery, parseErr := parseThreadListQuery(`resolved:false metadata.status:open metadata.owner:* metadata["kind"]:"white board"`)
+	threadQuery, parseErr := parseThreadListQuery(`resolved:false unread:true metadata.status:open metadata.owner:* metadata["kind"]:"white board"`)
 	if parseErr != nil {
 		t.Fatalf("expected thread query to parse: %v", parseErr)
 	}
+	unread := true
 	matchingThread := cluster.ThreadRecord{
 		ID:       "thread-1",
 		Resolved: false,
+		Unread:   &unread,
 		Metadata: json.RawMessage(`{"status":"open","owner":"user-1","kind":"white board"}`),
 	}
 	if !threadQuery.Matches(matchingThread) {
@@ -296,6 +298,9 @@ func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {
 	}
 	if _, parseErr := parseThreadListQuery("resolved:maybe"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
 		t.Fatalf("expected invalid resolved query to fail, got %v", parseErr)
+	}
+	if _, parseErr := parseThreadListQuery("unread:maybe"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
+		t.Fatalf("expected invalid unread query to fail, got %v", parseErr)
 	}
 	if _, parseErr := parseThreadListQuery("id:thread-1"); parseErr == nil || parseErr.Code != openrtcerr.CodeBadRequest {
 		t.Fatalf("expected unsupported thread id query to fail, got %v", parseErr)
@@ -1618,6 +1623,144 @@ func TestAdminThreadHandlers(t *testing.T) {
 	}
 	if !strings.HasPrefix(generatedStore.addedComment.ID, "cm_") {
 		t.Fatalf("expected generated comment id, got %+v", generatedStore.addedComment)
+	}
+}
+
+func TestAdminThreadReadStateHandlers(t *testing.T) {
+	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "comments:tenant-a:* notifications:user-1",
+	})
+	defer cleanup()
+
+	now := time.Unix(360, 0).UTC()
+	readAt := now.Add(time.Second)
+	readState := cluster.ThreadReadState{
+		RoomID:          "tenant-a:room-1",
+		ThreadID:        "thread-read",
+		UserID:          "user-1",
+		ReadAt:          &readAt,
+		ThreadUpdatedAt: now,
+		Unread:          false,
+	}
+	unreadState := cluster.ThreadReadState{
+		RoomID:          "tenant-a:room-1",
+		ThreadID:        "thread-unread",
+		UserID:          "user-1",
+		ThreadUpdatedAt: now.Add(2 * time.Second),
+		Unread:          true,
+	}
+	store := &fakeAdminStore{
+		listThreads: []cluster.ThreadRecord{
+			{
+				Type:      "thread",
+				ID:        "thread-read",
+				RoomID:    "tenant-a:room-1",
+				Metadata:  json.RawMessage(`{"status":"open"}`),
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				Type:      "thread",
+				ID:        "thread-unread",
+				RoomID:    "tenant-a:room-1",
+				Metadata:  json.RawMessage(`{"status":"open"}`),
+				CreatedAt: now.Add(time.Second),
+				UpdatedAt: now.Add(2 * time.Second),
+			},
+		},
+		getThreadRecord: cluster.ThreadRecord{
+			Type:      "thread",
+			ID:        "thread-read",
+			RoomID:    "tenant-a:room-1",
+			Metadata:  json.RawMessage(`{"status":"open"}`),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		getThreadReadStateRecords: map[string]cluster.ThreadReadState{
+			threadReadStateKey("thread-read", "user-1"):   readState,
+			threadReadStateKey("thread-unread", "user-1"): unreadState,
+		},
+		markThreadReadState: cluster.ThreadReadState{
+			RoomID:          "tenant-a:room-1",
+			ThreadID:        "thread-unread",
+			UserID:          "user-1",
+			ReadAt:          &readAt,
+			ThreadUpdatedAt: now.Add(2 * time.Second),
+			Unread:          false,
+		},
+		markThreadUnreadState: unreadState,
+	}
+	handler := newTestAdminService(verifier, store).Handler()
+
+	listResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?userId=user-1&query=unread:false", "")
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected read-state list 200, got %d body=%q", listResp.Code, listResp.Body.String())
+	}
+	var list threadListResponse
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode read-state thread list: %v", err)
+	}
+	if len(list.Data) != 1 || list.Data[0].ID != "thread-read" || list.Data[0].ReadAt == nil || list.Data[0].Unread == nil || *list.Data[0].Unread {
+		t.Fatalf("unexpected read-state filtered list: %+v", list)
+	}
+
+	badListResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?query=unread:true", "")
+	if badListResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected unread query without userId to fail, got %d", badListResp.Code)
+	}
+
+	getResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-read/read-state?userId=user-1", "")
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected get thread read-state 200, got %d body=%q", getResp.Code, getResp.Body.String())
+	}
+	var gotState cluster.ThreadReadState
+	if err := json.NewDecoder(getResp.Body).Decode(&gotState); err != nil {
+		t.Fatalf("decode thread read-state: %v", err)
+	}
+	if gotState.ThreadID != "thread-read" || gotState.ReadAt == nil || gotState.Unread {
+		t.Fatalf("unexpected read-state response: %+v", gotState)
+	}
+
+	readResp := performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-unread/read", `{"userId":"user-1"}`)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("expected mark thread read 200, got %d body=%q", readResp.Code, readResp.Body.String())
+	}
+	if store.markedThreadRead.Room != "tenant-a:room-1" || store.markedThreadRead.ThreadID != "thread-unread" || store.markedThreadRead.UserID != "user-1" {
+		t.Fatalf("unexpected mark read capture: %+v", store.markedThreadRead)
+	}
+	var markedRead cluster.ThreadReadState
+	if err := json.NewDecoder(readResp.Body).Decode(&markedRead); err != nil {
+		t.Fatalf("decode marked read state: %v", err)
+	}
+	if markedRead.Unread || markedRead.ReadAt == nil {
+		t.Fatalf("unexpected marked read response: %+v", markedRead)
+	}
+
+	unreadResp := performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-unread/unread", `{"userId":"user-1"}`)
+	if unreadResp.Code != http.StatusOK {
+		t.Fatalf("expected mark thread unread 200, got %d body=%q", unreadResp.Code, unreadResp.Body.String())
+	}
+	if store.markedThreadUnread.Room != "tenant-a:room-1" || store.markedThreadUnread.ThreadID != "thread-unread" || store.markedThreadUnread.UserID != "user-1" {
+		t.Fatalf("unexpected mark unread capture: %+v", store.markedThreadUnread)
+	}
+	var markedUnread cluster.ThreadReadState
+	if err := json.NewDecoder(unreadResp.Body).Decode(&markedUnread); err != nil {
+		t.Fatalf("decode marked unread state: %v", err)
+	}
+	if !markedUnread.Unread || markedUnread.ReadAt != nil {
+		t.Fatalf("unexpected marked unread response: %+v", markedUnread)
+	}
+
+	commentsOnlyVerifier, commentsOnlyToken, commentsOnlyCleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "comments:tenant-a:*",
+	})
+	defer commentsOnlyCleanup()
+	commentsOnlyHandler := newTestAdminService(commentsOnlyVerifier, store).Handler()
+	forbiddenResp := performAdminRequest(commentsOnlyHandler, commentsOnlyToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads?userId=user-1", "")
+	if forbiddenResp.Code != http.StatusForbidden {
+		t.Fatalf("expected user read-state without notifications scope to fail, got %d", forbiddenResp.Code)
 	}
 }
 
@@ -3275,14 +3418,30 @@ type fakeAdminStore struct {
 		ThreadID string
 		Update   cluster.ThreadUpdate
 	}
-	updateThreadRecord cluster.ThreadRecord
-	updateThreadErr    error
-	deleteThreadRecord cluster.ThreadRecord
-	deleteThreadErr    error
-	addedComment       cluster.CommentRecord
-	addCommentThread   cluster.ThreadRecord
-	addCommentErr      error
-	updatedComment     struct {
+	updateThreadRecord        cluster.ThreadRecord
+	updateThreadErr           error
+	deleteThreadRecord        cluster.ThreadRecord
+	deleteThreadErr           error
+	getThreadReadStateRecords map[string]cluster.ThreadReadState
+	getThreadReadStateErr     error
+	markedThreadRead          struct {
+		Room     string
+		ThreadID string
+		UserID   string
+	}
+	markThreadReadState cluster.ThreadReadState
+	markThreadReadErr   error
+	markedThreadUnread  struct {
+		Room     string
+		ThreadID string
+		UserID   string
+	}
+	markThreadUnreadState cluster.ThreadReadState
+	markThreadUnreadErr   error
+	addedComment          cluster.CommentRecord
+	addCommentThread      cluster.ThreadRecord
+	addCommentErr         error
+	updatedComment        struct {
 		Room      string
 		ThreadID  string
 		CommentID string
@@ -3524,6 +3683,56 @@ func (s *fakeAdminStore) DeleteThread(context.Context, string, string) (cluster.
 		return s.deleteThreadRecord, nil
 	}
 	return cluster.ThreadRecord{}, cluster.ErrThreadNotFound
+}
+
+func threadReadStateKey(threadID string, userID string) string {
+	return threadID + "\x00" + userID
+}
+
+func (s *fakeAdminStore) GetThreadReadState(_ context.Context, room string, threadID string, userID string) (cluster.ThreadReadState, error) {
+	if s.getThreadReadStateErr != nil {
+		return cluster.ThreadReadState{}, s.getThreadReadStateErr
+	}
+	if s.getThreadReadStateRecords != nil {
+		if state, ok := s.getThreadReadStateRecords[threadReadStateKey(threadID, userID)]; ok {
+			return state, nil
+		}
+	}
+	for _, thread := range s.listThreads {
+		if thread.ID == threadID {
+			return cluster.ThreadReadState{RoomID: room, ThreadID: threadID, UserID: userID, ThreadUpdatedAt: thread.UpdatedAt, Unread: true}, nil
+		}
+	}
+	if s.getThreadRecord.ID == threadID {
+		return cluster.ThreadReadState{RoomID: room, ThreadID: threadID, UserID: userID, ThreadUpdatedAt: s.getThreadRecord.UpdatedAt, Unread: true}, nil
+	}
+	return cluster.ThreadReadState{}, cluster.ErrThreadNotFound
+}
+
+func (s *fakeAdminStore) MarkThreadRead(_ context.Context, room string, threadID string, userID string) (cluster.ThreadReadState, error) {
+	if s.markThreadReadErr != nil {
+		return cluster.ThreadReadState{}, s.markThreadReadErr
+	}
+	s.markedThreadRead.Room = room
+	s.markedThreadRead.ThreadID = threadID
+	s.markedThreadRead.UserID = userID
+	if s.markThreadReadState.ThreadID != "" {
+		return s.markThreadReadState, nil
+	}
+	return cluster.ThreadReadState{RoomID: room, ThreadID: threadID, UserID: userID, ThreadUpdatedAt: time.Now().UTC(), Unread: false}, nil
+}
+
+func (s *fakeAdminStore) MarkThreadUnread(_ context.Context, room string, threadID string, userID string) (cluster.ThreadReadState, error) {
+	if s.markThreadUnreadErr != nil {
+		return cluster.ThreadReadState{}, s.markThreadUnreadErr
+	}
+	s.markedThreadUnread.Room = room
+	s.markedThreadUnread.ThreadID = threadID
+	s.markedThreadUnread.UserID = userID
+	if s.markThreadUnreadState.ThreadID != "" {
+		return s.markThreadUnreadState, nil
+	}
+	return cluster.ThreadReadState{RoomID: room, ThreadID: threadID, UserID: userID, ThreadUpdatedAt: time.Now().UTC(), Unread: true}, nil
 }
 
 func (s *fakeAdminStore) AddComment(_ context.Context, _ string, _ string, comment cluster.CommentRecord) (cluster.ThreadRecord, error) {

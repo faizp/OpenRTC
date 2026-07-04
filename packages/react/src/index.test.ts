@@ -21,10 +21,13 @@ import {
   useEditThread,
   useEditThreadMetadata,
   useGetThread,
+  useGetThreadReadState,
   useHistory,
   useMarkInboxNotificationAsRead,
+  useMarkThreadRead,
   useMarkThreadResolved,
   useMarkThreadUnresolved,
+  useMarkThreadUnread,
   useOpenRTCAdmin,
   useMutation,
   useNotificationEvents,
@@ -104,6 +107,9 @@ assert.equal(typeof useEditThread, "function");
 assert.equal(typeof useEditThreadMetadata, "function");
 assert.equal(typeof useMarkThreadResolved, "function");
 assert.equal(typeof useMarkThreadUnresolved, "function");
+assert.equal(typeof useGetThreadReadState, "function");
+assert.equal(typeof useMarkThreadRead, "function");
+assert.equal(typeof useMarkThreadUnread, "function");
 assert.equal(typeof useDeleteThread, "function");
 assert.equal(typeof useCreateComment, "function");
 assert.equal(typeof useEditComment, "function");
@@ -125,11 +131,13 @@ assert.equal(typeof useCurrentRoom, "function");
 
 const queryThreadOptions = {
   query: "resolved:false metadata.status:open",
+  userId: "user-1",
   limit: 20,
   cursor: "1",
   fetch: true,
 } satisfies RoomThreadsOptions;
 assert.equal(queryThreadOptions.query, "resolved:false metadata.status:open");
+assert.equal(queryThreadOptions.userId, "user-1");
 
 const roomContext = createRoomContext();
 assert.equal(typeof roomContext.RoomProvider, "function");
@@ -152,6 +160,9 @@ assert.equal(typeof roomContext.useEditThread, "function");
 assert.equal(typeof roomContext.useEditThreadMetadata, "function");
 assert.equal(typeof roomContext.useMarkThreadResolved, "function");
 assert.equal(typeof roomContext.useMarkThreadUnresolved, "function");
+assert.equal(typeof roomContext.useGetThreadReadState, "function");
+assert.equal(typeof roomContext.useMarkThreadRead, "function");
+assert.equal(typeof roomContext.useMarkThreadUnread, "function");
 assert.equal(typeof roomContext.useDeleteThread, "function");
 assert.equal(typeof roomContext.useCreateComment, "function");
 assert.equal(typeof roomContext.useEditComment, "function");

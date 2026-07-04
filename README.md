@@ -231,16 +231,18 @@ immutably. `@openrtc/react` exposes `useRoomThreads`, `useRoomThread`,
 `useInboxNotifications`, and `useUnreadInboxCount` for the same materialized
 comment and notification state in React. It also exposes action hooks for
 getting threads, creating threads/comments, editing thread metadata/resolved
-state, deleting threads, editing comment body/metadata, adding or removing
-reactions and mentions, triggering and clearing inbox notifications, marking
-notifications as read, and updating/resetting room subscription settings. Wrap
+state, reading and marking per-user thread read state, deleting threads,
+editing comment body/metadata, adding or removing reactions and mentions,
+triggering and clearing inbox notifications, marking notifications as read,
+and updating/resetting room subscription settings. Wrap
 an `OpenRTCAdminClient` with `OpenRTCAdminProvider` or pass `admin` to the state
 and action hooks when the hook should fetch or mutate durable REST state before
 realtime deltas take over. Reaction and mention action hooks accept current
 arrays when the caller already has them; otherwise they load the comment through
 the admin client before writing the derived update.
-Thread list hooks and `admin.listThreads()` accept `query`, `limit`, and
-`cursor` options for resolved-state and thread metadata searches.
+Thread list hooks and `admin.listThreads()` accept `query`, `limit`, `cursor`,
+and `userId` options for resolved-state, unread-state, and thread metadata
+searches.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
@@ -499,9 +501,11 @@ await admin.editThreadMetadata("tenant-a:canvas-1", "thread-1", {
   status: "resolved",
 });
 const openReviewThreads = await admin.listThreads("tenant-a:canvas-1", {
-  query: threadQuery({ resolved: false, "metadata.status": "review" }),
+  query: threadQuery({ resolved: false, unread: true, "metadata.status": "review" }),
+  userId: "user-1",
   limit: 50,
 });
+await admin.markThreadRead("tenant-a:canvas-1", "thread-1", "user-1");
 await admin.updateComment("tenant-a:canvas-1", "thread-1", "comment-1", {
   metadata: { status: "resolved" },
   mentions: addCommentMention(["user-1"], "user-2"),

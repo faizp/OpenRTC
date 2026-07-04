@@ -82,6 +82,10 @@ type ThreadUpdateRequest struct {
 	Resolved *bool            `json:"resolved,omitempty"`
 }
 
+type ThreadReadStateRequest struct {
+	UserID string `json:"userId"`
+}
+
 type CommentCreateRequest struct {
 	ID        string                    `json:"id,omitempty"`
 	UserID    string                    `json:"userId"`
@@ -166,6 +170,7 @@ type threadListQueryField int
 const (
 	threadListQueryFieldResolved threadListQueryField = iota
 	threadListQueryFieldMetadata
+	threadListQueryFieldUnread
 )
 
 type threadListQueryClause struct {
@@ -174,6 +179,7 @@ type threadListQueryClause struct {
 	Value        any
 	Exists       bool
 	Resolved     bool
+	Unread       bool
 }
 
 type inboxNotificationListResponse struct {
@@ -547,6 +553,18 @@ func (s *Service) handleThreadSubresource(w http.ResponseWriter, r *http.Request
 		s.handleAddComment(w, r, room, threadID)
 		return
 	}
+	if child == "read-state" {
+		s.handleGetThreadReadState(w, r, room, threadID)
+		return
+	}
+	if child == "read" {
+		s.handleMarkThreadRead(w, r, room, threadID)
+		return
+	}
+	if child == "unread" {
+		s.handleMarkThreadUnread(w, r, room, threadID)
+		return
+	}
 	if strings.HasPrefix(child, "comments/") {
 		commentID, err := commentPathPart(child)
 		if err != nil {
@@ -614,10 +632,31 @@ func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room
 		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
 		return
 	}
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if userID != "" {
+		if err := validateThreadReadStateUserID(userID); err != nil {
+			s.writeError(w, err.Code, err.Message, "", openrtcerr.DescriptorFor(err.Code).HTTPStatus)
+			return
+		}
+		if !s.notificationAllowed(claims, userID) {
+			s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+			return
+		}
+	} else if query.NeedsReadState() {
+		s.writeError(w, openrtcerr.CodeBadRequest, "unread thread query requires userId", "", http.StatusBadRequest)
+		return
+	}
 	threads, err := s.store.ListThreads(r.Context(), room)
 	if err != nil {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
+	}
+	if userID != "" {
+		threads, err = s.enrichThreadReadStates(r.Context(), room, userID, threads)
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+			return
+		}
 	}
 	threads = filterThreads(threads, query)
 	page, nextCursor := paginateThreads(threads, cursor, limit)
@@ -626,6 +665,45 @@ func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room
 		response.NextCursor = strconv.FormatUint(nextCursor, 10)
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Service) enrichThreadReadStates(ctx context.Context, room string, userID string, threads []cluster.ThreadRecord) ([]cluster.ThreadRecord, error) {
+	enriched := make([]cluster.ThreadRecord, 0, len(threads))
+	for _, thread := range threads {
+		state, err := s.store.GetThreadReadState(ctx, room, thread.ID, userID)
+		if errors.Is(err, cluster.ErrThreadNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		enriched = append(enriched, threadWithReadState(thread, state))
+	}
+	return enriched, nil
+}
+
+func (s *Service) authorizeThreadReadState(w http.ResponseWriter, r *http.Request, claims *auth.Claims, room string, userID string) bool {
+	if !s.allowsRoomAction(r.Context(), claims, "comments:read", room) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return false
+	}
+	if !s.notificationAllowed(claims, userID) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "user notifications are not permitted", "", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func threadWithReadState(thread cluster.ThreadRecord, state cluster.ThreadReadState) cluster.ThreadRecord {
+	if state.ReadAt != nil {
+		readAt := state.ReadAt.UTC()
+		thread.ReadAt = &readAt
+	} else {
+		thread.ReadAt = nil
+	}
+	unread := state.Unread
+	thread.Unread = &unread
+	return thread
 }
 
 func (s *Service) handleGetThread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
@@ -652,6 +730,91 @@ func (s *Service) handleGetThread(w http.ResponseWriter, r *http.Request, room s
 		return
 	}
 	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *Service) handleGetThreadReadState(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if parseErr := validateThreadReadStateUserID(userID); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	if !s.authorizeThreadReadState(w, r, claims, room, userID) {
+		return
+	}
+	state, err := s.store.GetThreadReadState(r.Context(), room, threadID, userID)
+	if errors.Is(err, cluster.ErrThreadNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, "thread not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Service) handleMarkThreadRead(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	s.handleThreadReadStateMutation(w, r, room, threadID, true)
+}
+
+func (s *Service) handleMarkThreadUnread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	s.handleThreadReadStateMutation(w, r, room, threadID, false)
+}
+
+func (s *Service) handleThreadReadStateMutation(w http.ResponseWriter, r *http.Request, room string, threadID string, read bool) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	var request ThreadReadStateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if parseErr := validateThreadReadStateUserID(request.UserID); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	if !s.authorizeThreadReadState(w, r, claims, room, request.UserID) {
+		return
+	}
+	var state cluster.ThreadReadState
+	if read {
+		state, err = s.store.MarkThreadRead(r.Context(), room, threadID, request.UserID)
+	} else {
+		state, err = s.store.MarkThreadUnread(r.Context(), room, threadID, request.UserID)
+	}
+	if errors.Is(err, cluster.ErrThreadNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, "thread not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, room string) {
@@ -1788,6 +1951,18 @@ func validateThreadUpdateRequest(request ThreadUpdateRequest, maxBytes int) *pro
 	return nil
 }
 
+func validateThreadReadStateUserID(userID string) *protocol.ParseError {
+	if strings.TrimSpace(userID) == "" {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "userId is required"}
+	}
+	if err := protocol.ValidateConnectionID(userID); err != nil {
+		parseErr := err.(*protocol.ParseError)
+		parseErr.Message = "userId " + parseErr.Message
+		return parseErr
+	}
+	return nil
+}
+
 func validateInboxNotificationRequest(request InboxNotificationTriggerRequest, maxBytes int) *protocol.ParseError {
 	if err := protocol.ValidateConnectionID(request.ID); err != nil {
 		return err.(*protocol.ParseError)
@@ -2433,6 +2608,20 @@ func parseThreadListQueryClause(raw string) (threadListQueryClause, *protocol.Pa
 		}
 		return threadListQueryClause{Field: threadListQueryFieldResolved, Resolved: resolved}, nil
 	}
+	if field == "unread" {
+		if value == "*" {
+			return threadListQueryClause{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "unread thread query does not support wildcard exists"}
+		}
+		parsedValue, parseErr := parseRoomQueryScalarValue(value)
+		if parseErr != nil {
+			return threadListQueryClause{}, parseErr
+		}
+		unread, ok := parsedValue.(bool)
+		if !ok {
+			return threadListQueryClause{}, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "unread thread query value must be true or false"}
+		}
+		return threadListQueryClause{Field: threadListQueryFieldUnread, Unread: unread}, nil
+	}
 	path, parseErr := parseThreadQueryMetadataPath(field)
 	if parseErr != nil {
 		return threadListQueryClause{}, parseErr
@@ -2508,7 +2697,7 @@ func parseThreadQueryMetadataPath(raw string) ([]string, *protocol.ParseError) {
 	if strings.HasPrefix(raw, "metadata[") {
 		return parseRoomQueryBracketPath(raw)
 	}
-	return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread query fields must be resolved or metadata paths"}
+	return nil, &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread query fields must be resolved, unread, or metadata paths"}
 }
 
 func parseRoomQueryBracketPath(raw string) ([]string, *protocol.ParseError) {
@@ -2558,6 +2747,15 @@ func (q threadListQuery) Active() bool {
 	return len(q.Clauses) > 0
 }
 
+func (q threadListQuery) NeedsReadState() bool {
+	for _, clause := range q.Clauses {
+		if clause.Field == threadListQueryFieldUnread {
+			return true
+		}
+	}
+	return false
+}
+
 func (q threadListQuery) Matches(thread cluster.ThreadRecord) bool {
 	for _, clause := range q.Clauses {
 		if !clause.Matches(thread) {
@@ -2586,6 +2784,8 @@ func (c threadListQueryClause) Matches(thread cluster.ThreadRecord) bool {
 	switch c.Field {
 	case threadListQueryFieldResolved:
 		return thread.Resolved == c.Resolved
+	case threadListQueryFieldUnread:
+		return thread.Unread != nil && *thread.Unread == c.Unread
 	case threadListQueryFieldMetadata:
 		value, ok := roomMetadataValue(thread.Metadata, c.MetadataPath)
 		if c.Exists {

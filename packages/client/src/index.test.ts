@@ -231,16 +231,19 @@ assert.throws(() => roomQuery({ "metadata.score": Number.NaN }), /number values 
 assert.equal(
   threadQuery({
     resolved: false,
+    unread: false,
     "metadata.status": "open",
     "metadata.priority": 2,
     "metadata.owner": threadQueryExists,
   }),
-  'resolved:false metadata.status:"open" metadata.priority:2 metadata.owner:*',
+  'resolved:false unread:false metadata.status:"open" metadata.priority:2 metadata.owner:*',
 );
 assert.equal(threadQuery({}), "");
-assert.throws(() => threadQuery({ id: "thread-1" }), /fields must be resolved or metadata/);
+assert.throws(() => threadQuery({ id: "thread-1" }), /fields must be resolved, unread, or metadata/);
 assert.throws(() => threadQuery({ resolved: threadQueryExists }), /resolved field does not support exists/);
 assert.throws(() => threadQuery({ resolved: "false" }), /resolved value must be a boolean/);
+assert.throws(() => threadQuery({ unread: threadQueryExists }), /unread field does not support exists/);
+assert.throws(() => threadQuery({ unread: "false" }), /unread value must be a boolean/);
 assert.throws(() => threadQuery({ "metadata.bad/key": "x" }), /metadata path keys/);
 assert.throws(() => threadQuery({ "metadata.score": Number.NaN }), /number values must be finite/);
 
@@ -377,6 +380,12 @@ assert.deepEqual(materializedThreads.map((thread) => thread.id), ["thread-1", "t
 assert.deepEqual(materializedThreads[0]?.comments[0]?.body, { text: "first edited" });
 assert.equal(materializedThreads[0]?.resolved, true);
 assert.deepEqual(applyCommentEventToThreads(materializedThreads, threadUpdatedEvent), materializedThreads);
+const readAwareThreads = applyCommentEventToThreads(
+  [{ ...earlierThread, readAt: "2026-07-04T00:03:00.000Z", unread: false }],
+  threadUpdatedEvent,
+);
+assert.equal(readAwareThreads[0]?.readAt, "2026-07-04T00:03:00.000Z");
+assert.equal(readAwareThreads[0]?.unread, true);
 assert.deepEqual(applyCommentEventToThreads(materializedThreads, threadDeletedEvent).map((thread) => thread.id), [
   "thread-2",
 ]);
@@ -2702,8 +2711,46 @@ const adminClient = new OpenRTCAdminClient({
       return fakeResponse(
         200,
         JSON.stringify({
-          data: [{ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [], resolved: false }],
+          data: [{ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [], resolved: false, unread: false }],
           next_cursor: "2",
+        }),
+      );
+    }
+    if (input.includes("/threads/thread-1/read-state?")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          roomId: "tenant-a:room-1",
+          threadId: "thread-1",
+          userId: "user-1",
+          readAt: "2026-07-04T00:05:00.000Z",
+          threadUpdatedAt: "2026-07-04T00:04:00.000Z",
+          unread: false,
+        }),
+      );
+    }
+    if (input.endsWith("/threads/thread-1/read") && init?.method === "POST") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          roomId: "tenant-a:room-1",
+          threadId: "thread-1",
+          userId: "user-1",
+          readAt: "2026-07-04T00:05:00.000Z",
+          threadUpdatedAt: "2026-07-04T00:04:00.000Z",
+          unread: false,
+        }),
+      );
+    }
+    if (input.endsWith("/threads/thread-1/unread") && init?.method === "POST") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          roomId: "tenant-a:room-1",
+          threadId: "thread-1",
+          userId: "user-1",
+          threadUpdatedAt: "2026-07-04T00:04:00.000Z",
+          unread: true,
         }),
       );
     }
@@ -2815,13 +2862,15 @@ assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
 const queriedThreads = await adminClient.listThreads("tenant-a:room-1", {
   limit: 20,
   cursor: "1",
-  query: threadQuery({ resolved: false, "metadata.status": "open" }),
+  query: threadQuery({ resolved: false, unread: false, "metadata.status": "open" }),
+  userId: "user-1",
 });
 assert.equal(queriedThreads.data[0]?.id, "thread-1");
+assert.equal(queriedThreads.data[0]?.unread, false);
 assert.equal(queriedThreads.next_cursor, "2");
 assert.equal(
   adminCalls.at(-1)?.input,
-  "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads?limit=20&cursor=1&query=resolved%3Afalse+metadata.status%3A%22open%22",
+  "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads?limit=20&cursor=1&query=resolved%3Afalse+unread%3Afalse+metadata.status%3A%22open%22&userId=user-1",
 );
 
 const fetchedThread = await adminClient.getThread("tenant-a:room-1", "thread-1");
@@ -2846,6 +2895,23 @@ assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { resolved: 
 
 await adminClient.markThreadUnresolved("tenant-a:room-1", "thread-1");
 assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { resolved: false });
+
+const threadReadState = await adminClient.getThreadReadState("tenant-a:room-1", "thread-1", "user-1");
+assert.equal(threadReadState.unread, false);
+assert.equal(
+  adminCalls.at(-1)?.input,
+  "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/read-state?userId=user-1",
+);
+
+const markedThreadRead = await adminClient.markThreadRead("tenant-a:room-1", "thread-1", "user-1");
+assert.equal(markedThreadRead.unread, false);
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/read");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { userId: "user-1" });
+
+const markedThreadUnread = await adminClient.markThreadUnread("tenant-a:room-1", "thread-1", "user-1");
+assert.equal(markedThreadUnread.unread, true);
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/unread");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { userId: "user-1" });
 
 await adminClient.deleteThread("tenant-a:room-1", "thread-1");
 assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1");

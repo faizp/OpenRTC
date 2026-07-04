@@ -1028,17 +1028,17 @@ export function threadQuery(
 }
 
 function normalizeThreadQueryField(field: string, value: OpenRTCThreadQueryScalar | OpenRTCThreadQueryExists): string {
-  if (field === "resolved") {
+  if (field === "resolved" || field === "unread") {
     if (isThreadQueryExists(value)) {
-      throw new Error("OpenRTC thread query resolved field does not support exists checks");
+      throw new Error(`OpenRTC thread query ${field} field does not support exists checks`);
     }
     if (typeof value !== "boolean") {
-      throw new Error("OpenRTC thread query resolved value must be a boolean");
+      throw new Error(`OpenRTC thread query ${field} value must be a boolean`);
     }
     return field;
   }
   if (!field.startsWith("metadata.")) {
-    throw new Error("OpenRTC thread query fields must be resolved or metadata paths");
+    throw new Error("OpenRTC thread query fields must be resolved, unread, or metadata paths");
   }
   const path = field.slice("metadata.".length).split(".");
   if (path.length === 0 || path.length > 8) {
@@ -1056,7 +1056,7 @@ function formatThreadQueryValue(field: string, value: OpenRTCThreadQueryScalar |
   if (isThreadQueryExists(value)) {
     return "*";
   }
-  if (field === "resolved") {
+  if (field === "resolved" || field === "unread") {
     return value ? "true" : "false";
   }
   if (typeof value === "string") {
@@ -1153,10 +1153,10 @@ export function upsertCommentThread(
       return cloneAdminThread(candidate);
     }
     inserted = true;
-    return clonedThread;
+    return mergeThreadReadState(clonedThread, candidate);
   });
   if (!inserted) {
-    next.push(clonedThread);
+    next.push(mergeThreadReadState(clonedThread));
   }
   return next.sort(compareAdminThreads);
 }
@@ -1277,8 +1277,19 @@ export interface OpenRTCAdminThread {
   comments: OpenRTCAdminComment[];
   resolved: boolean;
   metadata?: unknown;
+  readAt?: string;
+  unread?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OpenRTCAdminThreadReadState {
+  roomId: string;
+  threadId: string;
+  userId: string;
+  readAt?: string;
+  threadUpdatedAt: string;
+  unread: boolean;
 }
 
 export interface OpenRTCAdminComment {
@@ -1316,6 +1327,7 @@ export interface OpenRTCAdminThreadListOptions {
   limit?: number;
   cursor?: string;
   query?: string;
+  userId?: string;
 }
 
 export interface OpenRTCAdminCommentInput {
@@ -3848,6 +3860,7 @@ export class OpenRTCAdminClient {
         limit: options.limit,
         cursor: options.cursor,
         query: options.query,
+        userId: options.userId,
       }),
     );
   }
@@ -3883,6 +3896,29 @@ export class OpenRTCAdminClient {
 
   markThreadUnresolved(room: string, threadId: string): Promise<OpenRTCAdminThread> {
     return this.updateThread(room, threadId, { resolved: false });
+  }
+
+  getThreadReadState(room: string, threadId: string, userId: string): Promise<OpenRTCAdminThreadReadState> {
+    return this.request<OpenRTCAdminThreadReadState>(
+      this.pathWithQuery(
+        `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}/read-state`,
+        { userId },
+      ),
+    );
+  }
+
+  markThreadRead(room: string, threadId: string, userId: string): Promise<OpenRTCAdminThreadReadState> {
+    return this.request<OpenRTCAdminThreadReadState>(
+      `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}/read`,
+      { method: "POST", body: { userId } },
+    );
+  }
+
+  markThreadUnread(room: string, threadId: string, userId: string): Promise<OpenRTCAdminThreadReadState> {
+    return this.request<OpenRTCAdminThreadReadState>(
+      `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}/unread`,
+      { method: "POST", body: { userId } },
+    );
   }
 
   async deleteThread(room: string, threadId: string): Promise<void> {
@@ -5178,6 +5214,29 @@ function cloneAdminThread(thread: OpenRTCAdminThread): OpenRTCAdminThread {
     ...thread,
     comments: thread.comments.map(cloneAdminComment),
     ...(thread.metadata !== undefined ? { metadata: cloneStorageDocument(thread.metadata) } : {}),
+  };
+}
+
+function mergeThreadReadState(
+  thread: OpenRTCAdminThread,
+  previous?: OpenRTCAdminThread,
+): OpenRTCAdminThread {
+  const readAt = thread.readAt ?? previous?.readAt;
+  let unread = thread.unread ?? previous?.unread;
+  if (thread.unread === undefined && readAt !== undefined) {
+    const readTime = Date.parse(readAt);
+    const updatedTime = Date.parse(thread.updatedAt);
+    if (Number.isFinite(readTime) && Number.isFinite(updatedTime)) {
+      unread = readTime < updatedTime;
+    }
+  }
+  if (readAt === undefined && unread === undefined) {
+    return thread;
+  }
+  return {
+    ...thread,
+    ...(readAt !== undefined ? { readAt } : {}),
+    ...(unread !== undefined ? { unread } : {}),
   };
 }
 

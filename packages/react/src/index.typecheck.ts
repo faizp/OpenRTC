@@ -5,6 +5,7 @@ import type {
   OpenRTCAdminRoomSubscriptionSettings,
   OpenRTCAdminThread,
   OpenRTCAdminThreadInput,
+  OpenRTCAdminThreadReadState,
   OpenRTCAdminThreadUpdate,
   OpenRTCCursorPeer,
   OpenRTCEvent,
@@ -43,10 +44,13 @@ import {
   useEnterRoom,
   useErrorListener,
   useGetThread,
+  useGetThreadReadState,
   useLostConnectionListener,
   useMarkInboxNotificationAsRead,
+  useMarkThreadRead,
   useMarkThreadResolved,
   useMarkThreadUnresolved,
+  useMarkThreadUnread,
   useMyPresence,
   useMyPresenceSelector,
   useMutation,
@@ -252,6 +256,9 @@ function ProductSurfaceActionTypes() {
   const editThreadMetadata = useEditThreadMetadata(roomId);
   const markThreadResolved = useMarkThreadResolved(roomId);
   const markThreadUnresolved = useMarkThreadUnresolved(roomId);
+  const getThreadReadState = useGetThreadReadState(roomId, "user-1");
+  const markThreadRead = useMarkThreadRead(roomId, "user-1");
+  const markThreadUnread = useMarkThreadUnread(roomId, "user-1");
   const deleteThread = useDeleteThread(roomId);
   const createComment = useCreateComment(roomId);
   const editComment = useEditComment(roomId);
@@ -285,6 +292,9 @@ function ProductSurfaceActionTypes() {
   );
   expectType<Promise<OpenRTCAdminThread>>(markThreadResolved("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(markThreadUnresolved("thread-1"));
+  expectType<Promise<OpenRTCAdminThreadReadState>>(getThreadReadState("thread-1"));
+  expectType<Promise<OpenRTCAdminThreadReadState>>(markThreadRead("thread-1"));
+  expectType<Promise<OpenRTCAdminThreadReadState>>(markThreadUnread("thread-1"));
   expectType<Promise<void>>(deleteThread("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(
     createComment("thread-1", { userId: "user-1", body: { type: "text", text: "Next" } }),
@@ -393,6 +403,9 @@ function RoomContextIntegrationTypes() {
   );
   expectType<Promise<OpenRTCAdminThread>>(boundRoom.useMarkThreadResolved()("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(boundRoom.useMarkThreadUnresolved()("thread-1"));
+  expectType<Promise<OpenRTCAdminThreadReadState>>(boundRoom.useGetThreadReadState("user-1")("thread-1"));
+  expectType<Promise<OpenRTCAdminThreadReadState>>(boundRoom.useMarkThreadRead("user-1")("thread-1"));
+  expectType<Promise<OpenRTCAdminThreadReadState>>(boundRoom.useMarkThreadUnread("user-1")("thread-1"));
   expectType<Promise<void>>(boundRoom.useDeleteThread()("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(
     boundRoom.useCreateComment()("thread-1", { userId: "user-1", body: { type: "text", text: "Reply" } }),

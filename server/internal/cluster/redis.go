@@ -165,6 +165,8 @@ type ThreadRecord struct {
 	Comments  []CommentRecord `json:"comments"`
 	Resolved  bool            `json:"resolved"`
 	Metadata  json.RawMessage `json:"metadata"`
+	ReadAt    *time.Time      `json:"readAt,omitempty"`
+	Unread    *bool           `json:"unread,omitempty"`
 	CreatedAt time.Time       `json:"createdAt"`
 	UpdatedAt time.Time       `json:"updatedAt"`
 }
@@ -174,6 +176,15 @@ type ThreadUpdate struct {
 	MetadataSet bool
 	Resolved    bool
 	ResolvedSet bool
+}
+
+type ThreadReadState struct {
+	RoomID          string     `json:"roomId"`
+	ThreadID        string     `json:"threadId"`
+	UserID          string     `json:"userId"`
+	ReadAt          *time.Time `json:"readAt,omitempty"`
+	ThreadUpdatedAt time.Time  `json:"threadUpdatedAt"`
+	Unread          bool       `json:"unread"`
 }
 
 type CommentRecord struct {
@@ -300,6 +311,9 @@ type Store interface {
 	ListThreads(ctx context.Context, room string) ([]ThreadRecord, error)
 	UpdateThread(ctx context.Context, room string, threadID string, update ThreadUpdate) (ThreadRecord, error)
 	DeleteThread(ctx context.Context, room string, threadID string) (ThreadRecord, error)
+	GetThreadReadState(ctx context.Context, room string, threadID string, userID string) (ThreadReadState, error)
+	MarkThreadRead(ctx context.Context, room string, threadID string, userID string) (ThreadReadState, error)
+	MarkThreadUnread(ctx context.Context, room string, threadID string, userID string) (ThreadReadState, error)
 	AddComment(ctx context.Context, room string, threadID string, comment CommentRecord) (ThreadRecord, error)
 	UpdateComment(ctx context.Context, room string, threadID string, commentID string, update CommentUpdate) (ThreadRecord, error)
 	CreateInboxNotification(ctx context.Context, notification InboxNotificationRecord) (InboxNotificationRecord, error)
@@ -903,6 +917,7 @@ func (s *RedisStore) UpdateThread(ctx context.Context, room string, threadID str
 func (s *RedisStore) DeleteThread(ctx context.Context, room string, threadID string) (ThreadRecord, error) {
 	key := roomThreadKey(room, threadID)
 	commentsKey := roomThreadCommentsKey(room, threadID)
+	readStateKey := roomThreadReadStateKey(room, threadID)
 	var deleted ThreadRecord
 	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
 		values, err := tx.HGetAll(ctx, key).Result()
@@ -930,16 +945,96 @@ func (s *RedisStore) DeleteThread(ctx context.Context, room string, threadID str
 		}
 		deleted = normalizeThreadRecord(thread)
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(ctx, key, commentsKey)
+			pipe.Del(ctx, key, commentsKey, readStateKey)
 			pipe.SRem(ctx, roomThreadsKey(room), threadID)
 			return nil
 		})
 		return err
-	}, key, commentsKey)
+	}, key, commentsKey, readStateKey)
 	if err != nil {
 		return ThreadRecord{}, err
 	}
 	return deleted, nil
+}
+
+func (s *RedisStore) GetThreadReadState(ctx context.Context, room string, threadID string, userID string) (ThreadReadState, error) {
+	thread, err := s.loadThreadHeader(ctx, room, threadID)
+	if err != nil {
+		return ThreadReadState{}, err
+	}
+	readAt, err := s.loadThreadReadAt(ctx, room, threadID, userID)
+	if err != nil {
+		return ThreadReadState{}, err
+	}
+	return threadReadState(room, threadID, userID, thread.UpdatedAt, readAt), nil
+}
+
+func (s *RedisStore) MarkThreadRead(ctx context.Context, room string, threadID string, userID string) (ThreadReadState, error) {
+	key := roomThreadKey(room, threadID)
+	readStateKey := roomThreadReadStateKey(room, threadID)
+	readAt := time.Now().UTC()
+	var state ThreadReadState
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		values, err := tx.HGetAll(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if len(values) == 0 {
+			return ErrThreadNotFound
+		}
+		thread, err := decodeThreadRecord(values)
+		if err != nil {
+			return err
+		}
+		if readAt.Before(thread.UpdatedAt) {
+			readAt = thread.UpdatedAt.UTC()
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, readStateKey, userID, readAt.Format(time.RFC3339Nano))
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		state = threadReadState(room, threadID, userID, thread.UpdatedAt, &readAt)
+		return nil
+	}, key, readStateKey)
+	if err != nil {
+		return ThreadReadState{}, err
+	}
+	return state, nil
+}
+
+func (s *RedisStore) MarkThreadUnread(ctx context.Context, room string, threadID string, userID string) (ThreadReadState, error) {
+	key := roomThreadKey(room, threadID)
+	readStateKey := roomThreadReadStateKey(room, threadID)
+	var state ThreadReadState
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		values, err := tx.HGetAll(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if len(values) == 0 {
+			return ErrThreadNotFound
+		}
+		thread, err := decodeThreadRecord(values)
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HDel(ctx, readStateKey, userID)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		state = threadReadState(room, threadID, userID, thread.UpdatedAt, nil)
+		return nil
+	}, key, readStateKey)
+	if err != nil {
+		return ThreadReadState{}, err
+	}
+	return state, nil
 }
 
 func (s *RedisStore) AddComment(ctx context.Context, room string, threadID string, comment CommentRecord) (ThreadRecord, error) {
@@ -1876,14 +1971,7 @@ func (s *RedisStore) loadRoomRecord(ctx context.Context, room string) (RoomRecor
 }
 
 func (s *RedisStore) loadThreadRecord(ctx context.Context, room string, threadID string) (ThreadRecord, error) {
-	values, err := s.client.HGetAll(ctx, roomThreadKey(room, threadID)).Result()
-	if err != nil {
-		return ThreadRecord{}, err
-	}
-	if len(values) == 0 {
-		return ThreadRecord{}, ErrThreadNotFound
-	}
-	thread, err := decodeThreadRecord(values)
+	thread, err := s.loadThreadHeader(ctx, room, threadID)
 	if err != nil {
 		return ThreadRecord{}, err
 	}
@@ -1900,6 +1988,33 @@ func (s *RedisStore) loadThreadRecord(ctx context.Context, room string, threadID
 		thread.Comments = append(thread.Comments, comment)
 	}
 	return normalizeThreadRecord(thread), nil
+}
+
+func (s *RedisStore) loadThreadHeader(ctx context.Context, room string, threadID string) (ThreadRecord, error) {
+	values, err := s.client.HGetAll(ctx, roomThreadKey(room, threadID)).Result()
+	if err != nil {
+		return ThreadRecord{}, err
+	}
+	if len(values) == 0 {
+		return ThreadRecord{}, ErrThreadNotFound
+	}
+	return decodeThreadRecord(values)
+}
+
+func (s *RedisStore) loadThreadReadAt(ctx context.Context, room string, threadID string, userID string) (*time.Time, error) {
+	raw, err := s.client.HGet(ctx, roomThreadReadStateKey(room, threadID), userID).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	readAt, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil, err
+	}
+	readAt = readAt.UTC()
+	return &readAt, nil
 }
 
 func (s *RedisStore) loadInboxNotification(ctx context.Context, notificationID string) (InboxNotificationRecord, error) {
@@ -2119,7 +2234,32 @@ func normalizeThreadRecord(record ThreadRecord) ThreadRecord {
 	}
 	record.Metadata = append(json.RawMessage(nil), record.Metadata...)
 	record.Comments = cloneCommentList(record.Comments)
+	if record.ReadAt != nil {
+		readAt := record.ReadAt.UTC()
+		record.ReadAt = &readAt
+	}
+	if record.Unread != nil {
+		unread := *record.Unread
+		record.Unread = &unread
+	}
 	return record
+}
+
+func threadReadState(room string, threadID string, userID string, updatedAt time.Time, readAt *time.Time) ThreadReadState {
+	var normalizedReadAt *time.Time
+	if readAt != nil {
+		value := readAt.UTC()
+		normalizedReadAt = &value
+	}
+	updatedAt = updatedAt.UTC()
+	return ThreadReadState{
+		RoomID:          room,
+		ThreadID:        threadID,
+		UserID:          userID,
+		ReadAt:          normalizedReadAt,
+		ThreadUpdatedAt: updatedAt,
+		Unread:          normalizedReadAt == nil || normalizedReadAt.Before(updatedAt),
+	}
 }
 
 func normalizeCommentRecord(record CommentRecord) CommentRecord {
@@ -2799,6 +2939,10 @@ func roomThreadKey(room string, threadID string) string {
 
 func roomThreadCommentsKey(room string, threadID string) string {
 	return fmt.Sprintf("room:%s:thread:%s:comments", room, threadID)
+}
+
+func roomThreadReadStateKey(room string, threadID string) string {
+	return fmt.Sprintf("room:%s:thread:%s:read", room, threadID)
 }
 
 func inboxNotificationKey(notificationID string) string {

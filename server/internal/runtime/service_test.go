@@ -2981,6 +2981,18 @@ func (s *fakeRuntimeStore) DeleteThread(context.Context, string, string) (cluste
 	return cluster.ThreadRecord{}, nil
 }
 
+func (s *fakeRuntimeStore) GetThreadReadState(context.Context, string, string, string) (cluster.ThreadReadState, error) {
+	return cluster.ThreadReadState{}, cluster.ErrThreadNotFound
+}
+
+func (s *fakeRuntimeStore) MarkThreadRead(context.Context, string, string, string) (cluster.ThreadReadState, error) {
+	return cluster.ThreadReadState{}, cluster.ErrThreadNotFound
+}
+
+func (s *fakeRuntimeStore) MarkThreadUnread(context.Context, string, string, string) (cluster.ThreadReadState, error) {
+	return cluster.ThreadReadState{}, cluster.ErrThreadNotFound
+}
+
 func (s *fakeRuntimeStore) AddComment(context.Context, string, string, cluster.CommentRecord) (cluster.ThreadRecord, error) {
 	return cluster.ThreadRecord{}, nil
 }

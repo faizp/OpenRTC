@@ -327,6 +327,15 @@ func TestRedisPublishAndYJSWriteErrors(t *testing.T) {
 	if _, err := store.ListThreads(ctx, "tenant-a:room-1"); err == nil {
 		t.Fatalf("expected list threads failure when redis is unavailable")
 	}
+	if _, err := store.GetThreadReadState(ctx, "tenant-a:room-1", "thread-1", "user-1"); err == nil {
+		t.Fatalf("expected get thread read-state failure when redis is unavailable")
+	}
+	if _, err := store.MarkThreadRead(ctx, "tenant-a:room-1", "thread-1", "user-1"); err == nil {
+		t.Fatalf("expected mark thread read failure when redis is unavailable")
+	}
+	if _, err := store.MarkThreadUnread(ctx, "tenant-a:room-1", "thread-1", "user-1"); err == nil {
+		t.Fatalf("expected mark thread unread failure when redis is unavailable")
+	}
 	if _, err := store.AddComment(ctx, "tenant-a:room-1", "thread-1", CommentRecord{ID: "comment-1", UserID: "user-1", Body: json.RawMessage(`{}`)}); err == nil {
 		t.Fatalf("expected add comment failure when redis is unavailable")
 	}
@@ -1128,8 +1137,48 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if !updatedThread.Resolved || string(updatedThread.Metadata) != `{"x":2}` || updatedThread.UpdatedAt.IsZero() {
 		t.Fatalf("unexpected updated thread: %+v", updatedThread)
 	}
+	initialReadState, err := store.GetThreadReadState(ctx, "tenant-a:room-1", "thread-1", "user-1")
+	if err != nil {
+		t.Fatalf("get initial thread read state: %v", err)
+	}
+	if !initialReadState.Unread || initialReadState.ReadAt != nil || initialReadState.ThreadUpdatedAt.IsZero() {
+		t.Fatalf("unexpected initial thread read state: %+v", initialReadState)
+	}
+	markedRead, err := store.MarkThreadRead(ctx, "tenant-a:room-1", "thread-1", "user-1")
+	if err != nil {
+		t.Fatalf("mark thread read: %v", err)
+	}
+	if markedRead.Unread || markedRead.ReadAt == nil {
+		t.Fatalf("unexpected marked read state: %+v", markedRead)
+	}
+	gotReadState, err := store.GetThreadReadState(ctx, "tenant-a:room-1", "thread-1", "user-1")
+	if err != nil {
+		t.Fatalf("get marked thread read state: %v", err)
+	}
+	if gotReadState.Unread || gotReadState.ReadAt == nil {
+		t.Fatalf("unexpected stored read state: %+v", gotReadState)
+	}
+	markedUnread, err := store.MarkThreadUnread(ctx, "tenant-a:room-1", "thread-1", "user-1")
+	if err != nil {
+		t.Fatalf("mark thread unread: %v", err)
+	}
+	if !markedUnread.Unread || markedUnread.ReadAt != nil {
+		t.Fatalf("unexpected marked unread state: %+v", markedUnread)
+	}
+	if _, err := store.MarkThreadRead(ctx, "tenant-a:room-1", "thread-1", "user-1"); err != nil {
+		t.Fatalf("seed read state before delete: %v", err)
+	}
 	if _, err := store.UpdateThread(ctx, "tenant-a:room-1", "missing-thread", ThreadUpdate{Resolved: true, ResolvedSet: true}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected missing thread update, got %v", err)
+	}
+	if _, err := store.GetThreadReadState(ctx, "tenant-a:room-1", "missing-thread", "user-1"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected missing thread read state, got %v", err)
+	}
+	if _, err := store.MarkThreadRead(ctx, "tenant-a:room-1", "missing-thread", "user-1"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected missing mark read thread, got %v", err)
+	}
+	if _, err := store.MarkThreadUnread(ctx, "tenant-a:room-1", "missing-thread", "user-1"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected missing mark unread thread, got %v", err)
 	}
 	if _, err := store.AddComment(ctx, "tenant-a:room-1", "missing-thread", CommentRecord{ID: "comment-3", UserID: "user-3", Body: json.RawMessage(`{}`)}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected missing thread, got %v", err)
@@ -1155,6 +1204,13 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	}
 	if _, err := store.GetThread(ctx, "tenant-a:room-1", "thread-1"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected deleted thread missing, got %v", err)
+	}
+	readMarkers, err := store.client.HLen(ctx, roomThreadReadStateKey("tenant-a:room-1", "thread-1")).Result()
+	if err != nil {
+		t.Fatalf("read deleted thread markers: %v", err)
+	}
+	if readMarkers != 0 {
+		t.Fatalf("expected deleted thread read markers to be removed, got %d", readMarkers)
 	}
 	if _, err := store.DeleteThread(ctx, "tenant-a:room-1", "thread-1"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected missing delete thread, got %v", err)

@@ -47,6 +47,8 @@ Implemented:
 - Redis-backed room threads/comments with scoped `comments:` authorization and
   inbox notifications/settings with scoped `notifications:` authorization.
 - Thread list query/pagination for resolved state and thread metadata filters.
+- Per-user thread read-state APIs, unread thread list filters, and
+  client/React read-state hooks.
 - Room broadcast from clients and admin service.
 - Multi-node fan-out through Redis Pub/Sub.
 - Binary `/yjs/{room}` endpoint with persisted snapshot/update replay and cross-node fan-out.
@@ -55,7 +57,7 @@ Implemented:
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
-- Thread subscription/read-state workflows and hosted comments UI.
+- Thread subscription workflows and hosted comments UI.
 - Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
   product features beyond the package-level Yjs binding, selection presence,
   remote-selection, and cleanup helpers.

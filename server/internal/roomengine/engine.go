@@ -1881,6 +1881,14 @@ func cloneAccessMap(accesses map[string][]string) map[string][]string {
 
 func cloneThreadRecord(thread cluster.ThreadRecord) cluster.ThreadRecord {
 	thread.Metadata = append(json.RawMessage(nil), thread.Metadata...)
+	if thread.ReadAt != nil {
+		readAt := *thread.ReadAt
+		thread.ReadAt = &readAt
+	}
+	if thread.Unread != nil {
+		unread := *thread.Unread
+		thread.Unread = &unread
+	}
 	if len(thread.Comments) > 0 {
 		comments := make([]cluster.CommentRecord, len(thread.Comments))
 		for i, comment := range thread.Comments {
