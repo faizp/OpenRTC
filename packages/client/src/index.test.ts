@@ -15,6 +15,7 @@ import {
   accessMatrixScopes,
   addCommentMention,
   addCommentReaction,
+  createLiveStorageMutation,
   createOpenRTCDevAdminClient,
   createOpenRTCDevClient,
   createOpenRTCDevTools,
@@ -41,6 +42,7 @@ import {
   liveObjectDelete,
   liveObject,
   liveObjectPatch,
+  liveStorageMutation,
   normalizeCommentMentions,
   normalizeCommentReactions,
   removeCommentMention,
@@ -921,6 +923,30 @@ assert.deepEqual(liveListRemove(2, { basePath: "/data/items/data" }), [
 assert.deepEqual(liveListMove(0, 1, { basePath: "/data/items/data" }), [
   { op: "move", from: "/data/items/data/0", path: "/data/items/data/1" },
 ]);
+const typedMutationBuilder = createLiveStorageMutation();
+typedMutationBuilder.object().set({ "a/b": 1 }).delete("draftNote");
+typedMutationBuilder.list<string>("items").append("b");
+typedMutationBuilder.map("props").set({ "a/b": false }).delete("visible");
+const typedMutationOperations = [
+  { op: "add", path: "/data/a~1b", value: 1 },
+  { op: "remove", path: "/data/draftNote" },
+  { op: "add", path: "/data/items/data/-", value: "b" },
+  { op: "add", path: "/data/props/data/a~1b", value: false },
+  { op: "remove", path: "/data/props/data/visible" },
+];
+assert.deepEqual(typedMutationBuilder.toJSONPatch(), typedMutationOperations);
+assert.deepEqual(liveStorageMutation(typedMutationBuilder), typedMutationOperations);
+assert.deepEqual(
+  liveStorageMutation((storage) => {
+    storage.object().set({ title: "Next" });
+    return liveListAppend("c", { basePath: "/data/items/data" });
+  }),
+  [
+    { op: "add", path: "/data/title", value: "Next" },
+    { op: "add", path: "/data/items/data/-", value: "c" },
+  ],
+);
+assert.throws(() => liveStorageMutation(() => undefined), /at least one operation/);
 assert.throws(() => liveMapPatch({}, { basePath: "/data/props/data" }), /LiveMap patch must contain/);
 assert.throws(() => liveObjectDelete([], { basePath: "/data/props/data" }), /delete must include/);
 assert.throws(() => liveMapDelete("", { basePath: "/data/props/data" }), /non-empty strings/);
@@ -949,10 +975,10 @@ roomSocket.receive({
 });
 assert.deepEqual(await typedSet, typedRoot);
 
-const typedCollectionUpdate = room.patchStorage([
-  ...liveListAppend("b", { basePath: "/data/items/data" }),
-  ...liveMapPatch({ visible: false }, { basePath: "/data/props/data" }),
-], { opId: "typed-collections-1" });
+const typedCollectionUpdate = room.mutateLiveStorage((storage) => {
+  storage.list<string>("items").append("b");
+  storage.map<{ visible: boolean }>("props").set({ visible: false });
+}, { opId: "typed-collections-1" });
 assert.equal(
   roomSocket.sent.at(-1),
   JSON.stringify({

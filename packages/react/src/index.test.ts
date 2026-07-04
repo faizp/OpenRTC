@@ -5,6 +5,7 @@ import {
   useCommentListener,
   useNotificationEvents,
   useNotificationListener,
+  useMutateLiveStorage,
   usePatchStorage,
   useRoomCommentEvents,
   useSetLiveStorage,
@@ -39,6 +40,7 @@ assert.equal(typeof useSetStorage, "function");
 assert.equal(typeof usePatchStorage, "function");
 assert.equal(typeof useSetLiveStorage, "function");
 assert.equal(typeof useUpdateLiveStorage, "function");
+assert.equal(typeof useMutateLiveStorage, "function");
 assert.equal(typeof useStorageMutation, "function");
 assert.equal(typeof useStorageListener, "function");
 assert.equal(typeof useStoragePendingMutations, "function");

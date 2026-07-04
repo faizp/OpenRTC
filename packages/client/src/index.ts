@@ -640,6 +640,7 @@ export interface JSONPatchOperation {
 }
 
 export type OpenRTCLiveStorageType = "LiveObject" | "LiveList" | "LiveMap";
+export type OpenRTCLiveStoragePath = string | readonly (string | number)[];
 
 export interface OpenRTCLiveStorageNode<TType extends OpenRTCLiveStorageType, TData> {
   liveblocksType: TType;
@@ -665,6 +666,48 @@ export interface OpenRTCStorageMutationOptions {
 export interface OpenRTCLiveNodePatchOptions {
   basePath?: string;
 }
+
+export interface OpenRTCLiveStorageMutationBuilder {
+  readonly operations: readonly JSONPatchOperation[];
+  object<TData extends Record<string, unknown> = Record<string, unknown>>(
+    path?: OpenRTCLiveStoragePath,
+  ): OpenRTCLiveObjectMutationBuilder<TData>;
+  map<TData extends Record<string, unknown> = Record<string, unknown>>(
+    path?: OpenRTCLiveStoragePath,
+  ): OpenRTCLiveMapMutationBuilder<TData>;
+  list<TItem = unknown>(path: OpenRTCLiveStoragePath): OpenRTCLiveListMutationBuilder<TItem>;
+  patch(operations: readonly JSONPatchOperation[]): this;
+  toJSONPatch(): JSONPatchOperation[];
+}
+
+export interface OpenRTCLiveObjectMutationBuilder<TData extends Record<string, unknown> = Record<string, unknown>> {
+  set(patch: Partial<TData>): this;
+  remove(keys: string | readonly string[]): this;
+  delete(keys: string | readonly string[]): this;
+  done(): OpenRTCLiveStorageMutationBuilder;
+}
+
+export interface OpenRTCLiveMapMutationBuilder<TData extends Record<string, unknown> = Record<string, unknown>> {
+  set(patch: Partial<TData>): this;
+  remove(keys: string | readonly string[]): this;
+  delete(keys: string | readonly string[]): this;
+  done(): OpenRTCLiveStorageMutationBuilder;
+}
+
+export interface OpenRTCLiveListMutationBuilder<TItem = unknown> {
+  append(value: TItem): this;
+  insert(index: number, value: TItem): this;
+  replace(index: number, value: TItem): this;
+  remove(index: number): this;
+  delete(index: number): this;
+  move(fromIndex: number, toIndex: number): this;
+  done(): OpenRTCLiveStorageMutationBuilder;
+}
+
+export type OpenRTCLiveStorageMutationInput =
+  | readonly JSONPatchOperation[]
+  | OpenRTCLiveStorageMutationBuilder
+  | ((storage: OpenRTCLiveStorageMutationBuilder) => void | readonly JSONPatchOperation[]);
 
 export interface OpenRTCStorageEvent<TDocument = unknown> {
   room: string;
@@ -722,6 +765,10 @@ export interface OpenRTCRoom {
     patch: Partial<TData>,
     options?: OpenRTCStorageMutationOptions,
   ): Promise<OpenRTCLiveObject<TData>>;
+  mutateLiveStorage<TDocument = OpenRTCLiveObject>(
+    mutation: OpenRTCLiveStorageMutationInput,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<TDocument>;
   patchStorage<TDocument = unknown>(
     operations: JSONPatchOperation[],
     options?: OpenRTCStorageMutationOptions,
@@ -2033,6 +2080,14 @@ export class OpenRTCClient {
     options: OpenRTCStorageMutationOptions = {},
   ): Promise<OpenRTCLiveObject<TData>> {
     return this.patchStorage<OpenRTCLiveObject<TData>>(room, liveObjectPatch(patch), options);
+  }
+
+  mutateLiveStorage<TDocument = OpenRTCLiveObject>(
+    room: string,
+    mutation: OpenRTCLiveStorageMutationInput,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument> {
+    return this.patchStorage<TDocument>(room, liveStorageMutation(mutation), options);
   }
 
   patchStorage<TDocument = unknown>(
@@ -3591,6 +3646,13 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
     return this.client.updateLiveStorage<TData>(this.id, patch, options);
   }
 
+  mutateLiveStorage<TDocument = OpenRTCLiveObject>(
+    mutation: OpenRTCLiveStorageMutationInput,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument> {
+    return this.client.mutateLiveStorage<TDocument>(this.id, mutation, options);
+  }
+
   patchStorage<TDocument = unknown>(
     operations: JSONPatchOperation[],
     options: OpenRTCStorageMutationOptions = {},
@@ -3903,6 +3965,158 @@ export function liveListMove(
       path: liveListIndexPath(toIndex, options),
     },
   ];
+}
+
+export function createLiveStorageMutation(): OpenRTCLiveStorageMutationBuilder {
+  return new LiveStorageMutationBuilderImpl();
+}
+
+export function liveStorageMutation(mutation: OpenRTCLiveStorageMutationInput): JSONPatchOperation[] {
+  if (Array.isArray(mutation)) {
+    return normalizeLiveStorageMutationOperations(mutation);
+  }
+  if (isLiveStorageMutationBuilder(mutation)) {
+    return normalizeLiveStorageMutationOperations(mutation.toJSONPatch());
+  }
+
+  if (typeof mutation !== "function") {
+    throw new Error("Live storage mutation must be a JSON Patch array, builder, or callback");
+  }
+  const builder = createLiveStorageMutation();
+  const returned = mutation(builder);
+  if (returned !== undefined) {
+    builder.patch(returned);
+  }
+  return normalizeLiveStorageMutationOperations(builder.toJSONPatch());
+}
+
+class LiveStorageMutationBuilderImpl implements OpenRTCLiveStorageMutationBuilder {
+  private readonly queuedOperations: JSONPatchOperation[] = [];
+
+  get operations(): readonly JSONPatchOperation[] {
+    return this.toJSONPatch();
+  }
+
+  object<TData extends Record<string, unknown> = Record<string, unknown>>(
+    path?: OpenRTCLiveStoragePath,
+  ): OpenRTCLiveObjectMutationBuilder<TData> {
+    return new LiveObjectMutationBuilderImpl<TData>(this, liveNodeDataPath(path));
+  }
+
+  map<TData extends Record<string, unknown> = Record<string, unknown>>(
+    path?: OpenRTCLiveStoragePath,
+  ): OpenRTCLiveMapMutationBuilder<TData> {
+    return new LiveMapMutationBuilderImpl<TData>(this, liveNodeDataPath(path));
+  }
+
+  list<TItem = unknown>(path: OpenRTCLiveStoragePath): OpenRTCLiveListMutationBuilder<TItem> {
+    return new LiveListMutationBuilderImpl<TItem>(this, liveNodeDataPath(path));
+  }
+
+  patch(operations: readonly JSONPatchOperation[]): this {
+    this.push(operations);
+    return this;
+  }
+
+  toJSONPatch(): JSONPatchOperation[] {
+    return cloneStorageDocument(this.queuedOperations);
+  }
+
+  push(operations: readonly JSONPatchOperation[]): void {
+    this.queuedOperations.push(...normalizeJSONPatchOperations(operations));
+  }
+}
+
+class LiveObjectMutationBuilderImpl<TData extends Record<string, unknown>>
+  implements OpenRTCLiveObjectMutationBuilder<TData>
+{
+  constructor(
+    private readonly builder: LiveStorageMutationBuilderImpl,
+    private readonly basePath: string,
+  ) {}
+
+  set(patch: Partial<TData>): this {
+    this.builder.push(liveObjectPatch(patch, { basePath: this.basePath }));
+    return this;
+  }
+
+  remove(keys: string | readonly string[]): this {
+    this.builder.push(liveObjectDelete(keys, { basePath: this.basePath }));
+    return this;
+  }
+
+  delete(keys: string | readonly string[]): this {
+    return this.remove(keys);
+  }
+
+  done(): OpenRTCLiveStorageMutationBuilder {
+    return this.builder;
+  }
+}
+
+class LiveMapMutationBuilderImpl<TData extends Record<string, unknown>> implements OpenRTCLiveMapMutationBuilder<TData> {
+  constructor(
+    private readonly builder: LiveStorageMutationBuilderImpl,
+    private readonly basePath: string,
+  ) {}
+
+  set(patch: Partial<TData>): this {
+    this.builder.push(liveMapPatch(patch, { basePath: this.basePath }));
+    return this;
+  }
+
+  remove(keys: string | readonly string[]): this {
+    this.builder.push(liveMapDelete(keys, { basePath: this.basePath }));
+    return this;
+  }
+
+  delete(keys: string | readonly string[]): this {
+    return this.remove(keys);
+  }
+
+  done(): OpenRTCLiveStorageMutationBuilder {
+    return this.builder;
+  }
+}
+
+class LiveListMutationBuilderImpl<TItem> implements OpenRTCLiveListMutationBuilder<TItem> {
+  constructor(
+    private readonly builder: LiveStorageMutationBuilderImpl,
+    private readonly basePath: string,
+  ) {}
+
+  append(value: TItem): this {
+    this.builder.push(liveListAppend(value, { basePath: this.basePath }));
+    return this;
+  }
+
+  insert(index: number, value: TItem): this {
+    this.builder.push(liveListInsert(index, value, { basePath: this.basePath }));
+    return this;
+  }
+
+  replace(index: number, value: TItem): this {
+    this.builder.push(liveListReplace(index, value, { basePath: this.basePath }));
+    return this;
+  }
+
+  remove(index: number): this {
+    this.builder.push(liveListRemove(index, { basePath: this.basePath }));
+    return this;
+  }
+
+  delete(index: number): this {
+    return this.remove(index);
+  }
+
+  move(fromIndex: number, toIndex: number): this {
+    this.builder.push(liveListMove(fromIndex, toIndex, { basePath: this.basePath }));
+    return this;
+  }
+
+  done(): OpenRTCLiveStorageMutationBuilder {
+    return this.builder;
+  }
 }
 
 export function isOpenRTCCursor(value: unknown): value is OpenRTCCursor {
@@ -4588,6 +4802,64 @@ function normalizeLiveObjectRoot<TData extends Record<string, unknown>>(
     return liveObject(data.data);
   }
   return liveObject(data);
+}
+
+function isLiveStorageMutationBuilder(value: unknown): value is OpenRTCLiveStorageMutationBuilder {
+  return (
+    isObject(value) &&
+    typeof value["toJSONPatch"] === "function" &&
+    typeof value["patch"] === "function" &&
+    typeof value["object"] === "function" &&
+    typeof value["map"] === "function" &&
+    typeof value["list"] === "function"
+  );
+}
+
+function normalizeLiveStorageMutationOperations(operations: readonly JSONPatchOperation[]): JSONPatchOperation[] {
+  const normalized = normalizeJSONPatchOperations(operations);
+  if (normalized.length === 0) {
+    throw new Error("Live storage mutation must include at least one operation");
+  }
+  return normalized;
+}
+
+function normalizeJSONPatchOperations(operations: readonly JSONPatchOperation[]): JSONPatchOperation[] {
+  const cloned = cloneStorageDocument([...operations]);
+  const normalized = asJSONPatchOperations(cloned);
+  if (!normalized) {
+    throw new Error("Live storage mutation must be a valid JSON Patch operation array");
+  }
+  return cloneStorageDocument(normalized);
+}
+
+function liveNodeDataPath(path?: OpenRTCLiveStoragePath): string {
+  const parts = liveStoragePathParts(path);
+  if (parts.length === 0) {
+    return "/data";
+  }
+  return joinJSONPointerParts("/data", [...parts, "data"]);
+}
+
+function liveStoragePathParts(path?: OpenRTCLiveStoragePath): string[] {
+  if (path === undefined || path === "") {
+    return [];
+  }
+  if (typeof path === "string") {
+    return path.startsWith("/") ? parseJSONPointer(path) : [path];
+  }
+  return path.map((part) => {
+    if (typeof part === "number") {
+      if (!Number.isInteger(part) || part < 0) {
+        throw new Error("Live storage path array indexes must be non-negative integers");
+      }
+      return String(part);
+    }
+    return part;
+  });
+}
+
+function joinJSONPointerParts(basePath: string, parts: readonly string[]): string {
+  return parts.reduce((path, part) => joinJSONPointer(path, part), basePath);
 }
 
 function assertLiveRecordData(value: unknown, typeName: string): asserts value is Record<string, unknown> {

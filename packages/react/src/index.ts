@@ -38,6 +38,7 @@ import {
   type OpenRTCRoomState,
   type OpenRTCLostConnectionEvent,
   type OpenRTCLiveObject,
+  type OpenRTCLiveStorageMutationInput,
   type OpenRTCStorageEvent,
   type OpenRTCStorageMutationOptions,
   type OpenRTCStoragePendingMutation,
@@ -73,6 +74,10 @@ export interface StorageMutationContext<TDocument = unknown> {
     patch: Partial<TData>,
     options?: OpenRTCStorageMutationOptions,
   ): Promise<OpenRTCLiveObject<TData>>;
+  mutateLiveStorage<TDocument = OpenRTCLiveObject>(
+    mutation: OpenRTCLiveStorageMutationInput,
+    options?: OpenRTCStorageMutationOptions,
+  ): Promise<TDocument>;
 }
 
 export interface CursorOptions extends JoinOptions {
@@ -568,6 +573,18 @@ export function useUpdateLiveStorage<TData extends Record<string, unknown> = Rec
   );
 }
 
+export function useMutateLiveStorage<TDocument = OpenRTCLiveObject>(
+  room: string,
+): (mutation: OpenRTCLiveStorageMutationInput, options?: OpenRTCStorageMutationOptions) => Promise<TDocument> {
+  const roomHandle = useRoomHandle(room);
+
+  return useCallback(
+    (mutation: OpenRTCLiveStorageMutationInput, options?: OpenRTCStorageMutationOptions) =>
+      roomHandle.mutateLiveStorage<TDocument>(mutation, options),
+    [roomHandle],
+  );
+}
+
 export function useStorageMutation<TDocument = unknown, Args extends unknown[] = [], TResult = void>(
   room: string,
   mutation: (context: StorageMutationContext<TDocument>, ...args: Args) => TResult,
@@ -585,6 +602,7 @@ export function useStorageMutation<TDocument = unknown, Args extends unknown[] =
         patchStorage: (operations, options) => roomHandle.patchStorage<TDocument>(operations, options),
         setLiveStorage: (data, options) => roomHandle.setLiveStorage(data, options),
         updateLiveStorage: (patch, options) => roomHandle.updateLiveStorage(patch, options),
+        mutateLiveStorage: (liveMutation, options) => roomHandle.mutateLiveStorage(liveMutation, options),
       },
       ...args,
     );

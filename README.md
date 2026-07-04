@@ -103,10 +103,8 @@ import {
   liveList,
   liveListAppend,
   liveMap,
-  liveMapDelete,
-  liveMapPatch,
   liveObject,
-  liveObjectDelete,
+  liveStorageMutation,
 } from "@openrtc/client";
 
 const client = new OpenRTCClient({
@@ -159,12 +157,16 @@ const typedRoot = liveObject({
 });
 await room.setLiveStorage(typedRoot, { opId: "typed-init-1" });
 await room.updateLiveStorage({ title: "Typed Review" }, { opId: "typed-title-1" });
-await room.patchStorage([
-  ...liveListAppend("next", { basePath: "/data/items/data" }),
-  ...liveMapPatch({ visible: false }, { basePath: "/data/props/data" }),
-  ...liveMapDelete("staleFlag", { basePath: "/data/props/data" }),
-  ...liveObjectDelete("draftNote", { basePath: "/data" }),
-], { opId: "typed-nested-1" });
+await room.mutateLiveStorage((storage) => {
+  storage.list<string>("items").append("next");
+  storage.map("props").set({ visible: false }).delete("staleFlag");
+  storage.object().delete("draftNote");
+}, { opId: "typed-nested-1" });
+const reusablePatch = liveStorageMutation((storage) => {
+  storage.object().set({ title: "Ready" });
+  return liveListAppend("final", { basePath: "/data/items/data" });
+});
+await room.patchStorage(reusablePatch, { opId: "typed-reusable-1" });
 
 unsubscribe();
 unsubscribeLostConnection();
@@ -204,10 +206,13 @@ Storage mutations send an `op_id` automatically when one is not provided, so
 optimistic, ack, and rollback events can be correlated. Typed storage helpers build Liveblocks-style `LiveObject`,
 `LiveList`, and `LiveMap` envelopes and
 `updateLiveStorage` patches root `LiveObject.data` fields without hand-writing
-reserved envelope JSON. `liveObjectDelete`, `liveMapPatch`, `liveMapDelete`,
+reserved envelope JSON. `room.mutateLiveStorage` and `liveStorageMutation`
+compose LiveObject/LiveMap/LiveList operations into one `STORAGE_PATCH`
+mutation while retaining op IDs, optimistic updates, conflict repair, and
+sequence handling. `liveObjectDelete`, `liveMapPatch`, `liveMapDelete`,
 `liveListAppend`, `liveListInsert`, `liveListReplace`, `liveListRemove`, and
-`liveListMove` generate nested typed-node JSON Patch operations for
-`room.patchStorage`. Collaborative text
+`liveListMove` remain available when callers want raw nested typed-node JSON
+Patch operations for `room.patchStorage`. Collaborative text
 remains owned by the Yjs provider.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
@@ -240,7 +245,7 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useStorageSequence`, `useSetStorage`, `usePatchStorage`,
 `useStoragePendingMutations`, `useSetLiveStorage`, `useUpdateLiveStorage`,
-`useStorageMutation`, and `useStorageListener`. It also exports
+`useMutateLiveStorage`, `useStorageMutation`, and `useStorageListener`. It also exports
 Liveblocks-style `Cursors`, `Cursor`, and `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with
