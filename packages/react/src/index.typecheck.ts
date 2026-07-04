@@ -238,6 +238,8 @@ function StorageIntegrationTypes() {
     roomId,
     async ({ room, storage, self, others, myPresence, setMyPresence, updateMyPresence, broadcastEvent, setStorage }, title) => {
       expectType<OpenRTCRoom>(room);
+      expectType<number | undefined>(room.getLastEventSequence());
+      expectType<string>(room.ackEvent(1));
       expectType<CanvasStorage | undefined>(storage);
       expectType<PresencePeer | undefined>(self);
       expectType<PresencePeer[]>(others);

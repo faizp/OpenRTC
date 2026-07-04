@@ -23,6 +23,7 @@ const (
 	TypeJoin         MessageType = "JOIN"
 	TypeLeave        MessageType = "LEAVE"
 	TypeEmit         MessageType = "EMIT"
+	TypeEventAck     MessageType = "EVENT_ACK"
 	TypePresenceSet  MessageType = "PRESENCE_SET"
 	TypeStorageGet   MessageType = "STORAGE_GET"
 	TypeStorageSet   MessageType = "STORAGE_SET"
@@ -39,6 +40,10 @@ type EmitMeta struct {
 	TraceID string `json:"trace_id,omitempty"`
 }
 
+type EventAckMeta struct {
+	Sequence uint64 `json:"seq,omitempty"`
+}
+
 type StorageMeta struct {
 	OpID                string `json:"op_id,omitempty"`
 	ExpectedSequence    uint64 `json:"expected_seq,omitempty"`
@@ -46,14 +51,15 @@ type StorageMeta struct {
 }
 
 type Message struct {
-	Type        MessageType
-	ID          string
-	Room        string
-	Event       string
-	Payload     json.RawMessage
-	JoinMeta    *JoinMeta
-	EmitMeta    *EmitMeta
-	StorageMeta *StorageMeta
+	Type         MessageType
+	ID           string
+	Room         string
+	Event        string
+	Payload      json.RawMessage
+	JoinMeta     *JoinMeta
+	EmitMeta     *EmitMeta
+	EventAckMeta *EventAckMeta
+	StorageMeta  *StorageMeta
 }
 
 type ParseOptions struct {
@@ -111,7 +117,7 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 	}
 
 	switch message.Type {
-	case TypeJoin, TypeLeave, TypeEmit, TypePresenceSet, TypeStorageGet, TypeStorageSet, TypeStoragePatch:
+	case TypeJoin, TypeLeave, TypeEmit, TypeEventAck, TypePresenceSet, TypeStorageGet, TypeStorageSet, TypeStoragePatch:
 	default:
 		return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: fmt.Sprintf("Unsupported message type: %s", message.Type)}
 	}
@@ -193,6 +199,31 @@ func ParseClientMessage(raw []byte, options ParseOptions) (Message, error) {
 			}
 			message.EmitMeta = parsed
 		}
+	case TypeEventAck:
+		if len(message.Payload) > 0 {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "EVENT_ACK does not accept payload"}
+		}
+		if len(meta) == 0 {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "EVENT_ACK requires meta.seq"}
+		}
+		var ackMeta map[string]json.RawMessage
+		if err := json.Unmarshal(meta, &ackMeta); err != nil {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "Meta must be an object when present"}
+		}
+		for key := range ackMeta {
+			if key != "seq" {
+				return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "EVENT_ACK meta includes unsupported fields"}
+			}
+		}
+		sequenceRaw, ok := ackMeta["seq"]
+		if !ok {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "EVENT_ACK requires meta.seq"}
+		}
+		parsed := &EventAckMeta{}
+		if err := json.Unmarshal(sequenceRaw, &parsed.Sequence); err != nil || parsed.Sequence == 0 {
+			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "EVENT_ACK meta.seq must be an integer greater than or equal to 1"}
+		}
+		message.EventAckMeta = parsed
 	case TypePresenceSet:
 		if len(message.Payload) == 0 || !json.Valid(message.Payload) || message.Payload[0] != '{' {
 			return Message{}, &ParseError{Code: openrtcerr.CodeBadRequest, Message: "PRESENCE_SET requires object payload"}

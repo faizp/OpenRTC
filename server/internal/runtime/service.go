@@ -38,6 +38,7 @@ var (
 		protocol.TypeJoin:         (*Service).handleJoin,
 		protocol.TypeLeave:        (*Service).handleLeave,
 		protocol.TypeEmit:         (*Service).handleEmit,
+		protocol.TypeEventAck:     (*Service).handleEventAck,
 		protocol.TypePresenceSet:  (*Service).handlePresence,
 		protocol.TypeStorageGet:   (*Service).handleStorageGet,
 		protocol.TypeStorageSet:   (*Service).handleStorageSet,
@@ -751,6 +752,22 @@ func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Service) handleEventAck(conn *clientConn, message protocol.Message) error {
+	if message.EventAckMeta == nil {
+		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeBadRequest, "event ack sequence is required"))
+	}
+	sequence := message.EventAckMeta.Sequence
+	if !s.roomEngine().AcknowledgeEvent(conn.id, message.Room, sequence) {
+		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "event ack requires joined room"))
+	}
+	return conn.enqueue(outboundMessage{
+		T:    "EVENT_ACKED",
+		ID:   message.ID,
+		Room: message.Room,
+		Meta: map[string]any{"seq": sequence},
+	})
 }
 
 func (s *Service) handlePresence(conn *clientConn, message protocol.Message) error {

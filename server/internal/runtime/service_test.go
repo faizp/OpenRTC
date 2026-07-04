@@ -1417,6 +1417,50 @@ func TestRuntimeBroadcastAndSnapshotEdgeBranches(t *testing.T) {
 	}
 }
 
+func TestRuntimeHandleEventAck(t *testing.T) {
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+
+	conn := runtimeTestConn(service, "conn-ack", &auth.Claims{Tenant: "tenant-a"}, 2)
+	if err := service.handleEventAck(conn, protocol.Message{
+		ID:           "ack-missing",
+		Room:         "tenant-a:room-1",
+		EventAckMeta: &protocol.EventAckMeta{Sequence: 7},
+	}); err != nil {
+		t.Fatalf("handle unjoined event ack: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "ERROR" || got.ID != "ack-missing" {
+		t.Fatalf("expected unjoined ack error, got %+v", got)
+	}
+
+	joinRuntimeRoom(t, service, conn, "tenant-a:room-1")
+	if err := service.handleEventAck(conn, protocol.Message{
+		ID:           "ack-1",
+		Room:         "tenant-a:room-1",
+		EventAckMeta: &protocol.EventAckMeta{Sequence: 7},
+	}); err != nil {
+		t.Fatalf("handle joined event ack: %v", err)
+	}
+	got := readRuntimeOutbound(t, conn)
+	if got.T != "EVENT_ACKED" || got.ID != "ack-1" || got.Room != "tenant-a:room-1" {
+		t.Fatalf("unexpected event ack response: %+v", got)
+	}
+	meta, ok := got.Meta.(map[string]any)
+	if !ok || meta["seq"] != uint64(7) {
+		t.Fatalf("unexpected event ack meta: %#v", got.Meta)
+	}
+	if sequence := service.roomEngine().EventAckSequence(conn.id, "tenant-a:room-1"); sequence != 7 {
+		t.Fatalf("expected event ack sequence to be recorded, got %d", sequence)
+	}
+
+	if err := service.handleEventAck(conn, protocol.Message{ID: "ack-empty", Room: "tenant-a:room-1"}); err != nil {
+		t.Fatalf("handle empty event ack: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "ERROR" || got.ID != "ack-empty" {
+		t.Fatalf("expected missing sequence error, got %+v", got)
+	}
+}
+
 func TestRuntimeStoreBackedConnectionLifecycle(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()
@@ -1496,6 +1540,8 @@ func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	joinRuntimeRoom(t, service, connA, "tenant-a:room-2")
 	joinRuntimeRoom(t, service, connA, "tenant-a:room-1")
 	joinRuntimeRoom(t, service, connB, "tenant-a:room-1")
+	service.roomEngine().AcknowledgeEvent(connA.id, "tenant-a:room-1", 12)
+	service.roomEngine().AcknowledgeEvent(connB.id, "tenant-a:room-1", 9)
 	registerRuntimeYJSConn(service, &yjsConn{
 		id:     "yjs-a",
 		claims: &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "editor-a"}, Tenant: "tenant-a"},
@@ -1516,7 +1562,7 @@ func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	}
 	if !reflect.DeepEqual(snapshot.Rooms, []DevRoomActivitySnapshot{
 		{Room: "tenant-a:doc-1", Connections: 0, YJSConnections: 1, TotalSockets: 1},
-		{Room: "tenant-a:room-1", Connections: 2, YJSConnections: 0, TotalSockets: 2},
+		{Room: "tenant-a:room-1", Connections: 2, YJSConnections: 0, TotalSockets: 2, EventAckMinSequence: 9, EventAckMaxSequence: 12},
 		{Room: "tenant-a:room-2", Connections: 1, YJSConnections: 0, TotalSockets: 1},
 	}) {
 		t.Fatalf("unexpected room activity: %+v", snapshot.Rooms)
@@ -1529,6 +1575,12 @@ func TestRuntimeDevConnectionsSnapshot(t *testing.T) {
 	}
 	if len(snapshot.Connections[0].Rooms) != 2 || snapshot.Connections[0].Rooms[0] != "tenant-a:room-1" || snapshot.Connections[0].Rooms[1] != "tenant-a:room-2" {
 		t.Fatalf("unexpected conn-a rooms: %+v", snapshot.Connections[0].Rooms)
+	}
+	if got := snapshot.Connections[0].EventAcks["tenant-a:room-1"]; got != 12 {
+		t.Fatalf("unexpected conn-a event acks: %+v", snapshot.Connections[0].EventAcks)
+	}
+	if got := snapshot.Connections[1].EventAcks["tenant-a:room-1"]; got != 9 {
+		t.Fatalf("unexpected conn-b event acks: %+v", snapshot.Connections[1].EventAcks)
 	}
 	if len(snapshot.YJSConnections) != 1 || snapshot.YJSConnections[0].ConnectionID != "yjs-a" || snapshot.YJSConnections[0].Room != "tenant-a:doc-1" {
 		t.Fatalf("unexpected yjs connections: %+v", snapshot.YJSConnections)

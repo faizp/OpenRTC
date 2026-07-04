@@ -182,10 +182,15 @@ range. In browser environments, `backgroundKeepAliveTimeout` can close hidden
 tabs after an inactivity window and reconnect/replay rooms when the tab is
 focused again. Room handles emit `lost`, `restored`, and `failed` through the
 `lost-connection` subscription; call `room.reconnect()` for an explicit retry
-after a hard failure. Room storage uses the runtime `STORAGE_GET`,
-`STORAGE_SET`, and `STORAGE_PATCH` protocol, keeps the latest authoritative
-snapshot in memory, emits `storage` / `storage-status` updates, and requests a
-fresh snapshot when an active room reconnects. `setStorage` and loaded
+after a hard failure. For Redis-backed room events, the SDK remembers the latest
+delivered `EVENT.meta.seq`, sends it as `JOIN.meta.after_seq` on reconnect, and
+automatically reports accepted sequenced events with `EVENT_ACK`. Use
+`room.getLastEventSequence()` to inspect the local resume cursor and
+`room.ackEvent(seq)` to resend delivery state manually. Room storage uses the
+runtime `STORAGE_GET`, `STORAGE_SET`, and `STORAGE_PATCH` protocol, keeps the
+latest authoritative snapshot in memory, emits `storage` / `storage-status`
+updates, and requests a fresh snapshot when an active room reconnects.
+`setStorage` and loaded
 `patchStorage` calls apply optimistic local updates, then replace local state
 with the authoritative server ack or roll back on failure. When a server ack or
 remote update arrives while later local mutations are still pending, the SDK

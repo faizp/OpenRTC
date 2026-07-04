@@ -65,6 +65,10 @@ Implemented:
 - Runtime room admission controls for JSON and Yjs sockets, with configurable
   per-room caps, retryable `ROOM_CAPACITY` JSON join errors, Yjs HTTP 429
   upgrade rejection, and dev socket room activity/limit inspection.
+- Non-Yjs room event delivery ACKs: `@openrtc/client` tracks latest delivered
+  `EVENT.meta.seq`, sends bounded reconnect catch-up with `JOIN.meta.after_seq`,
+  automatically sends `EVENT_ACK`, and runtime/dev socket snapshots expose
+  per-connection ACK cursors.
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
@@ -76,10 +80,10 @@ Missing for parity:
 - Room-affine placement and Yjs compactor retention alerts tuned against
   production traffic. Per-node JSON/Yjs room admission caps exist, but they are
   not yet a regional placement or autoscaling policy.
-- Full resumable session protocol and delivery acks for non-Yjs events. Redis
-  now assigns per-room event sequences, keeps a bounded event log, and
-  `JOIN.meta.after_seq` can replay missed room `EVENT`s after `JOINED`; this is
-  bounded catch-up, not an acknowledgement protocol.
+- Full durable resumable session protocol beyond the current bounded Redis
+  replay plus runtime-visible delivery ACK cursor. Remaining work includes a
+  durable resume token/session window and stronger delivery guarantees after
+  Redis retention expires.
 - Region/tenant placement, room-affine routing, load-shedding, and horizontal scale tests at product scale.
 - Published API coverage thresholds for Go and TypeScript.
 

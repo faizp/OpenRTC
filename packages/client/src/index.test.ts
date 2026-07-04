@@ -856,7 +856,37 @@ roomSocket.receive({
 });
 assert.deepEqual(roomEvents, ["CANVAS_PING"]);
 assert.equal(receivedRoomEvents.at(-1)?.sequence, 12);
-assert.equal(roomDiagnostics.at(-1)?.sequence, 12);
+assert.equal(
+  roomDiagnostics.filter((event) => event.direction === "in" && event.t === "EVENT").at(-1)?.sequence,
+  12,
+);
+assert.equal(room.getLastEventSequence(), 12);
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "EVENT_ACK",
+    id: "event-ack-1",
+    room: "tenant-a:room-api",
+    meta: { seq: 12 },
+  }),
+);
+roomSocket.receive({
+  t: "EVENT_ACKED",
+  id: "event-ack-1",
+  room: "tenant-a:room-api",
+  meta: { seq: 12 },
+});
+assert.equal(room.ackEvent(12), "event-ack-2");
+assert.equal(
+  roomSocket.sent.at(-1),
+  JSON.stringify({
+    t: "EVENT_ACK",
+    id: "event-ack-2",
+    room: "tenant-a:room-api",
+    meta: { seq: 12 },
+  }),
+);
+assert.throws(() => room.ackEvent(0), /positive safe integer/);
 
 roomSocket.receive({
   t: "EVENT",

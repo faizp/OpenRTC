@@ -231,6 +231,7 @@ export interface OpenRTCDevSocketConnection {
   subject?: string;
   tenant?: string;
   rooms: string[];
+  event_acks?: Record<string, number>;
 }
 
 export interface OpenRTCDevYJSSocketConnection {
@@ -245,6 +246,8 @@ export interface OpenRTCDevRoomActivitySnapshot {
   connections: number;
   yjs_connections: number;
   total_sockets: number;
+  event_ack_min_seq?: number;
+  event_ack_max_seq?: number;
 }
 
 export interface OpenRTCDevConnectionLimits {
@@ -797,6 +800,7 @@ export interface OpenRTCRoom {
   readonly id: string;
   readonly history: OpenRTCStorageHistory;
   getStatus(): ConnectionStatus;
+  getLastEventSequence(): number | undefined;
   getPresence(): OpenRTCRoomPresence;
   getSelf(): PresencePeer | undefined;
   getOthers(): PresencePeer[];
@@ -805,6 +809,7 @@ export interface OpenRTCRoom {
   setPresence(state: PresenceState): string;
   setCursor(cursor: OpenRTCCursor | null, options?: OpenRTCCursorOptions): string;
   clearCursor(): string;
+  ackEvent(sequence: number): string;
   broadcastEvent(event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions): string;
   broadcastEventWithAck(event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions): Promise<OpenRTCEvent>;
   getStorage<TDocument = unknown>(): Promise<TDocument>;
@@ -2033,6 +2038,7 @@ export class OpenRTCClient {
   private readonly browserDocument: OpenRTCBrowserDocument | undefined;
   private socket: OpenRTCWebSocket | undefined;
   private requestCounter = 0;
+  private ackCounter = 0;
   private statusValue: ConnectionStatus = "idle";
   private connIdValue: string | undefined;
   private handlers = new Map<keyof OpenRTCEventMap, Set<Handler<OpenRTCEventMap[keyof OpenRTCEventMap]>>>();
@@ -2274,6 +2280,17 @@ export class OpenRTCClient {
 
   clearCursor(room: string): string {
     return this.patchPresence(room, { cursor: null });
+  }
+
+  getLastEventSequence(room: string): number | undefined {
+    return this.lastEventSequenceByRoom.get(room);
+  }
+
+  ackEvent(room: string, sequence: number): string {
+    const normalizedSequence = normalizeEventSequence(sequence);
+    const id = this.nextAckID();
+    this.send({ t: "EVENT_ACK", id, room, meta: { seq: normalizedSequence } });
+    return id;
   }
 
   broadcastWithAck(
@@ -3029,6 +3046,11 @@ export class OpenRTCClient {
     return `${prefix}-${this.requestCounter}`;
   }
 
+  private nextAckID(): string {
+    this.ackCounter += 1;
+    return `event-ack-${this.ackCounter}`;
+  }
+
   private handleMessage(message: unknown, payloadBytes?: number): void {
     this.emit("message", message);
     if (!isObject(message)) {
@@ -3189,10 +3211,20 @@ export class OpenRTCClient {
         ...(traceId ? { traceId } : {}),
         ...(sequence !== undefined ? { sequence } : {}),
       };
-      this.emit("event", event);
-      const commentEvent = asOpenRTCCommentEvent(event);
-      if (commentEvent) {
-        this.emit("comment", commentEvent);
+      try {
+        this.emit("event", event);
+        const commentEvent = asOpenRTCCommentEvent(event);
+        if (commentEvent) {
+          this.emit("comment", commentEvent);
+        }
+      } finally {
+        if (sequence !== undefined && this.canSend()) {
+          try {
+            this.ackEvent(room, sequence);
+          } catch {
+            // Delivery ACKs are resume metadata; event delivery should continue if the socket closes mid-handler.
+          }
+        }
       }
       return;
     }
@@ -4195,6 +4227,10 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
     return this.client.status;
   }
 
+  getLastEventSequence(): number | undefined {
+    return this.client.getLastEventSequence(this.id);
+  }
+
   getPresence(): OpenRTCRoomPresence {
     return this.client.getPresence(this.id);
   }
@@ -4225,6 +4261,10 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
 
   clearCursor(): string {
     return this.client.clearCursor(this.id);
+  }
+
+  ackEvent(sequence: number): string {
+    return this.client.ackEvent(this.id, sequence);
   }
 
   broadcastEvent(event: RoomBroadcastInput, payload?: unknown, options: BroadcastOptions = {}): string {
@@ -5185,6 +5225,13 @@ function normalizeExpectedStorageSequence(sequence: number | undefined): number 
     return sequence;
   }
   throw new Error("Storage expectedSequence must be a non-negative safe integer");
+}
+
+function normalizeEventSequence(sequence: number): number {
+  if (typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence > 0) {
+    return sequence;
+  }
+  throw new Error("Event ACK sequence must be a positive safe integer");
 }
 
 function applyPendingStorageMutation(document: unknown, mutation: PendingStorageMutation): unknown {

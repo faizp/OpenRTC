@@ -51,6 +51,14 @@ func TestParseValidMessageVariants(t *testing.T) {
 		t.Fatalf("unexpected emit message: %+v", emit)
 	}
 
+	eventAck, err := ParseClientMessage([]byte(`{"t":"EVENT_ACK","id":"req-ack","room":"tenant-a:room-1","meta":{"seq":42}}`), ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse event ack: %v", err)
+	}
+	if eventAck.Type != TypeEventAck || eventAck.EventAckMeta == nil || eventAck.EventAckMeta.Sequence != 42 {
+		t.Fatalf("unexpected event ack message: %+v", eventAck)
+	}
+
 	presence, err := ParseClientMessage([]byte(`{"t":"PRESENCE_SET","id":"req-4","room":"tenant-a:room-1","payload":{"cursor":1}}`), ParseOptions{})
 	if err != nil {
 		t.Fatalf("parse presence: %v", err)
@@ -245,6 +253,26 @@ func TestParseRejectsInvalidMessageShapes(t *testing.T) {
 		{
 			name: "emit bad trace id",
 			raw:  []byte(`{"t":"EMIT","id":"req-1","room":"tenant-a:room-1","event":"event","payload":{},"meta":{"trace_id":""}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "event ack rejects payload",
+			raw:  []byte(`{"t":"EVENT_ACK","id":"req-1","room":"tenant-a:room-1","payload":{},"meta":{"seq":1}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "event ack missing meta",
+			raw:  []byte(`{"t":"EVENT_ACK","id":"req-1","room":"tenant-a:room-1"}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "event ack unsupported meta",
+			raw:  []byte(`{"t":"EVENT_ACK","id":"req-1","room":"tenant-a:room-1","meta":{"seq":1,"extra":true}}`),
+			want: openrtcerr.CodeBadRequest,
+		},
+		{
+			name: "event ack zero sequence",
+			raw:  []byte(`{"t":"EVENT_ACK","id":"req-1","room":"tenant-a:room-1","meta":{"seq":0}}`),
 			want: openrtcerr.CodeBadRequest,
 		},
 		{

@@ -66,6 +66,29 @@
         }
       }
     },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "room", "meta"],
+      "properties": {
+        "t": { "const": "EVENT_ACK" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "room": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[a-zA-Z0-9._:-]+$"
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["seq"],
+          "properties": {
+            "seq": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
 	    {
 	      "type": "object",
 	      "additionalProperties": false,

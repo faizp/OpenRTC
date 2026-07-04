@@ -81,6 +81,7 @@ type Engine struct {
 	storage     map[string]json.RawMessage
 	storageSeq  map[string]uint64
 	storageOps  map[string]map[string]storageOpRecord
+	eventAcks   map[string]map[string]uint64
 }
 
 type memoryYJSDocument struct {
@@ -361,10 +362,11 @@ type ConnectionsSnapshot struct {
 }
 
 type ConnectionSnapshot struct {
-	ConnectionID string   `json:"connection_id"`
-	Subject      string   `json:"subject,omitempty"`
-	Tenant       string   `json:"tenant,omitempty"`
-	Rooms        []string `json:"rooms"`
+	ConnectionID string            `json:"connection_id"`
+	Subject      string            `json:"subject,omitempty"`
+	Tenant       string            `json:"tenant,omitempty"`
+	Rooms        []string          `json:"rooms"`
+	EventAcks    map[string]uint64 `json:"event_acks,omitempty"`
 }
 
 type YJSConnectionSnapshot struct {
@@ -375,10 +377,12 @@ type YJSConnectionSnapshot struct {
 }
 
 type RoomActivitySnapshot struct {
-	Room           string `json:"room"`
-	Connections    int    `json:"connections"`
-	YJSConnections int    `json:"yjs_connections"`
-	TotalSockets   int    `json:"total_sockets"`
+	Room                string `json:"room"`
+	Connections         int    `json:"connections"`
+	YJSConnections      int    `json:"yjs_connections"`
+	TotalSockets        int    `json:"total_sockets"`
+	EventAckMinSequence uint64 `json:"event_ack_min_seq,omitempty"`
+	EventAckMaxSequence uint64 `json:"event_ack_max_seq,omitempty"`
 }
 
 func New() *Engine {
@@ -393,6 +397,7 @@ func New() *Engine {
 		storage:     make(map[string]json.RawMessage),
 		storageSeq:  make(map[string]uint64),
 		storageOps:  make(map[string]map[string]storageOpRecord),
+		eventAcks:   make(map[string]map[string]uint64),
 	}
 }
 
@@ -505,6 +510,7 @@ func (e *Engine) ApplyLeavePlan(plan LeavePlan) LeaveResult {
 		}
 		e.removeRoomMemberLocked(mutation.ConnID, mutation.Room)
 		e.removePresenceLocked(mutation.ConnID, mutation.Room)
+		e.removeEventAckLocked(mutation.ConnID, mutation.Room)
 	}
 	return LeaveResult{
 		Left:               true,
@@ -571,6 +577,7 @@ func (e *Engine) ApplyDisconnectPlan(plan DisconnectPlan) DisconnectResult {
 	}
 	delete(e.connRooms, connID)
 	delete(e.sessions, connID)
+	delete(e.eventAcks, connID)
 	return DisconnectResult{
 		Rooms:           append([]string(nil), plan.Rooms...),
 		PresenceFanouts: append([]PresenceFanout(nil), plan.PresenceFanouts...),
@@ -641,6 +648,34 @@ func (e *Engine) EventFanout(event cluster.PublishedEvent) EventFanout {
 		Event:         clonePublishedEvent(event),
 		TargetConnIDs: e.memberIDsLocked(event.Room, event.ExcludeSenderConnID),
 	}
+}
+
+func (e *Engine) AcknowledgeEvent(connID string, room string, sequence uint64) bool {
+	if connID == "" || room == "" || sequence == 0 {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, joined := e.connRooms[connID][room]; !joined {
+		return false
+	}
+	roomAcks := e.eventAcks[connID]
+	if roomAcks == nil {
+		roomAcks = make(map[string]uint64)
+		e.eventAcks[connID] = roomAcks
+	}
+	if sequence > roomAcks[room] {
+		roomAcks[room] = sequence
+	}
+	return true
+}
+
+func (e *Engine) EventAckSequence(connID string, room string) uint64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.eventAcks[connID][room]
 }
 
 func NewPresenceEvent(connID string, room string, payload json.RawMessage, options PresenceEventOptions) cluster.PresenceEvent {
@@ -1133,11 +1168,14 @@ func (e *Engine) roomActivityLocked() []RoomActivitySnapshot {
 	for room := range roomNames {
 		jsonConnections := len(e.rooms[room])
 		yjsConnections := len(e.yjsRooms[room])
+		minAck, maxAck := e.eventAckRangeLocked(room)
 		rooms = append(rooms, RoomActivitySnapshot{
-			Room:           room,
-			Connections:    jsonConnections,
-			YJSConnections: yjsConnections,
-			TotalSockets:   jsonConnections + yjsConnections,
+			Room:                room,
+			Connections:         jsonConnections,
+			YJSConnections:      yjsConnections,
+			TotalSockets:        jsonConnections + yjsConnections,
+			EventAckMinSequence: minAck,
+			EventAckMaxSequence: maxAck,
 		})
 	}
 	sort.Slice(rooms, func(i int, j int) bool {
@@ -1161,6 +1199,45 @@ func (e *Engine) joinedRoomsLocked(connID string) []string {
 	}
 	sort.Strings(rooms)
 	return rooms
+}
+
+func (e *Engine) eventAcksForConnectionLocked(connID string) map[string]uint64 {
+	acks := e.eventAcks[connID]
+	if len(acks) == 0 {
+		return nil
+	}
+	joinedRooms := e.connRooms[connID]
+	out := make(map[string]uint64, len(acks))
+	for room, sequence := range acks {
+		if sequence == 0 {
+			continue
+		}
+		if _, joined := joinedRooms[room]; joined {
+			out[room] = sequence
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (e *Engine) eventAckRangeLocked(room string) (uint64, uint64) {
+	var minAck uint64
+	var maxAck uint64
+	for connID := range e.rooms[room] {
+		sequence := e.eventAcks[connID][room]
+		if sequence == 0 {
+			continue
+		}
+		if minAck == 0 || sequence < minAck {
+			minAck = sequence
+		}
+		if sequence > maxAck {
+			maxAck = sequence
+		}
+	}
+	return minAck, maxAck
 }
 
 func (e *Engine) RegisterYJSConn(connID string, room string) {
@@ -1235,6 +1312,7 @@ func (e *Engine) ConnectionsSnapshot() ConnectionsSnapshot {
 			Subject:      session.Subject,
 			Tenant:       session.Tenant,
 			Rooms:        e.joinedRoomsLocked(connID),
+			EventAcks:    e.eventAcksForConnectionLocked(connID),
 		})
 	}
 	sort.Slice(connections, func(i int, j int) bool {
@@ -2020,6 +2098,15 @@ func (e *Engine) removePresenceLocked(connID string, room string) {
 		delete(roomPresence, connID)
 		if len(roomPresence) == 0 {
 			delete(e.presence, room)
+		}
+	}
+}
+
+func (e *Engine) removeEventAckLocked(connID string, room string) {
+	if roomAcks := e.eventAcks[connID]; roomAcks != nil {
+		delete(roomAcks, room)
+		if len(roomAcks) == 0 {
+			delete(e.eventAcks, connID)
 		}
 	}
 }

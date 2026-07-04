@@ -102,6 +102,67 @@ func TestEngineJoinWithRoomCapacity(t *testing.T) {
 	}
 }
 
+func TestEngineEventAcknowledgements(t *testing.T) {
+	engine := New()
+	engine.RegisterSession(SessionInfo{ConnID: "conn-1", Subject: "user-1", Tenant: "tenant-a"})
+	engine.RegisterSession(SessionInfo{ConnID: "conn-2", Subject: "user-2", Tenant: "tenant-a"})
+	if _, err := engine.Join("conn-1", "room-a", 0); err != nil {
+		t.Fatalf("join conn-1: %v", err)
+	}
+	if _, err := engine.Join("conn-2", "room-a", 0); err != nil {
+		t.Fatalf("join conn-2: %v", err)
+	}
+	if engine.AcknowledgeEvent("missing", "room-a", 1) {
+		t.Fatalf("missing connection ack should be rejected")
+	}
+	if engine.AcknowledgeEvent("conn-1", "room-b", 1) {
+		t.Fatalf("unjoined room ack should be rejected")
+	}
+	if !engine.AcknowledgeEvent("conn-1", "room-a", 3) {
+		t.Fatalf("joined room ack should be accepted")
+	}
+	if !engine.AcknowledgeEvent("conn-1", "room-a", 2) {
+		t.Fatalf("older ack should be accepted as a no-op")
+	}
+	if !engine.AcknowledgeEvent("conn-2", "room-a", 8) {
+		t.Fatalf("second connection ack should be accepted")
+	}
+	if got := engine.EventAckSequence("conn-1", "room-a"); got != 3 {
+		t.Fatalf("older ack should not lower sequence, got %d", got)
+	}
+
+	snapshot := engine.ConnectionsSnapshot()
+	if len(snapshot.Connections) != 2 {
+		t.Fatalf("unexpected connections snapshot: %+v", snapshot.Connections)
+	}
+	if got := snapshot.Connections[0].EventAcks["room-a"]; got != 3 {
+		t.Fatalf("unexpected first connection ack snapshot: %+v", snapshot.Connections[0])
+	}
+	if got := snapshot.Connections[1].EventAcks["room-a"]; got != 8 {
+		t.Fatalf("unexpected second connection ack snapshot: %+v", snapshot.Connections[1])
+	}
+	if len(snapshot.Rooms) != 1 || snapshot.Rooms[0].EventAckMinSequence != 3 || snapshot.Rooms[0].EventAckMaxSequence != 8 {
+		t.Fatalf("unexpected room ack activity: %+v", snapshot.Rooms)
+	}
+
+	left := engine.Leave("conn-1", "room-a")
+	if !left.Left {
+		t.Fatalf("expected conn-1 to leave")
+	}
+	if got := engine.EventAckSequence("conn-1", "room-a"); got != 0 {
+		t.Fatalf("leave should clear room ack, got %d", got)
+	}
+	snapshot = engine.ConnectionsSnapshot()
+	if len(snapshot.Rooms) != 1 || snapshot.Rooms[0].EventAckMinSequence != 8 || snapshot.Rooms[0].EventAckMaxSequence != 8 {
+		t.Fatalf("unexpected room ack activity after leave: %+v", snapshot.Rooms)
+	}
+
+	engine.Disconnect("conn-2")
+	if got := engine.EventAckSequence("conn-2", "room-a"); got != 0 {
+		t.Fatalf("disconnect should clear room ack, got %d", got)
+	}
+}
+
 func TestEngineJoinResultSnapshotCopiesRoomState(t *testing.T) {
 	engine := New()
 	if _, err := engine.Join("conn-1", "room-a", 0); err != nil {

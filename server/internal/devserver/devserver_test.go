@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1284,7 +1285,7 @@ func TestFilterSocketSnapshotByRoom(t *testing.T) {
 		ActiveRoomCount: 3,
 		Limits:          runtimeapp.DevConnectionLimits{RoomConnections: 10, YJSRoomConnections: 5},
 		Connections: []runtimeapp.DevConnectionSnapshot{
-			{ConnectionID: "conn-a", Rooms: []string{"room-a", "room-b"}},
+			{ConnectionID: "conn-a", Rooms: []string{"room-a", "room-b"}, EventAcks: map[string]uint64{"room-a": 3, "room-b": 7}},
 			{ConnectionID: "conn-b", Rooms: []string{"room-c"}},
 		},
 		YJSConnections: []runtimeapp.DevYJSConnectionSnapshot{
@@ -1307,6 +1308,9 @@ func TestFilterSocketSnapshotByRoom(t *testing.T) {
 	}
 	if len(filtered.Connections) != 1 || filtered.Connections[0].ConnectionID != "conn-a" {
 		t.Fatalf("unexpected filtered connections: %+v", filtered.Connections)
+	}
+	if !reflect.DeepEqual(filtered.Connections[0].EventAcks, map[string]uint64{"room-b": 7}) {
+		t.Fatalf("unexpected filtered event acks: %+v", filtered.Connections[0].EventAcks)
 	}
 	if len(filtered.YJSConnections) != 1 || filtered.YJSConnections[0].ConnectionID != "yjs-a" {
 		t.Fatalf("unexpected filtered yjs connections: %+v", filtered.YJSConnections)

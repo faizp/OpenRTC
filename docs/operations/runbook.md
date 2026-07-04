@@ -84,13 +84,18 @@
 **Symptoms:**
 - Clients appear in room member lists but are unreachable
 - Presence data shows users who have disconnected
+- Clients reconnect but do not receive expected room event catch-up
 
 **Recovery (automatic):**
 1. Connection `alive` keys have a 45-second TTL
 2. Reconciler runs every 30 seconds on each node
-3. Reconciler removes stale connections whose `alive` key has expired
-4. Expected cleanup time: 45s (TTL) + 30s (reconciler) = ~75s worst case
-5. Node crash recovery uses `node:{node_id}:conns` index for faster cleanup
+3. In local/dev environments, inspect `/dev/sockets?room=<room>`: JSON socket
+   entries expose `event_acks` and room activity exposes
+   `event_ack_min_seq` / `event_ack_max_seq` for the latest accepted room event
+   cursors among active connections that have ACKed.
+4. Reconciler removes stale connections whose `alive` key has expired
+5. Expected cleanup time: 45s (TTL) + 30s (reconciler) = ~75s worst case
+6. Node crash recovery uses `node:{node_id}:conns` index for faster cleanup
 
 **If cleanup is stuck:**
 ```bash
