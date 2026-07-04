@@ -2965,8 +2965,20 @@ func (s *fakeRuntimeStore) CreateThread(context.Context, string, cluster.ThreadR
 	return cluster.ThreadRecord{}, nil
 }
 
+func (s *fakeRuntimeStore) GetThread(context.Context, string, string) (cluster.ThreadRecord, error) {
+	return cluster.ThreadRecord{}, nil
+}
+
 func (s *fakeRuntimeStore) ListThreads(context.Context, string) ([]cluster.ThreadRecord, error) {
 	return nil, nil
+}
+
+func (s *fakeRuntimeStore) UpdateThread(context.Context, string, string, cluster.ThreadUpdate) (cluster.ThreadRecord, error) {
+	return cluster.ThreadRecord{}, nil
+}
+
+func (s *fakeRuntimeStore) DeleteThread(context.Context, string, string) (cluster.ThreadRecord, error) {
+	return cluster.ThreadRecord{}, nil
 }
 
 func (s *fakeRuntimeStore) AddComment(context.Context, string, string, cluster.CommentRecord) (cluster.ThreadRecord, error) {

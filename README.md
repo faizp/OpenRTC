@@ -230,7 +230,8 @@ apps can seed from REST thread/inbox lists and apply realtime deltas
 immutably. `@openrtc/react` exposes `useRoomThreads`, `useRoomThread`,
 `useInboxNotifications`, and `useUnreadInboxCount` for the same materialized
 comment and notification state in React. It also exposes action hooks for
-creating threads/comments, editing comment body/metadata, adding or removing
+getting threads, creating threads/comments, editing thread metadata/resolved
+state, deleting threads, editing comment body/metadata, adding or removing
 reactions and mentions, triggering and clearing inbox notifications, marking
 notifications as read, and updating/resetting room subscription settings. Wrap
 an `OpenRTCAdminClient` with `OpenRTCAdminProvider` or pass `admin` to the state
@@ -272,6 +273,8 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useMutateLiveStorage`, `useHistory`, `useUndo`, `useRedo`, `useCanUndo`,
 `useCanRedo`, `useStorageMutation`, `useMutation`, and
 `useStorageListener`, plus product-surface hooks `useCreateThread`,
+`useGetThread`, `useEditThread`, `useEditThreadMetadata`,
+`useMarkThreadResolved`, `useMarkThreadUnresolved`, `useDeleteThread`,
 `useCreateComment`, `useEditComment`, `useEditCommentMetadata`,
 `useAddReaction`, `useRemoveReaction`, `useAddCommentMention`,
 `useRemoveCommentMention`, `useTriggerInboxNotification`,
@@ -390,8 +393,8 @@ function CanvasToolbar() {
 ```
 
 For server-side product surfaces, `OpenRTCAdminClient` wraps the admin REST APIs
-used for rooms, active users, comments, comment metadata/reaction/mention
-updates, notifications, subscription settings, ephemeral presence, and
+used for rooms, active users, thread lifecycle, comments, comment
+metadata/reaction/mention updates, notifications, subscription settings, ephemeral presence, and
 broadcast.
 
 Admin storage PUT and JSON Patch mutations also emit realtime `storage` client
@@ -487,6 +490,10 @@ await admin.createThread("tenant-a:canvas-1", {
     body: { type: "text", text: "Ready for review" },
     mentions: ["user-2"],
   },
+});
+await admin.markThreadResolved("tenant-a:canvas-1", "thread-1");
+await admin.editThreadMetadata("tenant-a:canvas-1", "thread-1", {
+  status: "resolved",
 });
 await admin.updateComment("tenant-a:canvas-1", "thread-1", "comment-1", {
   metadata: { status: "resolved" },

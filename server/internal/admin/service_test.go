@@ -1408,9 +1408,16 @@ func TestAdminThreadHandlers(t *testing.T) {
 			},
 		},
 	}
+	lifecycleThread := thread
+	lifecycleThread.Resolved = true
+	lifecycleThread.Metadata = json.RawMessage(`{"anchor":"shape-2"}`)
+	lifecycleThread.UpdatedAt = now.Add(3 * time.Second)
 	store := &fakeAdminStore{
 		createThreadRecord: thread,
+		getThreadRecord:    thread,
 		listThreads:        []cluster.ThreadRecord{thread},
+		updateThreadRecord: lifecycleThread,
+		deleteThreadRecord: lifecycleThread,
 		addCommentThread: cluster.ThreadRecord{
 			Type:      "thread",
 			ID:        "thread-1",
@@ -1479,6 +1486,18 @@ func TestAdminThreadHandlers(t *testing.T) {
 		t.Fatalf("unexpected thread list: %+v", list)
 	}
 
+	getThreadResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if getThreadResp.Code != http.StatusOK {
+		t.Fatalf("expected get thread 200, got %d body=%q", getThreadResp.Code, getThreadResp.Body.String())
+	}
+	var gotThread cluster.ThreadRecord
+	if err := json.NewDecoder(getThreadResp.Body).Decode(&gotThread); err != nil {
+		t.Fatalf("decode thread: %v", err)
+	}
+	if gotThread.ID != "thread-1" || len(gotThread.Comments) != 1 {
+		t.Fatalf("unexpected get thread response: %+v", gotThread)
+	}
+
 	commentResp := performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-2","userId":"user-2","body":{"content":[{"type":"paragraph","text":"second"}]}}`)
 	if commentResp.Code != http.StatusCreated {
 		t.Fatalf("expected add comment 201, got %d body=%q", commentResp.Code, commentResp.Body.String())
@@ -1522,6 +1541,31 @@ func TestAdminThreadHandlers(t *testing.T) {
 		t.Fatalf("unexpected patched thread response: %+v", patched)
 	}
 	assertCommentEvent(t, store.publishedEvents, 2, roomengine.CommentUpdated, roomengine.CommentEventTypeCommentUpdated, "thread-1", "comment-1")
+
+	updateThreadResp := performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{"metadata":{"anchor":"shape-2"},"resolved":true}`)
+	if updateThreadResp.Code != http.StatusOK {
+		t.Fatalf("expected update thread 200, got %d body=%q", updateThreadResp.Code, updateThreadResp.Body.String())
+	}
+	if store.updatedThread.Room != "tenant-a:room-1" || store.updatedThread.ThreadID != "thread-1" {
+		t.Fatalf("unexpected updated thread target: %+v", store.updatedThread)
+	}
+	if !store.updatedThread.Update.MetadataSet || string(store.updatedThread.Update.Metadata) != `{"anchor":"shape-2"}` || !store.updatedThread.Update.ResolvedSet || !store.updatedThread.Update.Resolved {
+		t.Fatalf("unexpected thread update: %+v", store.updatedThread.Update)
+	}
+	var patchedThread cluster.ThreadRecord
+	if err := json.NewDecoder(updateThreadResp.Body).Decode(&patchedThread); err != nil {
+		t.Fatalf("decode patched thread: %v", err)
+	}
+	if !patchedThread.Resolved || string(patchedThread.Metadata) != `{"anchor":"shape-2"}` {
+		t.Fatalf("unexpected patched thread response: %+v", patchedThread)
+	}
+	assertCommentEvent(t, store.publishedEvents, 3, roomengine.CommentThreadUpdated, roomengine.CommentEventTypeThreadUpdated, "thread-1", "")
+
+	deleteThreadResp := performAdminRequest(handler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if deleteThreadResp.Code != http.StatusNoContent {
+		t.Fatalf("expected delete thread 204, got %d body=%q", deleteThreadResp.Code, deleteThreadResp.Body.String())
+	}
+	assertCommentEvent(t, store.publishedEvents, 4, roomengine.CommentThreadDeleted, roomengine.CommentEventTypeThreadDeleted, "thread-1", "")
 
 	generatedStore := &fakeAdminStore{
 		addCommentThread: cluster.ThreadRecord{ID: "thread-1", RoomID: "tenant-a:room-1"},
@@ -1624,6 +1668,18 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected no-store update comment 503, got %d", resp.Code)
 	}
+	resp = performAdminRequest(noStoreHandler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected no-store get thread 503, got %d", resp.Code)
+	}
+	resp = performAdminRequest(noStoreHandler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{"resolved":true}`)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected no-store update thread 503, got %d", resp.Code)
+	}
+	resp = performAdminRequest(noStoreHandler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected no-store delete thread 503, got %d", resp.Code)
+	}
 
 	for _, tc := range []struct {
 		method string
@@ -1632,6 +1688,9 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/v1/rooms/tenant-a%3Aroom-1/threads"},
 		{method: http.MethodPost, path: "/v1/rooms/tenant-a%3Aroom-1/threads", body: `{"comment":{"userId":"user-1","body":{}}}`},
+		{method: http.MethodGet, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1"},
+		{method: http.MethodPatch, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", body: `{"resolved":true}`},
+		{method: http.MethodDelete, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1"},
 		{method: http.MethodPost, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", body: `{"userId":"user-1","body":{}}`},
 		{method: http.MethodPatch, path: "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments/comment-1", body: `{"metadata":{}}`},
 	} {
@@ -1646,6 +1705,10 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	resp = performAdminRequest(handler, token, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/threads", "")
 	if resp.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected threads PUT 405, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected thread POST 405, got %d", resp.Code)
 	}
 	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", "")
 	if resp.Code != http.StatusMethodNotAllowed {
@@ -1698,6 +1761,51 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 		t.Fatalf("expected thread list failure 500, got %d", resp.Code)
 	}
 	store.listThreadsErr = nil
+
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected missing thread get 404, got %d", resp.Code)
+	}
+	store.getThreadErr = errors.New("get thread failed")
+	resp = performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected get thread failure 500, got %d", resp.Code)
+	}
+	store.getThreadErr = nil
+
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed update-thread body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected empty update-thread body 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{"metadata":[]}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid update-thread metadata 400, got %d", resp.Code)
+	}
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{"resolved":true}`)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected missing update thread 404, got %d", resp.Code)
+	}
+	store.updateThreadErr = errors.New("update thread failed")
+	resp = performAdminRequest(handler, token, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{"resolved":true}`)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected update thread failure 500, got %d", resp.Code)
+	}
+	store.updateThreadErr = nil
+
+	resp = performAdminRequest(handler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected missing delete thread 404, got %d", resp.Code)
+	}
+	store.deleteThreadErr = errors.New("delete thread failed")
+	resp = performAdminRequest(handler, token, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected delete thread failure 500, got %d", resp.Code)
+	}
+	store.deleteThreadErr = nil
 
 	resp = performAdminRequest(handler, token, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-1","userId":"user-1","body":{}}`)
 	if resp.Code != http.StatusNotFound {
@@ -1757,6 +1865,18 @@ func TestAdminThreadErrorBranches(t *testing.T) {
 	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", `{"id":"thread-1","comment":{"id":"comment-1","userId":"user-1","body":{}}}`)
 	if resp.Code != http.StatusForbidden {
 		t.Fatalf("expected create thread forbidden 403, got %d", resp.Code)
+	}
+	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected get thread forbidden 403, got %d", resp.Code)
+	}
+	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodPatch, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", `{"resolved":true}`)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected update thread forbidden 403, got %d", resp.Code)
+	}
+	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodDelete, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1", "")
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected delete thread forbidden 403, got %d", resp.Code)
 	}
 	resp = performAdminRequest(forbiddenHandler, forbiddenToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads/thread-1/comments", `{"id":"comment-1","userId":"user-1","body":{}}`)
 	if resp.Code != http.StatusForbidden {
@@ -3023,8 +3143,19 @@ type fakeAdminStore struct {
 	createdThread      cluster.ThreadRecord
 	createThreadRecord cluster.ThreadRecord
 	createThreadErr    error
+	getThreadRecord    cluster.ThreadRecord
+	getThreadErr       error
 	listThreads        []cluster.ThreadRecord
 	listThreadsErr     error
+	updatedThread      struct {
+		Room     string
+		ThreadID string
+		Update   cluster.ThreadUpdate
+	}
+	updateThreadRecord cluster.ThreadRecord
+	updateThreadErr    error
+	deleteThreadRecord cluster.ThreadRecord
+	deleteThreadErr    error
 	addedComment       cluster.CommentRecord
 	addCommentThread   cluster.ThreadRecord
 	addCommentErr      error
@@ -3237,6 +3368,39 @@ func (s *fakeAdminStore) ListThreads(context.Context, string) ([]cluster.ThreadR
 		return nil, s.listThreadsErr
 	}
 	return s.listThreads, nil
+}
+
+func (s *fakeAdminStore) GetThread(context.Context, string, string) (cluster.ThreadRecord, error) {
+	if s.getThreadErr != nil {
+		return cluster.ThreadRecord{}, s.getThreadErr
+	}
+	if s.getThreadRecord.ID != "" {
+		return s.getThreadRecord, nil
+	}
+	return cluster.ThreadRecord{}, cluster.ErrThreadNotFound
+}
+
+func (s *fakeAdminStore) UpdateThread(_ context.Context, room string, threadID string, update cluster.ThreadUpdate) (cluster.ThreadRecord, error) {
+	if s.updateThreadErr != nil {
+		return cluster.ThreadRecord{}, s.updateThreadErr
+	}
+	s.updatedThread.Room = room
+	s.updatedThread.ThreadID = threadID
+	s.updatedThread.Update = update
+	if s.updateThreadRecord.ID != "" {
+		return s.updateThreadRecord, nil
+	}
+	return cluster.ThreadRecord{}, cluster.ErrThreadNotFound
+}
+
+func (s *fakeAdminStore) DeleteThread(context.Context, string, string) (cluster.ThreadRecord, error) {
+	if s.deleteThreadErr != nil {
+		return cluster.ThreadRecord{}, s.deleteThreadErr
+	}
+	if s.deleteThreadRecord.ID != "" {
+		return s.deleteThreadRecord, nil
+	}
+	return cluster.ThreadRecord{}, cluster.ErrThreadNotFound
 }
 
 func (s *fakeAdminStore) AddComment(_ context.Context, _ string, _ string, comment cluster.CommentRecord) (cluster.ThreadRecord, error) {

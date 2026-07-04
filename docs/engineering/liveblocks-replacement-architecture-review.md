@@ -54,12 +54,12 @@ Implemented:
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
-- Advanced room search/filtering beyond prefix/cursor listing.
-- Realtime client APIs for Liveblocks-style typed storage mutation/subscription beyond server-side typed-envelope validation.
-- Mentions, comment reactions/metadata updates, and webhooks.
+- Advanced thread search/subscription/read-state workflows and hosted comments UI.
 - Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
   product features beyond the package-level Yjs binding, selection presence,
   remote-selection, and cleanup helpers.
+- Managed version history beyond local ACK-backed storage undo/redo and Yjs
+  compaction snapshots.
 - Room-affine placement, load-shedding, and Yjs compactor retention alerts
   tuned against production traffic.
 - Full resumable session protocol and delivery acks for non-Yjs events. Redis
@@ -120,6 +120,9 @@ Recommended target shape:
 - Added Redis-backed room thread/comment APIs with `comments:` scoped
   authorization, room-grant fallback, object-rooted comment bodies/metadata,
   and durable per-room thread records.
+- Added thread lifecycle APIs for single-thread reads, metadata/resolved updates,
+  deletion, realtime thread update/delete events, webhooks, SDK helpers, and
+  React action hooks.
 - Added Redis-backed inbox notifications, notification settings, and room
   subscription settings with `notifications:` scoped authorization and durable
   read/reset state.

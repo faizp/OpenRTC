@@ -5,6 +5,7 @@ import type {
   OpenRTCAdminRoomSubscriptionSettings,
   OpenRTCAdminThread,
   OpenRTCAdminThreadInput,
+  OpenRTCAdminThreadUpdate,
   OpenRTCCursorPeer,
   OpenRTCEvent,
   OpenRTCLiveObject,
@@ -34,12 +35,18 @@ import {
   useCreateThread,
   useDeleteAllInboxNotifications,
   useDeleteInboxNotification,
+  useDeleteThread,
   useEditComment,
   useEditCommentMetadata,
+  useEditThread,
+  useEditThreadMetadata,
   useEnterRoom,
   useErrorListener,
+  useGetThread,
   useLostConnectionListener,
   useMarkInboxNotificationAsRead,
+  useMarkThreadResolved,
+  useMarkThreadUnresolved,
   useMyPresence,
   useMyPresenceSelector,
   useMutation,
@@ -239,7 +246,13 @@ function StorageIntegrationTypes() {
 
 function ProductSurfaceActionTypes() {
   const roomId = "tenant-a:canvas-1";
+  const getThread = useGetThread(roomId);
   const createThread = useCreateThread(roomId);
+  const editThread = useEditThread(roomId);
+  const editThreadMetadata = useEditThreadMetadata(roomId);
+  const markThreadResolved = useMarkThreadResolved(roomId);
+  const markThreadUnresolved = useMarkThreadUnresolved(roomId);
+  const deleteThread = useDeleteThread(roomId);
   const createComment = useCreateComment(roomId);
   const editComment = useEditComment(roomId);
   const editCommentMetadata = useEditCommentMetadata(roomId);
@@ -260,7 +273,19 @@ function ProductSurfaceActionTypes() {
       body: { type: "text", text: "Review" },
     },
   };
+  const threadUpdate: OpenRTCAdminThreadUpdate = {
+    metadata: { status: "resolved" },
+    resolved: true,
+  };
+  expectType<Promise<OpenRTCAdminThread>>(getThread("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(createThread(threadInput));
+  expectType<Promise<OpenRTCAdminThread>>(editThread("thread-1", threadUpdate));
+  expectType<Promise<OpenRTCAdminThread>>(
+    editThreadMetadata({ threadId: "thread-1", metadata: { status: "open" } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(markThreadResolved("thread-1"));
+  expectType<Promise<OpenRTCAdminThread>>(markThreadUnresolved("thread-1"));
+  expectType<Promise<void>>(deleteThread("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(
     createComment("thread-1", { userId: "user-1", body: { type: "text", text: "Next" } }),
   );
@@ -359,6 +384,16 @@ function RoomContextIntegrationTypes() {
   expectType<Promise<OpenRTCAdminThread>>(
     boundRoom.useCreateThread()({ comment: { userId: "user-1", body: { type: "text", text: "Review" } } }),
   );
+  expectType<Promise<OpenRTCAdminThread>>(boundRoom.useGetThread()("thread-1"));
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useEditThread()("thread-1", { metadata: { status: "resolved" }, resolved: true }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useEditThreadMetadata()({ threadId: "thread-1", metadata: { status: "open" } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(boundRoom.useMarkThreadResolved()("thread-1"));
+  expectType<Promise<OpenRTCAdminThread>>(boundRoom.useMarkThreadUnresolved()("thread-1"));
+  expectType<Promise<void>>(boundRoom.useDeleteThread()("thread-1"));
   expectType<Promise<OpenRTCAdminThread>>(
     boundRoom.useCreateComment()("thread-1", { userId: "user-1", body: { type: "text", text: "Reply" } }),
   );

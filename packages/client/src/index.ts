@@ -467,12 +467,19 @@ export interface OpenRTCEvent {
 
 export const OPENRTC_COMMENT_EVENTS = {
   threadCreated: "openrtc.comments.thread.created",
+  threadUpdated: "openrtc.comments.thread.updated",
+  threadDeleted: "openrtc.comments.thread.deleted",
   commentCreated: "openrtc.comments.comment.created",
   commentUpdated: "openrtc.comments.comment.updated",
 } as const;
 
 export type OpenRTCCommentEventName = (typeof OPENRTC_COMMENT_EVENTS)[keyof typeof OPENRTC_COMMENT_EVENTS];
-export type OpenRTCCommentEventType = "thread-created" | "comment-created" | "comment-updated";
+export type OpenRTCCommentEventType =
+  | "thread-created"
+  | "thread-updated"
+  | "thread-deleted"
+  | "comment-created"
+  | "comment-updated";
 
 export const OPENRTC_NOTIFICATION_EVENTS = {
   inboxCreated: "openrtc.notifications.inbox.created",
@@ -1079,10 +1086,20 @@ export function upsertCommentThread(
   return next.sort(compareAdminThreads);
 }
 
+export function removeCommentThread(
+  threads: readonly OpenRTCAdminThread[],
+  threadId: string,
+): OpenRTCAdminThread[] {
+  return sortCommentThreads(threads.filter((thread) => thread.id !== threadId));
+}
+
 export function applyCommentEventToThreads(
   threads: readonly OpenRTCAdminThread[],
   event: OpenRTCCommentEvent,
 ): OpenRTCAdminThread[] {
+  if (event.type === "thread-deleted") {
+    return removeCommentThread(threads, event.threadId);
+  }
   return upsertCommentThread(threads, event.thread);
 }
 
@@ -1213,6 +1230,11 @@ export interface OpenRTCAdminThreadInput {
   id?: string;
   metadata?: unknown;
   comment: OpenRTCAdminCommentInput;
+}
+
+export interface OpenRTCAdminThreadUpdate {
+  metadata?: unknown;
+  resolved?: boolean;
 }
 
 export interface OpenRTCAdminCommentInput {
@@ -3740,11 +3762,44 @@ export class OpenRTCAdminClient {
     return this.request<OpenRTCListResponse<OpenRTCAdminThread>>(`/v1/rooms/${encodeURIComponent(room)}/threads`);
   }
 
+  getThread(room: string, threadId: string): Promise<OpenRTCAdminThread> {
+    return this.request<OpenRTCAdminThread>(
+      `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}`,
+    );
+  }
+
   createThread(room: string, thread: OpenRTCAdminThreadInput): Promise<OpenRTCAdminThread> {
     return this.request<OpenRTCAdminThread>(`/v1/rooms/${encodeURIComponent(room)}/threads`, {
       method: "POST",
       body: thread,
       okStatuses: [201],
+    });
+  }
+
+  updateThread(room: string, threadId: string, update: OpenRTCAdminThreadUpdate): Promise<OpenRTCAdminThread> {
+    return this.request<OpenRTCAdminThread>(
+      `/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}`,
+      { method: "PATCH", body: update },
+    );
+  }
+
+  editThreadMetadata(room: string, threadId: string, metadata: unknown): Promise<OpenRTCAdminThread> {
+    return this.updateThread(room, threadId, { metadata });
+  }
+
+  markThreadResolved(room: string, threadId: string): Promise<OpenRTCAdminThread> {
+    return this.updateThread(room, threadId, { resolved: true });
+  }
+
+  markThreadUnresolved(room: string, threadId: string): Promise<OpenRTCAdminThread> {
+    return this.updateThread(room, threadId, { resolved: false });
+  }
+
+  async deleteThread(room: string, threadId: string): Promise<void> {
+    await this.request<void>(`/v1/rooms/${encodeURIComponent(room)}/threads/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+      empty: true,
+      okStatuses: [204],
     });
   }
 
@@ -5125,7 +5180,7 @@ function asOpenRTCCommentEvent(event: OpenRTCEvent): OpenRTCCommentEvent | undef
   const rawComment = payload["comment"];
   const comment = isRecordObject(rawComment) ? (rawComment as unknown as OpenRTCAdminComment) : undefined;
   const commentId = optionalString(payload["commentId"]) ?? optionalString(comment?.id);
-  if (type !== "thread-created" && !commentId) {
+  if ((type === "comment-created" || type === "comment-updated") && !commentId) {
     return undefined;
   }
   return {
@@ -5134,9 +5189,9 @@ function asOpenRTCCommentEvent(event: OpenRTCEvent): OpenRTCCommentEvent | undef
     type,
     roomId,
     threadId,
-    thread,
+    thread: cloneAdminThread(thread),
     ...(commentId ? { commentId } : {}),
-    ...(comment ? { comment } : {}),
+    ...(comment ? { comment: cloneAdminComment(comment) } : {}),
     ...(event.traceId ? { traceId: event.traceId } : {}),
     ...(event.sequence !== undefined ? { sequence: event.sequence } : {}),
   };
@@ -5146,6 +5201,10 @@ function commentEventTypeForName(eventName: string): OpenRTCCommentEventType | u
   switch (eventName) {
     case OPENRTC_COMMENT_EVENTS.threadCreated:
       return "thread-created";
+    case OPENRTC_COMMENT_EVENTS.threadUpdated:
+      return "thread-updated";
+    case OPENRTC_COMMENT_EVENTS.threadDeleted:
+      return "thread-deleted";
     case OPENRTC_COMMENT_EVENTS.commentCreated:
       return "comment-created";
     case OPENRTC_COMMENT_EVENTS.commentUpdated:

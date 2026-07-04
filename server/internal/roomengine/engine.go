@@ -36,6 +36,8 @@ const (
 	RoomDeleted = "openrtc.rooms.deleted"
 
 	CommentThreadCreated = "openrtc.comments.thread.created"
+	CommentThreadUpdated = "openrtc.comments.thread.updated"
+	CommentThreadDeleted = "openrtc.comments.thread.deleted"
 	CommentCreated       = "openrtc.comments.comment.created"
 	CommentUpdated       = "openrtc.comments.comment.updated"
 
@@ -54,6 +56,8 @@ const (
 	RoomEventTypeDeleted = "room-deleted"
 
 	CommentEventTypeThreadCreated  = "thread-created"
+	CommentEventTypeThreadUpdated  = "thread-updated"
+	CommentEventTypeThreadDeleted  = "thread-deleted"
 	CommentEventTypeCommentCreated = "comment-created"
 	CommentEventTypeCommentUpdated = "comment-updated"
 
@@ -786,7 +790,7 @@ func RoomEventType(eventName string) string {
 
 func IsCommentEvent(eventName string) bool {
 	switch eventName {
-	case CommentThreadCreated, CommentCreated, CommentUpdated:
+	case CommentThreadCreated, CommentThreadUpdated, CommentThreadDeleted, CommentCreated, CommentUpdated:
 		return true
 	default:
 		return false
@@ -797,6 +801,10 @@ func CommentEventType(eventName string) string {
 	switch eventName {
 	case CommentThreadCreated:
 		return CommentEventTypeThreadCreated
+	case CommentThreadUpdated:
+		return CommentEventTypeThreadUpdated
+	case CommentThreadDeleted:
+		return CommentEventTypeThreadDeleted
 	case CommentCreated:
 		return CommentEventTypeCommentCreated
 	case CommentUpdated:

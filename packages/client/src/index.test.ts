@@ -17,6 +17,7 @@ import {
   applyCommentEventsToThreads,
   applyNotificationDeltaToInbox,
   applyNotificationDeltasToInbox,
+  removeCommentThread,
   addCommentMention,
   addCommentReaction,
   createLiveStorageMutation,
@@ -306,6 +307,12 @@ const updatedEarlierThread: OpenRTCAdminThread = {
   ],
   updatedAt: "2026-07-04T00:03:00.000Z",
 };
+const resolvedEarlierThread: OpenRTCAdminThread = {
+  ...updatedEarlierThread,
+  resolved: true,
+  metadata: { status: "resolved" },
+  updatedAt: "2026-07-04T00:04:00.000Z",
+};
 const threadCreatedEvent: OpenRTCCommentEvent = {
   room: "tenant-a:room-1",
   event: OPENRTC_COMMENT_EVENTS.threadCreated,
@@ -326,11 +333,36 @@ const commentUpdatedEvent: OpenRTCCommentEvent = {
   thread: updatedEarlierThread,
   comment: updatedEarlierThread.comments[0]!,
 };
+const threadUpdatedEvent: OpenRTCCommentEvent = {
+  room: "tenant-a:room-1",
+  event: OPENRTC_COMMENT_EVENTS.threadUpdated,
+  type: "thread-updated",
+  roomId: "tenant-a:room-1",
+  threadId: "thread-1",
+  thread: resolvedEarlierThread,
+};
+const threadDeletedEvent: OpenRTCCommentEvent = {
+  room: "tenant-a:room-1",
+  event: OPENRTC_COMMENT_EVENTS.threadDeleted,
+  type: "thread-deleted",
+  roomId: "tenant-a:room-1",
+  threadId: "thread-1",
+  thread: resolvedEarlierThread,
+};
 assert.deepEqual(sortCommentThreads([baseThread, earlierThread]).map((thread) => thread.id), ["thread-1", "thread-2"]);
-const materializedThreads = applyCommentEventsToThreads([baseThread], [threadCreatedEvent, commentUpdatedEvent]);
+const materializedThreads = applyCommentEventsToThreads([baseThread], [
+  threadCreatedEvent,
+  commentUpdatedEvent,
+  threadUpdatedEvent,
+]);
 assert.deepEqual(materializedThreads.map((thread) => thread.id), ["thread-1", "thread-2"]);
 assert.deepEqual(materializedThreads[0]?.comments[0]?.body, { text: "first edited" });
-assert.deepEqual(applyCommentEventToThreads(materializedThreads, commentUpdatedEvent), materializedThreads);
+assert.equal(materializedThreads[0]?.resolved, true);
+assert.deepEqual(applyCommentEventToThreads(materializedThreads, threadUpdatedEvent), materializedThreads);
+assert.deepEqual(applyCommentEventToThreads(materializedThreads, threadDeletedEvent).map((thread) => thread.id), [
+  "thread-2",
+]);
+assert.deepEqual(removeCommentThread(materializedThreads, "thread-1").map((thread) => thread.id), ["thread-2"]);
 updatedEarlierThread.comments[0]!.reactions![0]!.emoji = "mutated";
 assert.deepEqual(materializedThreads[0]?.comments[0]?.reactions, [{ emoji: "+1", userId: "user-2" }]);
 
@@ -2648,6 +2680,28 @@ const adminClient = new OpenRTCAdminClient({
         JSON.stringify({ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [], resolved: false }),
       );
     }
+    if (input.endsWith("/threads/thread-1") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({ type: "thread", id: "thread-1", roomId: "tenant-a:room-1", comments: [], resolved: false }),
+      );
+    }
+    if (input.endsWith("/threads/thread-1") && init?.method === "PATCH") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          type: "thread",
+          id: "thread-1",
+          roomId: "tenant-a:room-1",
+          comments: [],
+          resolved: JSON.parse(init.body ?? "{}").resolved ?? false,
+          metadata: JSON.parse(init.body ?? "{}").metadata ?? {},
+        }),
+      );
+    }
+    if (input.endsWith("/threads/thread-1") && init?.method === "DELETE") {
+      return fakeResponse(204, "");
+    }
     if (input.endsWith("/comments")) {
       return fakeResponse(
         201,
@@ -2730,6 +2784,33 @@ assert.equal(thread.id, "thread-1");
 assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
   comment: { userId: "user-1", body: { type: "text", text: "hello" }, mentions: ["user-2"] },
 });
+
+const fetchedThread = await adminClient.getThread("tenant-a:room-1", "thread-1");
+assert.equal(fetchedThread.id, "thread-1");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1");
+
+const lifecycleThread = await adminClient.updateThread("tenant-a:room-1", "thread-1", {
+  metadata: { status: "resolved" },
+  resolved: true,
+});
+assert.equal(lifecycleThread.resolved, true);
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
+  metadata: { status: "resolved" },
+  resolved: true,
+});
+
+await adminClient.editThreadMetadata("tenant-a:room-1", "thread-1", { status: "open" });
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { metadata: { status: "open" } });
+
+await adminClient.markThreadResolved("tenant-a:room-1", "thread-1");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { resolved: true });
+
+await adminClient.markThreadUnresolved("tenant-a:room-1", "thread-1");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { resolved: false });
+
+await adminClient.deleteThread("tenant-a:room-1", "thread-1");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/rooms/tenant-a%3Aroom-1/threads/thread-1");
+assert.equal(adminCalls.at(-1)?.init?.method, "DELETE");
 
 const updatedThread = await adminClient.addComment("tenant-a:room-1", "thread-1", {
   userId: "user-2",

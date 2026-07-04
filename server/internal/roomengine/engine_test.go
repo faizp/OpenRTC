@@ -673,7 +673,7 @@ func TestNewClusterEventPlan(t *testing.T) {
 	if IsRoomEvent("doc.update") {
 		t.Fatalf("doc.update should not be treated as a room event")
 	}
-	for _, eventName := range []string{CommentThreadCreated, CommentCreated, CommentUpdated} {
+	for _, eventName := range []string{CommentThreadCreated, CommentThreadUpdated, CommentThreadDeleted, CommentCreated, CommentUpdated} {
 		if !IsCommentEvent(eventName) {
 			t.Fatalf("expected comment event %q", eventName)
 		}

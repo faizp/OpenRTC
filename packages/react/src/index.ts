@@ -43,6 +43,7 @@ import {
   type OpenRTCAdminRoomSubscriptionSettingsInput,
   type OpenRTCAdminThread,
   type OpenRTCAdminThreadInput,
+  type OpenRTCAdminThreadUpdate,
   type OpenRTCCursor,
   type OpenRTCCursorOptions,
   type OpenRTCCursorPeer,
@@ -141,6 +142,11 @@ export interface CommentMentionActionInput {
 export interface EditCommentMetadataInput {
   threadId: string;
   commentId: string;
+  metadata: unknown;
+}
+
+export interface EditThreadMetadataInput {
+  threadId: string;
   metadata: unknown;
 }
 
@@ -252,7 +258,17 @@ export interface OpenRTCRoomContextHooks {
   useThreads(options?: RoomThreadsOptions): OpenRTCAdminThread[];
   useThread(threadId: string, options?: RoomThreadsOptions): OpenRTCAdminThread | undefined;
   useCommentEvents(limit?: number): OpenRTCCommentEvent[];
+  useGetThread(options?: OpenRTCAdminActionOptions): (threadId: string) => Promise<OpenRTCAdminThread>;
   useCreateThread(options?: OpenRTCAdminActionOptions): (thread: OpenRTCAdminThreadInput) => Promise<OpenRTCAdminThread>;
+  useEditThread(
+    options?: OpenRTCAdminActionOptions,
+  ): (threadId: string, update: OpenRTCAdminThreadUpdate) => Promise<OpenRTCAdminThread>;
+  useEditThreadMetadata(
+    options?: OpenRTCAdminActionOptions,
+  ): (input: EditThreadMetadataInput) => Promise<OpenRTCAdminThread>;
+  useMarkThreadResolved(options?: OpenRTCAdminActionOptions): (threadId: string) => Promise<OpenRTCAdminThread>;
+  useMarkThreadUnresolved(options?: OpenRTCAdminActionOptions): (threadId: string) => Promise<OpenRTCAdminThread>;
+  useDeleteThread(options?: OpenRTCAdminActionOptions): (threadId: string) => Promise<void>;
   useCreateComment(
     options?: OpenRTCAdminActionOptions,
   ): (threadId: string, comment: OpenRTCAdminCommentInput) => Promise<OpenRTCAdminThread>;
@@ -467,7 +483,16 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
     useThreads: (options = {}) => useRoomThreads(useRoomFromContext(context, "useThreads").id, options),
     useThread: (threadId, options = {}) => useRoomThread(useRoomFromContext(context, "useThread").id, threadId, options),
     useCommentEvents: (limit = 200) => useRoomCommentEvents(useRoomFromContext(context, "useCommentEvents").id, limit),
+    useGetThread: (options = {}) => useGetThread(useRoomFromContext(context, "useGetThread").id, options),
     useCreateThread: (options = {}) => useCreateThread(useRoomFromContext(context, "useCreateThread").id, options),
+    useEditThread: (options = {}) => useEditThread(useRoomFromContext(context, "useEditThread").id, options),
+    useEditThreadMetadata: (options = {}) =>
+      useEditThreadMetadata(useRoomFromContext(context, "useEditThreadMetadata").id, options),
+    useMarkThreadResolved: (options = {}) =>
+      useMarkThreadResolved(useRoomFromContext(context, "useMarkThreadResolved").id, options),
+    useMarkThreadUnresolved: (options = {}) =>
+      useMarkThreadUnresolved(useRoomFromContext(context, "useMarkThreadUnresolved").id, options),
+    useDeleteThread: (options = {}) => useDeleteThread(useRoomFromContext(context, "useDeleteThread").id, options),
     useCreateComment: (options = {}) => useCreateComment(useRoomFromContext(context, "useCreateComment").id, options),
     useEditComment: (options = {}) => useEditComment(useRoomFromContext(context, "useEditComment").id, options),
     useEditCommentMetadata: (options = {}) =>
@@ -1154,12 +1179,66 @@ export function useRoomThread(
   return useMemo(() => threads.find((thread) => thread.id === threadId), [threads, threadId]);
 }
 
+export function useGetThread(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useGetThread");
+  return useCallback((threadId: string) => admin.getThread(room, threadId), [admin, room]);
+}
+
 export function useCreateThread(
   room: string,
   options: OpenRTCAdminActionOptions = {},
 ): (thread: OpenRTCAdminThreadInput) => Promise<OpenRTCAdminThread> {
   const admin = useAdminActionClient(options, "useCreateThread");
   return useCallback((thread: OpenRTCAdminThreadInput) => admin.createThread(room, thread), [admin, room]);
+}
+
+export function useEditThread(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string, update: OpenRTCAdminThreadUpdate) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useEditThread");
+  return useCallback(
+    (threadId: string, update: OpenRTCAdminThreadUpdate) => admin.updateThread(room, threadId, update),
+    [admin, room],
+  );
+}
+
+export function useEditThreadMetadata(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (input: EditThreadMetadataInput) => Promise<OpenRTCAdminThread> {
+  const editThread = useEditThread(room, options);
+  return useCallback(
+    (input: EditThreadMetadataInput) => editThread(input.threadId, { metadata: input.metadata }),
+    [editThread],
+  );
+}
+
+export function useMarkThreadResolved(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useMarkThreadResolved");
+  return useCallback((threadId: string) => admin.markThreadResolved(room, threadId), [admin, room]);
+}
+
+export function useMarkThreadUnresolved(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useMarkThreadUnresolved");
+  return useCallback((threadId: string) => admin.markThreadUnresolved(room, threadId), [admin, room]);
+}
+
+export function useDeleteThread(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string) => Promise<void> {
+  const admin = useAdminActionClient(options, "useDeleteThread");
+  return useCallback((threadId: string) => admin.deleteThread(room, threadId), [admin, room]);
 }
 
 export function useCreateComment(

@@ -77,6 +77,11 @@ type ThreadCreateRequest struct {
 	Comment  CommentCreateRequest `json:"comment"`
 }
 
+type ThreadUpdateRequest struct {
+	Metadata *json.RawMessage `json:"metadata,omitempty"`
+	Resolved *bool            `json:"resolved,omitempty"`
+}
+
 type CommentCreateRequest struct {
 	ID        string                    `json:"id,omitempty"`
 	UserID    string                    `json:"userId"`
@@ -514,6 +519,10 @@ func (s *Service) handleThreadSubresource(w http.ResponseWriter, r *http.Request
 		s.writeError(w, openrtcerr.CodeBadRequest, err.Error(), "", http.StatusBadRequest)
 		return
 	}
+	if child == "" {
+		s.handleThread(w, r, room, threadID)
+		return
+	}
 	if child == "comments" {
 		s.handleAddComment(w, r, room, threadID)
 		return
@@ -528,6 +537,19 @@ func (s *Service) handleThreadSubresource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.writeError(w, openrtcerr.CodeBadRequest, "unsupported thread subresource", "", http.StatusBadRequest)
+}
+
+func (s *Service) handleThread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetThread(w, r, room, threadID)
+	case http.MethodPatch:
+		s.handleUpdateThread(w, r, room, threadID)
+	case http.MethodDelete:
+		s.handleDeleteThread(w, r, room, threadID)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Service) handleRoomUserSubresource(w http.ResponseWriter, r *http.Request, room string, subresource string) {
@@ -563,6 +585,32 @@ func (s *Service) handleListThreads(w http.ResponseWriter, r *http.Request, room
 		return
 	}
 	writeJSON(w, http.StatusOK, threadListResponse{Data: threads})
+}
+
+func (s *Service) handleGetThread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.allowsRoomAction(r.Context(), claims, "comments:read", room) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+	thread, err := s.store.GetThread(r.Context(), room, threadID)
+	if errors.Is(err, cluster.ErrThreadNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, "thread not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
 }
 
 func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, room string) {
@@ -616,6 +664,75 @@ func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, roo
 		return
 	}
 	writeJSON(w, http.StatusCreated, thread)
+}
+
+func (s *Service) handleUpdateThread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.allowsRoomAction(r.Context(), claims, "comments:write", room) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+	var request ThreadUpdateRequest
+	if err := decodeRequest(w, r, s.cfg.Limits.EnvelopeMaxBytes, &request); err != nil {
+		s.writeError(w, openrtcerr.CodeBadRequest, "request body must be valid JSON", "", http.StatusBadRequest)
+		return
+	}
+	if parseErr := validateThreadUpdateRequest(request, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
+		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
+		return
+	}
+	thread, err := s.store.UpdateThread(r.Context(), room, threadID, threadUpdateFromRequest(request))
+	if errors.Is(err, cluster.ErrThreadNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, "thread not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.publishCommentEvent(r.Context(), roomengine.CommentThreadUpdated, thread, nil); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *Service) handleDeleteThread(w http.ResponseWriter, r *http.Request, room string, threadID string) {
+	claims, err := s.authenticate(r)
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeAuthInvalid, "invalid bearer token", "", http.StatusUnauthorized)
+		return
+	}
+	if s.store == nil {
+		s.writeError(w, openrtcerr.CodeInternal, "thread APIs require redis backing", "", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.allowsRoomAction(r.Context(), claims, "comments:write", room) {
+		s.writeError(w, openrtcerr.CodeRoomForbidden, "room comments are not permitted", "", http.StatusForbidden)
+		return
+	}
+	thread, err := s.store.DeleteThread(r.Context(), room, threadID)
+	if errors.Is(err, cluster.ErrThreadNotFound) {
+		s.writeError(w, openrtcerr.CodeThreadNotFound, "thread not found", "", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	if err := s.publishCommentEvent(r.Context(), roomengine.CommentThreadDeleted, thread, nil); err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room string, threadID string) {
@@ -1617,6 +1734,19 @@ func validateThreadRequest(threadID string, metadata json.RawMessage, comment Co
 	return validateCommentRequest(comment, maxBytes)
 }
 
+func validateThreadUpdateRequest(request ThreadUpdateRequest, maxBytes int) *protocol.ParseError {
+	if request.Metadata == nil && request.Resolved == nil {
+		return &protocol.ParseError{Code: openrtcerr.CodeBadRequest, Message: "thread update must include metadata or resolved"}
+	}
+	if request.Metadata != nil {
+		if err := validateMetadata(*request.Metadata, false, maxBytes); err != nil {
+			err.Message = "thread metadata " + err.Message
+			return err
+		}
+	}
+	return nil
+}
+
 func validateInboxNotificationRequest(request InboxNotificationTriggerRequest, maxBytes int) *protocol.ParseError {
 	if err := protocol.ValidateConnectionID(request.ID); err != nil {
 		return err.(*protocol.ParseError)
@@ -1906,6 +2036,19 @@ func commentUpdateFromRequest(request CommentUpdateRequest) cluster.CommentUpdat
 	if request.Reactions != nil {
 		update.Reactions = append([]cluster.CommentReaction(nil), (*request.Reactions)...)
 		update.ReactionsSet = true
+	}
+	return update
+}
+
+func threadUpdateFromRequest(request ThreadUpdateRequest) cluster.ThreadUpdate {
+	update := cluster.ThreadUpdate{}
+	if request.Metadata != nil {
+		update.Metadata = normalizedMetadata(*request.Metadata)
+		update.MetadataSet = true
+	}
+	if request.Resolved != nil {
+		update.Resolved = *request.Resolved
+		update.ResolvedSet = true
 	}
 	return update
 }

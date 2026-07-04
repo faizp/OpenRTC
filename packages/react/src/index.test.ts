@@ -15,10 +15,16 @@ import {
   useCurrentRoom,
   useDeleteAllInboxNotifications,
   useDeleteInboxNotification,
+  useDeleteThread,
   useEditComment,
   useEditCommentMetadata,
+  useEditThread,
+  useEditThreadMetadata,
+  useGetThread,
   useHistory,
   useMarkInboxNotificationAsRead,
+  useMarkThreadResolved,
+  useMarkThreadUnresolved,
   useOpenRTCAdmin,
   useMutation,
   useNotificationEvents,
@@ -92,6 +98,12 @@ assert.equal(typeof useInboxNotifications, "function");
 assert.equal(typeof useInboxNotificationsState, "function");
 assert.equal(typeof useUnreadInboxCount, "function");
 assert.equal(typeof useCreateThread, "function");
+assert.equal(typeof useGetThread, "function");
+assert.equal(typeof useEditThread, "function");
+assert.equal(typeof useEditThreadMetadata, "function");
+assert.equal(typeof useMarkThreadResolved, "function");
+assert.equal(typeof useMarkThreadUnresolved, "function");
+assert.equal(typeof useDeleteThread, "function");
 assert.equal(typeof useCreateComment, "function");
 assert.equal(typeof useEditComment, "function");
 assert.equal(typeof useEditCommentMetadata, "function");
@@ -126,6 +138,12 @@ assert.equal(typeof roomContext.useThreadsState, "function");
 assert.equal(typeof roomContext.useThread, "function");
 assert.equal(typeof roomContext.useCommentEvents, "function");
 assert.equal(typeof roomContext.useCreateThread, "function");
+assert.equal(typeof roomContext.useGetThread, "function");
+assert.equal(typeof roomContext.useEditThread, "function");
+assert.equal(typeof roomContext.useEditThreadMetadata, "function");
+assert.equal(typeof roomContext.useMarkThreadResolved, "function");
+assert.equal(typeof roomContext.useMarkThreadUnresolved, "function");
+assert.equal(typeof roomContext.useDeleteThread, "function");
 assert.equal(typeof roomContext.useCreateComment, "function");
 assert.equal(typeof roomContext.useEditComment, "function");
 assert.equal(typeof roomContext.useEditCommentMetadata, "function");

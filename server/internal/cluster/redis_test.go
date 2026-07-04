@@ -1109,6 +1109,28 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	if len(cleared.Comments[0].Mentions) != 0 || len(cleared.Comments[0].Reactions) != 0 {
 		t.Fatalf("expected cleared mentions/reactions, got %+v", cleared.Comments[0])
 	}
+	gotThread, err := store.GetThread(ctx, "tenant-a:room-1", "thread-1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if gotThread.ID != "thread-1" || len(gotThread.Comments) != 2 {
+		t.Fatalf("unexpected got thread: %+v", gotThread)
+	}
+	updatedThread, err := store.UpdateThread(ctx, "tenant-a:room-1", "thread-1", ThreadUpdate{
+		Metadata:    json.RawMessage(`{"x":2}`),
+		MetadataSet: true,
+		Resolved:    true,
+		ResolvedSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	if !updatedThread.Resolved || string(updatedThread.Metadata) != `{"x":2}` || updatedThread.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected updated thread: %+v", updatedThread)
+	}
+	if _, err := store.UpdateThread(ctx, "tenant-a:room-1", "missing-thread", ThreadUpdate{Resolved: true, ResolvedSet: true}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected missing thread update, got %v", err)
+	}
 	if _, err := store.AddComment(ctx, "tenant-a:room-1", "missing-thread", CommentRecord{ID: "comment-3", UserID: "user-3", Body: json.RawMessage(`{}`)}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected missing thread, got %v", err)
 	}
@@ -1123,6 +1145,22 @@ func TestRedisThreadLifecycle(t *testing.T) {
 	}
 	if _, err := store.UpdateComment(ctx, "tenant-a:room-1", "thread-1", "comment-1", CommentUpdate{BodySet: true, Body: json.RawMessage(`{`)}); err == nil {
 		t.Fatalf("expected invalid updated comment to fail")
+	}
+	deletedThread, err := store.DeleteThread(ctx, "tenant-a:room-1", "thread-1")
+	if err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+	if deletedThread.ID != "thread-1" || !deletedThread.Resolved || len(deletedThread.Comments) != 2 {
+		t.Fatalf("unexpected deleted thread snapshot: %+v", deletedThread)
+	}
+	if _, err := store.GetThread(ctx, "tenant-a:room-1", "thread-1"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected deleted thread missing, got %v", err)
+	}
+	if _, err := store.DeleteThread(ctx, "tenant-a:room-1", "thread-1"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected missing delete thread, got %v", err)
+	}
+	if _, err := store.CreateThread(ctx, "tenant-a:room-1", deletedThread); err != nil {
+		t.Fatalf("recreate deleted thread for ordering checks: %v", err)
 	}
 
 	if _, err := store.CreateThread(ctx, "tenant-a:room-1", ThreadRecord{ID: "thread-0"}); err != nil {

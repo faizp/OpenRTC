@@ -169,6 +169,13 @@ type ThreadRecord struct {
 	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
+type ThreadUpdate struct {
+	Metadata    json.RawMessage
+	MetadataSet bool
+	Resolved    bool
+	ResolvedSet bool
+}
+
 type CommentRecord struct {
 	Type      string            `json:"type"`
 	ThreadID  string            `json:"threadId"`
@@ -289,7 +296,10 @@ type Store interface {
 	DeleteRoom(ctx context.Context, room string) error
 	ListRooms(ctx context.Context, prefix string, cursor uint64, limit int) (RoomList, error)
 	CreateThread(ctx context.Context, room string, thread ThreadRecord) (ThreadRecord, error)
+	GetThread(ctx context.Context, room string, threadID string) (ThreadRecord, error)
 	ListThreads(ctx context.Context, room string) ([]ThreadRecord, error)
+	UpdateThread(ctx context.Context, room string, threadID string, update ThreadUpdate) (ThreadRecord, error)
+	DeleteThread(ctx context.Context, room string, threadID string) (ThreadRecord, error)
 	AddComment(ctx context.Context, room string, threadID string, comment CommentRecord) (ThreadRecord, error)
 	UpdateComment(ctx context.Context, room string, threadID string, commentID string, update CommentUpdate) (ThreadRecord, error)
 	CreateInboxNotification(ctx context.Context, notification InboxNotificationRecord) (InboxNotificationRecord, error)
@@ -852,6 +862,84 @@ func (s *RedisStore) ListThreads(ctx context.Context, room string) ([]ThreadReco
 		return threads[i].CreatedAt.Before(threads[j].CreatedAt)
 	})
 	return threads, nil
+}
+
+func (s *RedisStore) GetThread(ctx context.Context, room string, threadID string) (ThreadRecord, error) {
+	return s.loadThreadRecord(ctx, room, threadID)
+}
+
+func (s *RedisStore) UpdateThread(ctx context.Context, room string, threadID string, update ThreadUpdate) (ThreadRecord, error) {
+	key := roomThreadKey(room, threadID)
+	now := time.Now().UTC()
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		exists, err := tx.Exists(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if exists == 0 {
+			return ErrThreadNotFound
+		}
+		fields := map[string]any{
+			"updated_at": now.Format(time.RFC3339Nano),
+		}
+		if update.MetadataSet {
+			fields["metadata"] = string(update.Metadata)
+		}
+		if update.ResolvedSet {
+			fields["resolved"] = strconv.FormatBool(update.Resolved)
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, key, fields)
+			return nil
+		})
+		return err
+	}, key)
+	if err != nil {
+		return ThreadRecord{}, err
+	}
+	return s.loadThreadRecord(ctx, room, threadID)
+}
+
+func (s *RedisStore) DeleteThread(ctx context.Context, room string, threadID string) (ThreadRecord, error) {
+	key := roomThreadKey(room, threadID)
+	commentsKey := roomThreadCommentsKey(room, threadID)
+	var deleted ThreadRecord
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		values, err := tx.HGetAll(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if len(values) == 0 {
+			return ErrThreadNotFound
+		}
+		thread, err := decodeThreadRecord(values)
+		if err != nil {
+			return err
+		}
+		rawComments, err := tx.LRange(ctx, commentsKey, 0, -1).Result()
+		if err != nil && err != redis.Nil {
+			return err
+		}
+		thread.Comments = make([]CommentRecord, 0, len(rawComments))
+		for _, raw := range rawComments {
+			comment, err := decodeCommentRecord(raw)
+			if err != nil {
+				return err
+			}
+			thread.Comments = append(thread.Comments, comment)
+		}
+		deleted = normalizeThreadRecord(thread)
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key, commentsKey)
+			pipe.SRem(ctx, roomThreadsKey(room), threadID)
+			return nil
+		})
+		return err
+	}, key, commentsKey)
+	if err != nil {
+		return ThreadRecord{}, err
+	}
+	return deleted, nil
 }
 
 func (s *RedisStore) AddComment(ctx context.Context, room string, threadID string, comment CommentRecord) (ThreadRecord, error) {
