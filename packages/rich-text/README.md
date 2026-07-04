@@ -11,8 +11,9 @@ Use this package with:
 - `yjs` for the shared document.
 
 The helpers are intentionally adapter-shaped and do not depend on Tiptap,
-Lexical, or BlockNote packages. Install the editor packages in your app and pass
-their editor instances into the helper that matches your editor.
+Lexical, BlockNote, Slate, Quill, or CodeMirror packages. Install the editor
+packages in your app and pass their editor instances into the helper that
+matches your editor.
 
 ## Shared Setup
 
@@ -81,8 +82,8 @@ integration.binding.collaborationCursor;
 integration.dispose();
 ```
 
-Lexical and BlockNote use the same pattern through
-`createLexicalOpenRTCIntegration()` and `createBlockNoteOpenRTCIntegration()`.
+Lexical, BlockNote, Slate, Quill, and CodeMirror use the same pattern through
+their matching `create*OpenRTCIntegration()` helpers.
 
 For a more complete lifecycle wrapper, use the session helpers. A session enters
 the OpenRTC room, exposes remote-selection helpers, and disposes editor
@@ -122,9 +123,11 @@ unsubscribeRemoteSelections();
 session.dispose();
 ```
 
-Use `createLexicalOpenRTCSession()` and `createBlockNoteOpenRTCSession()` for
-the same owning lifecycle with Lexical and BlockNote. Set
-`destroyProvider: false` if provider cleanup is owned by your framework.
+Use `createLexicalOpenRTCSession()`, `createBlockNoteOpenRTCSession()`,
+`createSlateOpenRTCSession()`, `createQuillOpenRTCSession()`, or
+`createCodeMirrorOpenRTCSession()` for the same owning lifecycle with other
+editors. Set `destroyProvider: false` if provider cleanup is owned by your
+framework.
 
 ## Hosted Editor Canvas Workflow
 
@@ -173,9 +176,12 @@ canvas.dispose();
 `editor.state.selection`. `createLexicalOpenRTCCanvas()` uses the same
 `readSelection` callback shape as the Lexical presence helper.
 `createBlockNoteOpenRTCCanvas()` stores the nearest block ID from
-`editor.getTextCursorPosition()` when richer offsets are not supplied. Generic
-`createRichTextOpenRTCCanvas()` is available when an app owns editor binding
-and only wants the OpenRTC room/provider lifecycle plus hosted comment actions.
+`editor.getTextCursorPosition()` when richer offsets are not supplied.
+`createSlateOpenRTCCanvas()`, `createQuillOpenRTCCanvas()`, and
+`createCodeMirrorOpenRTCCanvas()` use the same selection readers as their
+presence helpers. Generic `createRichTextOpenRTCCanvas()` is available when an
+app owns editor binding and only wants the OpenRTC room/provider lifecycle plus
+hosted comment actions.
 
 Thread/comment metadata receives an `openrtcRichText.anchor` object by default,
 and the generated comment body has `{ type: "rich-text-comment", text, anchor }`.
@@ -301,6 +307,46 @@ By default, BlockNote selection presence uses
 `editor.getTextCursorPosition()` and sends the nearest block ID with the generic
 selection fields. If your BlockNote setup exposes richer offsets, pass
 `readSelection` to `bindBlockNotePresence`.
+
+## Slate, Quill, and CodeMirror
+
+Slate, Quill, and CodeMirror helpers follow the same adapter contract and keep
+third-party imports in your app:
+
+```ts
+import {
+  bindCodeMirrorPresence,
+  bindQuillPresence,
+  bindSlatePresence,
+  createCodeMirrorYjsBinding,
+  createQuillYjsBinding,
+  createSlateYjsBinding,
+} from "@openrtc/rich-text";
+
+const slateBinding = createSlateYjsBinding(provider, { field: "body" });
+// Pass slateBinding.sharedType to your Yjs-backed Slate setup.
+const unbindSlate = bindSlatePresence(slateEditor, client, room, {
+  extraState: () => ({ user }),
+});
+
+const quillBinding = createQuillYjsBinding(provider, { field: "body" });
+// Pass quillBinding.quillBinding.ytext and awareness to your Quill binding.
+const unbindQuill = bindQuillPresence(quillEditor, client, room, {
+  extraState: () => ({ user }),
+});
+
+const codeMirrorBinding = createCodeMirrorYjsBinding(provider, { field: "body" });
+// Pass codeMirrorBinding.codeMirrorBinding.ytext and awareness to your CodeMirror binding.
+const unbindCodeMirror = bindCodeMirrorPresence(codeMirrorView, client, room, {
+  extraState: () => ({ user }),
+});
+```
+
+Slate selection shapes vary by app. The default reader uses Slate point offsets
+and path-derived block IDs when present. Pass `readSelection` when your editor
+needs document-global offsets or a custom anchor format. CodeMirror apps can
+pass `subscribeSelection` when they already have an update listener extension;
+the fallback listener watches common DOM interaction events.
 
 ## Rendering Remote Selections
 

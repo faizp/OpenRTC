@@ -12,11 +12,11 @@ import type {
   PresenceState,
 } from "@openrtc/client";
 import type { OpenRTCAwareness, OpenRTCYjsProvider } from "@openrtc/yjs";
-import type * as Y from "yjs";
+import * as Y from "yjs";
 
 export interface TextSelectionPresence extends PresenceState {
   kind: "text-selection";
-  editor: "generic" | "tiptap" | "lexical" | "blocknote";
+  editor: "generic" | "tiptap" | "lexical" | "blocknote" | "slate" | "quill" | "codemirror";
   anchor: number;
   head: number;
   from?: number;
@@ -289,6 +289,148 @@ export interface BlockNoteOpenRTCCanvas extends RichTextOpenRTCCanvas {
   unbindPresence?: (() => void) | undefined;
 }
 
+export interface SlateYjsBinding extends RichTextYjsBinding {
+  sharedTypeName: string;
+  sharedType: Y.XmlText;
+  yjs: {
+    sharedType: Y.XmlText;
+    provider: OpenRTCYjsProvider;
+    user?: PresenceState | undefined;
+  };
+}
+
+export interface SlateYjsBindingOptions extends RichTextYjsBindingOptions {
+  sharedType?: string | undefined;
+  user?: PresenceState | undefined;
+}
+
+export interface SlateOpenRTCIntegrationOptions extends SlateYjsBindingOptions, SlatePresenceOptions {
+  provider: OpenRTCYjsProvider;
+  client: OpenRTCClient;
+  room: string;
+  editor?: SlateEditorLike | undefined;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface SlateOpenRTCIntegration {
+  binding: SlateYjsBinding;
+  unbindPresence?: (() => void) | undefined;
+  dispose(): void;
+}
+
+export interface SlateOpenRTCSessionOptions extends SlateOpenRTCIntegrationOptions {
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+}
+
+export interface SlateOpenRTCSession extends RichTextOpenRTCSession {
+  binding: SlateYjsBinding;
+  integration: SlateOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
+export interface SlateOpenRTCCanvasOptions extends SlateOpenRTCSessionOptions, RichTextCanvasProductOptions {}
+
+export interface SlateOpenRTCCanvas extends RichTextOpenRTCCanvas {
+  binding: SlateYjsBinding;
+  integration: SlateOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
+export interface QuillYjsBinding extends RichTextYjsBinding {
+  ytext: Y.Text;
+  quillBinding: {
+    ytext: Y.Text;
+    awareness: OpenRTCAwareness;
+    user?: PresenceState | undefined;
+  };
+}
+
+export interface QuillYjsBindingOptions extends RichTextYjsBindingOptions {
+  user?: PresenceState | undefined;
+}
+
+export interface QuillOpenRTCIntegrationOptions extends QuillYjsBindingOptions, QuillPresenceOptions {
+  provider: OpenRTCYjsProvider;
+  client: OpenRTCClient;
+  room: string;
+  editor?: QuillEditorLike | undefined;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface QuillOpenRTCIntegration {
+  binding: QuillYjsBinding;
+  unbindPresence?: (() => void) | undefined;
+  dispose(): void;
+}
+
+export interface QuillOpenRTCSessionOptions extends QuillOpenRTCIntegrationOptions {
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+}
+
+export interface QuillOpenRTCSession extends RichTextOpenRTCSession {
+  binding: QuillYjsBinding;
+  integration: QuillOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
+export interface QuillOpenRTCCanvasOptions extends QuillOpenRTCSessionOptions, RichTextCanvasProductOptions {}
+
+export interface QuillOpenRTCCanvas extends RichTextOpenRTCCanvas {
+  binding: QuillYjsBinding;
+  integration: QuillOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
+export interface CodeMirrorYjsBinding extends RichTextYjsBinding {
+  ytext: Y.Text;
+  codeMirrorBinding: {
+    ytext: Y.Text;
+    awareness: OpenRTCAwareness;
+    user?: PresenceState | undefined;
+  };
+}
+
+export interface CodeMirrorYjsBindingOptions extends RichTextYjsBindingOptions {
+  user?: PresenceState | undefined;
+}
+
+export interface CodeMirrorOpenRTCIntegrationOptions extends CodeMirrorYjsBindingOptions, CodeMirrorPresenceOptions {
+  provider: OpenRTCYjsProvider;
+  client: OpenRTCClient;
+  room: string;
+  editor?: CodeMirrorEditorLike | undefined;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface CodeMirrorOpenRTCIntegration {
+  binding: CodeMirrorYjsBinding;
+  unbindPresence?: (() => void) | undefined;
+  dispose(): void;
+}
+
+export interface CodeMirrorOpenRTCSessionOptions extends CodeMirrorOpenRTCIntegrationOptions {
+  enterRoom?: EnterRoomOptions | false | undefined;
+  destroyProvider?: boolean | undefined;
+}
+
+export interface CodeMirrorOpenRTCSession extends RichTextOpenRTCSession {
+  binding: CodeMirrorYjsBinding;
+  integration: CodeMirrorOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
+export interface CodeMirrorOpenRTCCanvasOptions
+  extends CodeMirrorOpenRTCSessionOptions,
+    RichTextCanvasProductOptions {}
+
+export interface CodeMirrorOpenRTCCanvas extends RichTextOpenRTCCanvas {
+  binding: CodeMirrorYjsBinding;
+  integration: CodeMirrorOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
 export function createRichTextYjsBinding(
   provider: OpenRTCYjsProvider,
   options: RichTextYjsBindingOptions = {},
@@ -349,6 +491,57 @@ export function createBlockNoteYjsBinding(
     collaboration: {
       provider,
       fragment: binding.fragment,
+      user: options.user,
+    },
+  };
+}
+
+export function createSlateYjsBinding(
+  provider: OpenRTCYjsProvider,
+  options: SlateYjsBindingOptions = {},
+): SlateYjsBinding {
+  const binding = createRichTextYjsBinding(provider, options);
+  const sharedTypeName = options.sharedType ?? `${binding.field}:slate`;
+  const sharedType = provider.doc.get(sharedTypeName, Y.XmlText);
+  return {
+    ...binding,
+    sharedTypeName,
+    sharedType,
+    yjs: {
+      sharedType,
+      provider,
+      user: options.user,
+    },
+  };
+}
+
+export function createQuillYjsBinding(
+  provider: OpenRTCYjsProvider,
+  options: QuillYjsBindingOptions = {},
+): QuillYjsBinding {
+  const binding = createRichTextYjsBinding(provider, options);
+  return {
+    ...binding,
+    ytext: binding.text,
+    quillBinding: {
+      ytext: binding.text,
+      awareness: binding.awareness,
+      user: options.user,
+    },
+  };
+}
+
+export function createCodeMirrorYjsBinding(
+  provider: OpenRTCYjsProvider,
+  options: CodeMirrorYjsBindingOptions = {},
+): CodeMirrorYjsBinding {
+  const binding = createRichTextYjsBinding(provider, options);
+  return {
+    ...binding,
+    ytext: binding.text,
+    codeMirrorBinding: {
+      ytext: binding.text,
+      awareness: binding.awareness,
       user: options.user,
     },
   };
@@ -721,6 +914,251 @@ export function createBlockNoteOpenRTCCanvas(options: BlockNoteOpenRTCCanvasOpti
   return attachRichTextCanvasActions(session, options, "blocknote", readSelection) as BlockNoteOpenRTCCanvas;
 }
 
+export type SlatePointLike = number | { offset?: number; path?: Array<string | number> };
+
+export interface SlateRangeLike {
+  anchor?: SlatePointLike | undefined;
+  focus?: SlatePointLike | undefined;
+}
+
+export interface SlateEditorLike {
+  selection?: SlateRangeLike | null | undefined;
+  on?(event: "change" | "selectionChange", handler: () => void): void;
+  off?(event: "change" | "selectionChange", handler: () => void): void;
+}
+
+export interface SlatePresenceOptions {
+  throttleMs?: number | undefined;
+  extraState?: (() => PresenceState) | undefined;
+  readSelection?: (() => Omit<TextSelectionPresence, "kind" | "editor" | "updatedAt"> | null) | undefined;
+}
+
+export function bindSlatePresence(
+  editor: SlateEditorLike,
+  client: OpenRTCClient,
+  room: string,
+  options: SlatePresenceOptions = {},
+): () => void {
+  const readSelection = options.readSelection ?? slateSelectionReader(editor) ?? (() => null);
+  const controller = createSelectionPresenceController({
+    room,
+    client,
+    editor: "slate",
+    throttleMs: options.throttleMs,
+    extraState: options.extraState,
+    readSelection,
+  });
+  const handler = (): void => controller.flush();
+  editor.on?.("change", handler);
+  editor.on?.("selectionChange", handler);
+  controller.flush();
+  return () => {
+    editor.off?.("change", handler);
+    editor.off?.("selectionChange", handler);
+    controller.dispose();
+  };
+}
+
+export function createSlateOpenRTCIntegration(options: SlateOpenRTCIntegrationOptions): SlateOpenRTCIntegration {
+  const binding = createSlateYjsBinding(options.provider, options);
+  const unbindPresence = options.editor
+    ? bindSlatePresence(options.editor, options.client, options.room, options)
+    : undefined;
+  const dispose = createDisposable(unbindPresence, options.cleanup);
+  return {
+    binding,
+    unbindPresence,
+    dispose,
+  };
+}
+
+export function createSlateOpenRTCSession(options: SlateOpenRTCSessionOptions): SlateOpenRTCSession {
+  const session = createRichTextOpenRTCSession(sessionLifecycleOptions(options), options);
+  const integration = createSlateOpenRTCIntegration({ ...options, cleanup: undefined });
+  const dispose = createDisposable(integration.dispose, session.dispose, options.cleanup);
+  return {
+    ...session,
+    binding: integration.binding,
+    integration,
+    unbindPresence: integration.unbindPresence,
+    dispose,
+  };
+}
+
+export function createSlateOpenRTCCanvas(options: SlateOpenRTCCanvasOptions): SlateOpenRTCCanvas {
+  const session = createSlateOpenRTCSession(options);
+  const readSelection = options.readCommentSelection ?? options.readSelection ?? slateSelectionReader(options.editor);
+  return attachRichTextCanvasActions(session, options, "slate", readSelection) as SlateOpenRTCCanvas;
+}
+
+export interface QuillRangeLike {
+  index: number;
+  length: number;
+}
+
+export interface QuillEditorLike {
+  getSelection?(focus?: boolean): QuillRangeLike | null;
+  on?(event: "selection-change" | "editor-change", handler: () => void): void;
+  off?(event: "selection-change" | "editor-change", handler: () => void): void;
+}
+
+export interface QuillPresenceOptions {
+  throttleMs?: number | undefined;
+  extraState?: (() => PresenceState) | undefined;
+  readSelection?: (() => Omit<TextSelectionPresence, "kind" | "editor" | "updatedAt"> | null) | undefined;
+}
+
+export function bindQuillPresence(
+  editor: QuillEditorLike,
+  client: OpenRTCClient,
+  room: string,
+  options: QuillPresenceOptions = {},
+): () => void {
+  const readSelection = options.readSelection ?? quillSelectionReader(editor) ?? (() => null);
+  const controller = createSelectionPresenceController({
+    room,
+    client,
+    editor: "quill",
+    throttleMs: options.throttleMs,
+    extraState: options.extraState,
+    readSelection,
+  });
+  const handler = (): void => controller.flush();
+  editor.on?.("selection-change", handler);
+  editor.on?.("editor-change", handler);
+  controller.flush();
+  return () => {
+    editor.off?.("selection-change", handler);
+    editor.off?.("editor-change", handler);
+    controller.dispose();
+  };
+}
+
+export function createQuillOpenRTCIntegration(options: QuillOpenRTCIntegrationOptions): QuillOpenRTCIntegration {
+  const binding = createQuillYjsBinding(options.provider, options);
+  const unbindPresence = options.editor
+    ? bindQuillPresence(options.editor, options.client, options.room, options)
+    : undefined;
+  const dispose = createDisposable(unbindPresence, options.cleanup);
+  return {
+    binding,
+    unbindPresence,
+    dispose,
+  };
+}
+
+export function createQuillOpenRTCSession(options: QuillOpenRTCSessionOptions): QuillOpenRTCSession {
+  const session = createRichTextOpenRTCSession(sessionLifecycleOptions(options), options);
+  const integration = createQuillOpenRTCIntegration({ ...options, cleanup: undefined });
+  const dispose = createDisposable(integration.dispose, session.dispose, options.cleanup);
+  return {
+    ...session,
+    binding: integration.binding,
+    integration,
+    unbindPresence: integration.unbindPresence,
+    dispose,
+  };
+}
+
+export function createQuillOpenRTCCanvas(options: QuillOpenRTCCanvasOptions): QuillOpenRTCCanvas {
+  const session = createQuillOpenRTCSession(options);
+  const readSelection = options.readCommentSelection ?? options.readSelection ?? quillSelectionReader(options.editor);
+  return attachRichTextCanvasActions(session, options, "quill", readSelection) as QuillOpenRTCCanvas;
+}
+
+export interface CodeMirrorSelectionRangeLike {
+  anchor: number;
+  head: number;
+  from?: number | undefined;
+  to?: number | undefined;
+}
+
+export interface CodeMirrorEditorLike {
+  state: {
+    selection: {
+      main: CodeMirrorSelectionRangeLike;
+    };
+  };
+  dom?: {
+    addEventListener(type: "keyup" | "mouseup" | "touchend" | "focus", handler: () => void): void;
+    removeEventListener(type: "keyup" | "mouseup" | "touchend" | "focus", handler: () => void): void;
+  };
+}
+
+export interface CodeMirrorPresenceOptions {
+  throttleMs?: number | undefined;
+  extraState?: (() => PresenceState) | undefined;
+  readSelection?: (() => Omit<TextSelectionPresence, "kind" | "editor" | "updatedAt"> | null) | undefined;
+  subscribeSelection?: ((handler: () => void) => () => void) | undefined;
+}
+
+export function bindCodeMirrorPresence(
+  editor: CodeMirrorEditorLike,
+  client: OpenRTCClient,
+  room: string,
+  options: CodeMirrorPresenceOptions = {},
+): () => void {
+  const readSelection = options.readSelection ?? codeMirrorSelectionReader(editor) ?? (() => null);
+  const controller = createSelectionPresenceController({
+    room,
+    client,
+    editor: "codemirror",
+    throttleMs: options.throttleMs,
+    extraState: options.extraState,
+    readSelection,
+  });
+  const handler = (): void => controller.flush();
+  const unsubscribeSelection = options.subscribeSelection?.(handler);
+  editor.dom?.addEventListener("keyup", handler);
+  editor.dom?.addEventListener("mouseup", handler);
+  editor.dom?.addEventListener("touchend", handler);
+  editor.dom?.addEventListener("focus", handler);
+  controller.flush();
+  return () => {
+    unsubscribeSelection?.();
+    editor.dom?.removeEventListener("keyup", handler);
+    editor.dom?.removeEventListener("mouseup", handler);
+    editor.dom?.removeEventListener("touchend", handler);
+    editor.dom?.removeEventListener("focus", handler);
+    controller.dispose();
+  };
+}
+
+export function createCodeMirrorOpenRTCIntegration(
+  options: CodeMirrorOpenRTCIntegrationOptions,
+): CodeMirrorOpenRTCIntegration {
+  const binding = createCodeMirrorYjsBinding(options.provider, options);
+  const unbindPresence = options.editor
+    ? bindCodeMirrorPresence(options.editor, options.client, options.room, options)
+    : undefined;
+  const dispose = createDisposable(unbindPresence, options.cleanup);
+  return {
+    binding,
+    unbindPresence,
+    dispose,
+  };
+}
+
+export function createCodeMirrorOpenRTCSession(options: CodeMirrorOpenRTCSessionOptions): CodeMirrorOpenRTCSession {
+  const session = createRichTextOpenRTCSession(sessionLifecycleOptions(options), options);
+  const integration = createCodeMirrorOpenRTCIntegration({ ...options, cleanup: undefined });
+  const dispose = createDisposable(integration.dispose, session.dispose, options.cleanup);
+  return {
+    ...session,
+    binding: integration.binding,
+    integration,
+    unbindPresence: integration.unbindPresence,
+    dispose,
+  };
+}
+
+export function createCodeMirrorOpenRTCCanvas(options: CodeMirrorOpenRTCCanvasOptions): CodeMirrorOpenRTCCanvas {
+  const session = createCodeMirrorOpenRTCSession(options);
+  const readSelection =
+    options.readCommentSelection ?? options.readSelection ?? codeMirrorSelectionReader(options.editor);
+  return attachRichTextCanvasActions(session, options, "codemirror", readSelection) as CodeMirrorOpenRTCCanvas;
+}
+
 function attachRichTextCanvasActions<TSession extends RichTextOpenRTCSession>(
   session: TSession,
   options: RichTextCanvasProductOptions,
@@ -912,6 +1350,94 @@ function blockNoteSelectionReader(
   };
 }
 
+function slateSelectionReader(
+  editor: SlateEditorLike | undefined,
+): (() => RichTextSelectionSnapshotInput | null) | undefined {
+  if (!editor) {
+    return undefined;
+  }
+  return () => {
+    const selection = editor.selection;
+    if (!selection) {
+      return null;
+    }
+    const anchor = slatePointOffset(selection.anchor);
+    const head = slatePointOffset(selection.focus);
+    if (anchor === undefined || head === undefined) {
+      return null;
+    }
+    const from = Math.min(anchor, head);
+    const to = Math.max(anchor, head);
+    const blockID = slatePointBlockID(selection.anchor) ?? slatePointBlockID(selection.focus);
+    return {
+      anchor,
+      head,
+      from,
+      to,
+      ...(blockID ? { blockID } : {}),
+    };
+  };
+}
+
+function quillSelectionReader(
+  editor: QuillEditorLike | undefined,
+): (() => RichTextSelectionSnapshotInput | null) | undefined {
+  if (!editor) {
+    return undefined;
+  }
+  return () => {
+    const range = editor.getSelection?.() ?? null;
+    if (!range || !isFiniteNumber(range.index) || !isFiniteNumber(range.length)) {
+      return null;
+    }
+    const anchor = range.index;
+    const head = range.index + range.length;
+    return {
+      anchor,
+      head,
+      from: Math.min(anchor, head),
+      to: Math.max(anchor, head),
+    };
+  };
+}
+
+function codeMirrorSelectionReader(
+  editor: CodeMirrorEditorLike | undefined,
+): (() => RichTextSelectionSnapshotInput | null) | undefined {
+  if (!editor) {
+    return undefined;
+  }
+  return () => {
+    const range = editor.state.selection.main;
+    if (!isFiniteNumber(range.anchor) || !isFiniteNumber(range.head)) {
+      return null;
+    }
+    return {
+      anchor: range.anchor,
+      head: range.head,
+      from: isFiniteNumber(range.from) ? range.from : Math.min(range.anchor, range.head),
+      to: isFiniteNumber(range.to) ? range.to : Math.max(range.anchor, range.head),
+    };
+  };
+}
+
+function slatePointOffset(point: SlatePointLike | undefined): number | undefined {
+  if (typeof point === "number" && Number.isFinite(point)) {
+    return point;
+  }
+  if (isRecord(point) && isFiniteNumber(point["offset"])) {
+    return point["offset"];
+  }
+  return undefined;
+}
+
+function slatePointBlockID(point: SlatePointLike | undefined): string | undefined {
+  if (!isRecord(point) || !Array.isArray(point["path"])) {
+    return undefined;
+  }
+  return point["path"].map(String).join("/");
+}
+
 function createDisposable(...callbacks: Array<(() => void) | undefined>): () => void {
   let disposed = false;
   return () => {
@@ -944,5 +1470,13 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isEditorValue(value: unknown): value is TextSelectionPresence["editor"] {
-  return value === "generic" || value === "tiptap" || value === "lexical" || value === "blocknote";
+  return (
+    value === "generic" ||
+    value === "tiptap" ||
+    value === "lexical" ||
+    value === "blocknote" ||
+    value === "slate" ||
+    value === "quill" ||
+    value === "codemirror"
+  );
 }

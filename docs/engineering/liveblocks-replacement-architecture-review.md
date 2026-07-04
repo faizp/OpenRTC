@@ -60,8 +60,9 @@ Implemented:
 - Yjs provider awareness bridge over OpenRTC presence for ephemeral user/cursor state.
 - React/client packages plus Yjs and rich-text editor binding/presence helpers.
 - Dependency-free rich-text editor canvas controllers for host-owned Tiptap,
-  Lexical, BlockNote, and generic editor setup, combining OpenRTC room/Yjs
-  lifecycle with durable anchored comment, thread, and subscription actions.
+  Lexical, BlockNote, Slate, Quill, CodeMirror, and generic editor setup,
+  combining OpenRTC room/Yjs lifecycle with durable anchored comment, thread,
+  and subscription actions.
 - Runtime room admission controls for JSON and Yjs sockets, with configurable
   per-room caps, retryable `ROOM_CAPACITY` JSON join errors, Yjs HTTP 429
   upgrade rejection, and dev socket room activity/limit inspection.
@@ -130,16 +131,18 @@ Recommended target shape:
 - Applied per-connection rate limiting to Yjs write frames before storage or fan-out.
 - Added a sequenced Redis Yjs update log and trusted compaction primitive so merged snapshots can safely checkpoint and trim known updates.
 - Added `@openrtc/yjs-compactor`, a trusted TypeScript compactor that uses Yjs merge logic to compute checkpoint snapshots and trim sequenced Redis update logs.
-- Added `@openrtc/rich-text` Yjs binding helpers for Tiptap, Lexical, and
-  BlockNote-style editor integrations alongside selection presence adapters.
+- Added `@openrtc/rich-text` Yjs binding helpers for Tiptap, Lexical,
+  BlockNote, Slate, Quill, and CodeMirror-style editor integrations alongside
+  selection presence adapters.
 - Added executable `@openrtc/rich-text` integration wrappers and remote
-  selection helpers for Tiptap, Lexical, and BlockNote-style editor setup and
-  cleanup without importing editor packages into OpenRTC.
+  selection helpers for Tiptap, Lexical, BlockNote, Slate, Quill, and
+  CodeMirror-style editor setup and cleanup without importing editor packages
+  into OpenRTC.
 - Added dependency-free `@openrtc/rich-text` editor canvas controllers for
-  Tiptap, Lexical, BlockNote, and generic host editors. These combine room/Yjs
-  lifecycle, selection-derived comment anchors, durable create/reply,
-  resolve/reopen, and room subscription actions while leaving editor packages
-  in the host application.
+  Tiptap, Lexical, BlockNote, Slate, Quill, CodeMirror, and generic host
+  editors. These combine room/Yjs lifecycle, selection-derived comment anchors,
+  durable create/reply, resolve/reopen, and room subscription actions while
+  leaving editor packages in the host application.
 - Added runtime room admission/load-shedding controls:
   `OPENRTC_LIMIT_ROOM_CONNECTIONS` and
   `OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS`, retryable `ROOM_CAPACITY` JSON join

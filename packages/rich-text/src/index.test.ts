@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import * as Y from "yjs";
 import { OpenRTCAwareness } from "@openrtc/yjs";
 import {
+  bindCodeMirrorPresence,
   bindBlockNotePresence,
   bindLexicalPresence,
+  bindQuillPresence,
+  bindSlatePresence,
   bindTiptapPresence,
+  createCodeMirrorOpenRTCIntegration,
+  createCodeMirrorOpenRTCCanvas,
+  createCodeMirrorOpenRTCSession,
+  createCodeMirrorYjsBinding,
   createBlockNoteOpenRTCIntegration,
   createBlockNoteOpenRTCCanvas,
   createBlockNoteOpenRTCSession,
@@ -13,9 +20,17 @@ import {
   createLexicalOpenRTCCanvas,
   createLexicalOpenRTCSession,
   createLexicalYjsBinding,
+  createQuillOpenRTCIntegration,
+  createQuillOpenRTCCanvas,
+  createQuillOpenRTCSession,
+  createQuillYjsBinding,
   createRichTextOpenRTCCanvas,
   createRichTextOpenRTCSession,
   createRichTextYjsBinding,
+  createSlateOpenRTCIntegration,
+  createSlateOpenRTCCanvas,
+  createSlateOpenRTCSession,
+  createSlateYjsBinding,
   createTiptapOpenRTCIntegration,
   createTiptapOpenRTCCanvas,
   createTiptapOpenRTCSession,
@@ -220,6 +235,20 @@ const blockNoteBinding = createBlockNoteYjsBinding(provider as never, { fragment
 assert.equal(blockNoteBinding.fragment, doc.getXmlFragment("blocks"));
 assert.equal(blockNoteBinding.collaboration.provider, provider);
 
+const slateBinding = createSlateYjsBinding(provider as never, { field: "slate-body", sharedType: "slate-shared" });
+assert.equal(slateBinding.sharedTypeName, "slate-shared");
+assert.equal(slateBinding.sharedType, doc.get("slate-shared", Y.XmlText));
+assert.equal(slateBinding.yjs.sharedType, slateBinding.sharedType);
+
+const quillBinding = createQuillYjsBinding(provider as never, { field: "quill-body", user: { name: "Grace" } });
+assert.equal(quillBinding.ytext, doc.getText("quill-body:text"));
+assert.equal(quillBinding.quillBinding.awareness, provider.awareness);
+assert.equal(quillBinding.quillBinding.user?.["name"], "Grace");
+
+const codeMirrorBinding = createCodeMirrorYjsBinding(provider as never, { field: "code-body" });
+assert.equal(codeMirrorBinding.ytext, doc.getText("code-body:text"));
+assert.equal(codeMirrorBinding.codeMirrorBinding.awareness, provider.awareness);
+
 const tiptapHandlers = new Map<string, () => void>();
 const tiptap = {
   state: {
@@ -289,6 +318,91 @@ assert.equal(blockNoteClient.updates.at(-1)?.state["blockID"], "block-1");
 unbindBlockNote();
 assert.equal(blockNoteHandler, undefined);
 
+const slateHandlers = new Map<string, () => void>();
+const slateClient = new FakeClient();
+const slate = {
+  selection: {
+    anchor: { offset: 5, path: [0, "children", 1] },
+    focus: { offset: 9, path: [0, "children", 1] },
+  },
+  on(event: "change" | "selectionChange", handler: () => void) {
+    slateHandlers.set(event, handler);
+  },
+  off(event: "change" | "selectionChange") {
+    slateHandlers.delete(event);
+  },
+};
+const unbindSlate = bindSlatePresence(slate, slateClient as never, "tenant-a:doc", { throttleMs: 0 });
+slate.selection = { anchor: { offset: 10, path: [2] }, focus: { offset: 4, path: [2] } };
+slateHandlers.get("selectionChange")?.();
+assert.equal(slateClient.updates.at(-1)?.state["editor"], "slate");
+assert.equal(slateClient.updates.at(-1)?.state["anchor"], 10);
+assert.equal(slateClient.updates.at(-1)?.state["from"], 4);
+assert.equal(slateClient.updates.at(-1)?.state["blockID"], "2");
+unbindSlate();
+assert.equal(slateHandlers.size, 0);
+
+const quillHandlers = new Map<string, () => void>();
+const quillClient = new FakeClient();
+let quillRange = { index: 6, length: 3 };
+const quill = {
+  getSelection() {
+    return quillRange;
+  },
+  on(event: "selection-change" | "editor-change", handler: () => void) {
+    quillHandlers.set(event, handler);
+  },
+  off(event: "selection-change" | "editor-change") {
+    quillHandlers.delete(event);
+  },
+};
+const unbindQuill = bindQuillPresence(quill, quillClient as never, "tenant-a:doc", { throttleMs: 0 });
+quillRange = { index: 2, length: 5 };
+quillHandlers.get("selection-change")?.();
+assert.equal(quillClient.updates.at(-1)?.state["editor"], "quill");
+assert.equal(quillClient.updates.at(-1)?.state["anchor"], 2);
+assert.equal(quillClient.updates.at(-1)?.state["head"], 7);
+unbindQuill();
+assert.equal(quillHandlers.size, 0);
+
+const codeMirrorHandlers = new Map<string, () => void>();
+let codeMirrorSubscribed: (() => void) | undefined;
+let codeMirrorUnsubscribeCount = 0;
+const codeMirrorClient = new FakeClient();
+const codeMirror = {
+  state: {
+    selection: {
+      main: { anchor: 11, head: 14, from: 11, to: 14 },
+    },
+  },
+  dom: {
+    addEventListener(event: "keyup" | "mouseup" | "touchend" | "focus", handler: () => void) {
+      codeMirrorHandlers.set(event, handler);
+    },
+    removeEventListener(event: "keyup" | "mouseup" | "touchend" | "focus") {
+      codeMirrorHandlers.delete(event);
+    },
+  },
+};
+const unbindCodeMirror = bindCodeMirrorPresence(codeMirror, codeMirrorClient as never, "tenant-a:doc", {
+  throttleMs: 0,
+  subscribeSelection(handler) {
+    codeMirrorSubscribed = handler;
+    return () => {
+      codeMirrorUnsubscribeCount += 1;
+      codeMirrorSubscribed = undefined;
+    };
+  },
+});
+codeMirror.state.selection.main = { anchor: 15, head: 8, from: 8, to: 15 };
+codeMirrorSubscribed?.();
+assert.equal(codeMirrorClient.updates.at(-1)?.state["editor"], "codemirror");
+assert.equal(codeMirrorClient.updates.at(-1)?.state["from"], 8);
+assert.equal(codeMirrorClient.updates.at(-1)?.state["to"], 15);
+unbindCodeMirror();
+assert.equal(codeMirrorHandlers.size, 0);
+assert.equal(codeMirrorUnsubscribeCount, 1);
+
 const remotePeers = [
   {
     connId: "peer-tiptap",
@@ -316,16 +430,28 @@ const remotePeers = [
     },
   },
   {
+    connId: "peer-codemirror",
+    state: {
+      kind: "text-selection",
+      editor: "codemirror",
+      anchor: 8,
+      head: 11,
+      from: 8,
+      to: 11,
+      updatedAt: 1_050,
+    },
+  },
+  {
     connId: "peer-cursor",
     state: { cursor: { x: 1, y: 2 } },
   },
 ];
 
 assert.equal(isTextSelectionPresence(remotePeers[0]?.state), true);
-assert.equal(isTextSelectionPresence({ kind: "text-selection", editor: "slate", anchor: 1, head: 1, updatedAt: 1 }), false);
+assert.equal(isTextSelectionPresence({ kind: "text-selection", editor: "slate", anchor: 1, head: 1, updatedAt: 1 }), true);
 assert.deepEqual(
   getRemoteTextSelections(remotePeers, { now: 1_100, maxAgeMs: 500 }).map((entry) => entry.connId),
-  ["peer-tiptap"],
+  ["peer-tiptap", "peer-codemirror"],
 );
 assert.deepEqual(
   getRemoteTextSelections(remotePeers, { editor: "lexical", now: 1_100 }).map((entry) => entry.selection.editor),
@@ -350,7 +476,7 @@ const unsubscribeSelections = subscribeRemoteTextSelections(
     assert.equal(event.type, "reset");
     assert.deepEqual(
       selections.map((entry) => entry.connId),
-      ["peer-tiptap", "peer-lexical"],
+      ["peer-tiptap", "peer-lexical", "peer-codemirror"],
     );
   },
 );
@@ -381,7 +507,7 @@ const unsubscribeSessionSelections = richTextSession.subscribeRemoteSelections((
   sessionSelectionEvent = event;
   assert.deepEqual(
     selections.map((entry) => entry.connId),
-    ["peer-tiptap", "peer-lexical"],
+    ["peer-tiptap", "peer-lexical", "peer-codemirror"],
   );
 });
 sessionClient.roomHandle.emitOthers({ type: "reset" });
@@ -556,6 +682,124 @@ assert.equal(blockNoteSessionHandler, undefined);
 assert.equal(blockNoteSessionClient.leaveCount, 1);
 assert.equal(blockNoteSessionCleanupCount, 1);
 
+let slateCleanupCount = 0;
+const slateIntegration = createSlateOpenRTCIntegration({
+  provider: provider as never,
+  client: new FakeClient() as never,
+  room: "tenant-a:doc",
+  field: "slate-doc",
+  editor: slate,
+  throttleMs: 0,
+  cleanup: () => {
+    slateCleanupCount += 1;
+  },
+});
+assert.equal(slateIntegration.binding.sharedTypeName, "slate-doc:slate");
+assert.equal(slateHandlers.size, 2);
+slateIntegration.dispose();
+slateIntegration.dispose();
+assert.equal(slateHandlers.size, 0);
+assert.equal(slateCleanupCount, 1);
+
+let slateSessionCleanupCount = 0;
+const slateSessionClient = new FakeClient();
+const slateSession = createSlateOpenRTCSession({
+  provider: provider as never,
+  client: slateSessionClient as never,
+  room: "tenant-a:doc",
+  sharedType: "session-slate",
+  editor: slate,
+  destroyProvider: false,
+  cleanup: () => {
+    slateSessionCleanupCount += 1;
+  },
+});
+assert.equal(slateSession.binding.sharedTypeName, "session-slate");
+assert.equal(slateSession.integration.binding, slateSession.binding);
+slateSession.dispose();
+slateSession.dispose();
+assert.equal(slateHandlers.size, 0);
+assert.equal(slateSessionClient.leaveCount, 1);
+assert.equal(slateSessionCleanupCount, 1);
+
+let quillCleanupCount = 0;
+const quillIntegration = createQuillOpenRTCIntegration({
+  provider: provider as never,
+  client: new FakeClient() as never,
+  room: "tenant-a:doc",
+  field: "quill-doc",
+  editor: quill,
+  throttleMs: 0,
+  cleanup: () => {
+    quillCleanupCount += 1;
+  },
+});
+assert.equal(quillIntegration.binding.textName, "quill-doc:text");
+assert.equal(quillHandlers.size, 2);
+quillIntegration.dispose();
+quillIntegration.dispose();
+assert.equal(quillHandlers.size, 0);
+assert.equal(quillCleanupCount, 1);
+
+let quillSessionCleanupCount = 0;
+const quillSessionClient = new FakeClient();
+const quillSession = createQuillOpenRTCSession({
+  provider: provider as never,
+  client: quillSessionClient as never,
+  room: "tenant-a:doc",
+  field: "quill-session",
+  editor: quill,
+  destroyProvider: false,
+  cleanup: () => {
+    quillSessionCleanupCount += 1;
+  },
+});
+assert.equal(quillSession.binding.textName, "quill-session:text");
+quillSession.dispose();
+quillSession.dispose();
+assert.equal(quillHandlers.size, 0);
+assert.equal(quillSessionClient.leaveCount, 1);
+assert.equal(quillSessionCleanupCount, 1);
+
+let codeMirrorCleanupCount = 0;
+const codeMirrorIntegration = createCodeMirrorOpenRTCIntegration({
+  provider: provider as never,
+  client: new FakeClient() as never,
+  room: "tenant-a:doc",
+  field: "code-doc",
+  editor: codeMirror,
+  throttleMs: 0,
+  cleanup: () => {
+    codeMirrorCleanupCount += 1;
+  },
+});
+assert.equal(codeMirrorIntegration.binding.textName, "code-doc:text");
+assert.equal(codeMirrorHandlers.size, 4);
+codeMirrorIntegration.dispose();
+codeMirrorIntegration.dispose();
+assert.equal(codeMirrorHandlers.size, 0);
+assert.equal(codeMirrorCleanupCount, 1);
+
+let codeMirrorSessionCleanupCount = 0;
+const codeMirrorSessionClient = new FakeClient();
+const codeMirrorSession = createCodeMirrorOpenRTCSession({
+  provider: provider as never,
+  client: codeMirrorSessionClient as never,
+  room: "tenant-a:doc",
+  field: "code-session",
+  editor: codeMirror,
+  destroyProvider: false,
+  cleanup: () => {
+    codeMirrorSessionCleanupCount += 1;
+  },
+});
+assert.equal(codeMirrorSession.binding.textName, "code-session:text");
+codeMirrorSession.dispose();
+codeMirrorSession.dispose();
+assert.equal(codeMirrorHandlers.size, 0);
+assert.equal(codeMirrorSessionClient.leaveCount, 1);
+assert.equal(codeMirrorSessionCleanupCount, 1);
+
 const canvasDoc = new Y.Doc();
 let canvasDestroyCount = 0;
 const canvasProvider = {
@@ -682,3 +926,45 @@ const blockNoteCanvas = createBlockNoteOpenRTCCanvas({
 assert.equal(blockNoteCanvas.binding.fragmentName, "canvas-blocks");
 assert.equal(blockNoteCanvas.currentCommentAnchor()?.blockID, "block-canvas");
 blockNoteCanvas.dispose();
+
+const slateCanvas = createSlateOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: new FakeClient() as never,
+  admin: new FakeAdmin() as never,
+  room: "tenant-a:slate-canvas",
+  userId: "user-1",
+  field: "slate-canvas",
+  editor: slate,
+  destroyProvider: false,
+});
+assert.equal(slateCanvas.binding.sharedTypeName, "slate-canvas:slate");
+assert.equal(slateCanvas.currentCommentAnchor()?.editor, "slate");
+slateCanvas.dispose();
+
+const quillCanvas = createQuillOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: new FakeClient() as never,
+  admin: new FakeAdmin() as never,
+  room: "tenant-a:quill-canvas",
+  userId: "user-1",
+  field: "quill-canvas",
+  editor: quill,
+  destroyProvider: false,
+});
+assert.equal(quillCanvas.binding.textName, "quill-canvas:text");
+assert.equal(quillCanvas.currentCommentAnchor()?.editor, "quill");
+quillCanvas.dispose();
+
+const codeMirrorCanvas = createCodeMirrorOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: new FakeClient() as never,
+  admin: new FakeAdmin() as never,
+  room: "tenant-a:codemirror-canvas",
+  userId: "user-1",
+  field: "codemirror-canvas",
+  editor: codeMirror,
+  destroyProvider: false,
+});
+assert.equal(codeMirrorCanvas.binding.textName, "codemirror-canvas:text");
+assert.equal(codeMirrorCanvas.currentCommentAnchor()?.editor, "codemirror");
+codeMirrorCanvas.dispose();
