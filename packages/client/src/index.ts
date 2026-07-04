@@ -322,6 +322,52 @@ export interface OpenRTCDevTools {
   fetchEvents(options?: OpenRTCDevEventsOptions): Promise<OpenRTCDevEventsSnapshot>;
   restartRuntime(): Promise<OpenRTCDevRestartSnapshot>;
   restartAdmin(): Promise<OpenRTCDevRestartSnapshot>;
+  probe(options?: OpenRTCDevProbeOptions): Promise<OpenRTCDevProbeResult>;
+}
+
+export type OpenRTCDevProbeCheckName =
+  | "config"
+  | "status"
+  | "seed-room"
+  | "connections"
+  | "sockets"
+  | "storage"
+  | "yjs"
+  | "events"
+  | "restart-runtime"
+  | "restart-admin";
+
+export type OpenRTCDevProbeRestart = "none" | "runtime" | "admin" | "both";
+
+export interface OpenRTCDevProbeOptions extends OpenRTCDevEventsOptions {
+  restart?: OpenRTCDevProbeRestart;
+  expectSeedRoom?: boolean;
+  expectSeedStorage?: boolean;
+}
+
+export interface OpenRTCDevProbeCheck {
+  name: OpenRTCDevProbeCheckName;
+  ok: boolean;
+  message: string;
+  detail?: unknown;
+}
+
+export interface OpenRTCDevProbeSnapshots {
+  status?: OpenRTCDevStatusSnapshot;
+  connections?: OpenRTCDevConnectionsSnapshot;
+  sockets?: OpenRTCDevSocketSnapshot;
+  storage?: OpenRTCDevStorageSnapshot;
+  yjs?: OpenRTCDevYJSSnapshot;
+  events?: OpenRTCDevEventsSnapshot;
+  runtimeRestart?: OpenRTCDevRestartSnapshot;
+  adminRestart?: OpenRTCDevRestartSnapshot;
+}
+
+export interface OpenRTCDevProbeResult {
+  ok: boolean;
+  room: string;
+  checks: OpenRTCDevProbeCheck[];
+  snapshots: OpenRTCDevProbeSnapshots;
 }
 
 export interface OpenRTCDevClientOptions
@@ -1142,7 +1188,7 @@ export function createOpenRTCDevTools(
   const fetchImpl = resolveFetch(options.fetch);
   const baseURL = options.baseURL ?? DEFAULT_OPENRTC_DEV_BASE_URL;
   const roomEndpointOptions = (room: string | undefined): OpenRTCDevEventsOptions => (room ? { room } : {});
-  return {
+  const tools: Omit<OpenRTCDevTools, "probe"> = {
     config,
     ...(options.room ? { room: options.room } : {}),
     fetchStatus: () =>
@@ -1205,6 +1251,181 @@ export function createOpenRTCDevTools(
         openRTCDevEndpointURL(config, "crashAdminURL", baseURL),
         { method: "POST" },
       ),
+  };
+  return {
+    ...tools,
+    probe: (probeOptions = {}) => runOpenRTCDevProbe(tools, probeOptions),
+  };
+}
+
+export async function runOpenRTCDevProbe(
+  tools: Omit<OpenRTCDevTools, "probe">,
+  options: OpenRTCDevProbeOptions = {},
+): Promise<OpenRTCDevProbeResult> {
+  const room = options.room ?? tools.room ?? tools.config.seedRooms[0] ?? "";
+  const checks: OpenRTCDevProbeCheck[] = [];
+  const snapshots: OpenRTCDevProbeSnapshots = {};
+  const expectSeedRoom = options.expectSeedRoom ?? true;
+  const expectSeedStorage = options.expectSeedStorage ?? tools.config.seedRooms.includes(room);
+
+  addOpenRTCDevProbeCheck(
+    checks,
+    "config",
+    Boolean(tools.config.publicKey && tools.config.tokenURL && tools.config.wsURL && tools.config.adminURL),
+    "Dev config advertises auth, runtime, and admin endpoints",
+    {
+      publicKey: tools.config.publicKey,
+      wsURL: tools.config.wsURL,
+      adminURL: tools.config.adminURL,
+      seedRooms: tools.config.seedRooms,
+    },
+  );
+
+  addOpenRTCDevProbeCheck(
+    checks,
+    "seed-room",
+    Boolean(room) && (!expectSeedRoom || tools.config.seedRooms.includes(room)),
+    expectSeedRoom ? `Dev room ${room || "(missing)"} is advertised as a seed room` : `Dev room ${room || "(missing)"} selected`,
+    { room, seedRooms: tools.config.seedRooms },
+  );
+
+  if (!room) {
+    return {
+      ok: false,
+      room,
+      checks,
+      snapshots,
+    };
+  }
+
+  await captureOpenRTCDevProbeCheck(checks, "status", async () => {
+    const status = await tools.fetchStatus();
+    snapshots.status = status;
+    const ok = status.status === "ok" && status.redis.healthy && status.runtime.running && status.admin.running;
+    return openRTCDevProbeCheck(
+      "status",
+      ok,
+      ok ? "Dev stack status is ok" : "Dev stack status is degraded",
+      {
+        status: status.status,
+        storageBackend: status.storage_backend,
+        redisHealthy: status.redis.healthy,
+        runtimeRunning: status.runtime.running,
+        adminRunning: status.admin.running,
+      },
+    );
+  });
+
+  await captureOpenRTCDevProbeCheck(checks, "connections", async () => {
+    const connections = await tools.fetchConnections({ room });
+    snapshots.connections = connections;
+    return openRTCDevProbeCheck(
+      "connections",
+      connections.room === room && Array.isArray(connections.connections),
+      "Dev active-user inspection endpoint is reachable",
+      { room: connections.room, count: connections.connections.length },
+    );
+  });
+
+  await captureOpenRTCDevProbeCheck(checks, "sockets", async () => {
+    const sockets = await tools.fetchSockets({ room });
+    snapshots.sockets = sockets;
+    const roomInSockets =
+      sockets.connections.some((connection) => connection.rooms.includes(room)) ||
+      sockets.yjs_connections.some((connection) => connection.room === room);
+    return openRTCDevProbeCheck(
+      "sockets",
+      Number.isFinite(sockets.active_sockets) && Number.isFinite(sockets.active_room_count),
+      roomInSockets ? "Dev socket inspection sees the selected room" : "Dev socket inspection endpoint is reachable",
+      {
+        activeSockets: sockets.active_sockets,
+        activeRoomCount: sockets.active_room_count,
+        roomInSockets,
+      },
+    );
+  });
+
+  await captureOpenRTCDevProbeCheck(checks, "storage", async () => {
+    const storage = await tools.fetchStorage({ room });
+    snapshots.storage = storage;
+    const found = storage.durable.found || Boolean(storage.runtime?.found);
+    return openRTCDevProbeCheck(
+      "storage",
+      storage.room === room && (!expectSeedStorage || found),
+      expectSeedStorage ? "Seeded room storage is available" : "Dev storage inspection endpoint is reachable",
+      {
+        room: storage.room,
+        durableFound: storage.durable.found,
+        runtimeFound: storage.runtime?.found ?? false,
+      },
+    );
+  });
+
+  await captureOpenRTCDevProbeCheck(checks, "yjs", async () => {
+    const yjs = await tools.fetchYJS({ room });
+    snapshots.yjs = yjs;
+    return openRTCDevProbeCheck(
+      "yjs",
+      yjs.room === room && Number.isFinite(yjs.durable.update_count) && Number.isFinite(yjs.durable.snapshot_bytes),
+      "Dev Yjs inspection endpoint is reachable",
+      {
+        room: yjs.room,
+        durableFound: yjs.durable.found,
+        snapshotHash: yjs.durable.snapshot_hash,
+        updates: yjs.durable.update_count,
+      },
+    );
+  });
+
+  await captureOpenRTCDevProbeCheck(checks, "events", async () => {
+    const eventOptions: OpenRTCDevEventsOptions = { room };
+    if (options.afterSequence !== undefined) {
+      eventOptions.afterSequence = options.afterSequence;
+    }
+    if (options.limit !== undefined) {
+      eventOptions.limit = options.limit;
+    }
+    const events = await tools.fetchEvents(eventOptions);
+    snapshots.events = events;
+    return openRTCDevProbeCheck(
+      "events",
+      events.room === room && Array.isArray(events.events),
+      "Dev event-log inspection endpoint is reachable",
+      { room: events.room, afterSequence: events.after_seq, limit: events.limit, count: events.events.length },
+    );
+  });
+
+  if (options.restart === "runtime" || options.restart === "both") {
+    await captureOpenRTCDevProbeCheck(checks, "restart-runtime", async () => {
+      const restart = await tools.restartRuntime();
+      snapshots.runtimeRestart = restart;
+      return openRTCDevProbeCheck(
+        "restart-runtime",
+        restart.service === "runtime" && restart.service_status.running,
+        "Runtime restart drill completed",
+        { generation: restart.service_status.generation },
+      );
+    });
+  }
+
+  if (options.restart === "admin" || options.restart === "both") {
+    await captureOpenRTCDevProbeCheck(checks, "restart-admin", async () => {
+      const restart = await tools.restartAdmin();
+      snapshots.adminRestart = restart;
+      return openRTCDevProbeCheck(
+        "restart-admin",
+        restart.service === "admin" && restart.service_status.running,
+        "Admin restart drill completed",
+        { generation: restart.service_status.generation },
+      );
+    });
+  }
+
+  return {
+    ok: checks.every((check) => check.ok),
+    room,
+    checks,
+    snapshots,
   };
 }
 
@@ -3483,6 +3704,59 @@ async function fetchOpenRTCDevJSON<TResponse>(
     throw new OpenRTCDevError(response.status, body, errorMessage(response, body));
   }
   return body as TResponse;
+}
+
+async function captureOpenRTCDevProbeCheck(
+  checks: OpenRTCDevProbeCheck[],
+  name: OpenRTCDevProbeCheckName,
+  run: () => Promise<OpenRTCDevProbeCheck>,
+): Promise<void> {
+  try {
+    checks.push(await run());
+  } catch (error) {
+    checks.push(
+      openRTCDevProbeCheck(name, false, openRTCDevProbeErrorMessage(error), openRTCDevProbeErrorDetail(error)),
+    );
+  }
+}
+
+function addOpenRTCDevProbeCheck(
+  checks: OpenRTCDevProbeCheck[],
+  name: OpenRTCDevProbeCheckName,
+  ok: boolean,
+  message: string,
+  detail?: unknown,
+): void {
+  checks.push(openRTCDevProbeCheck(name, ok, message, detail));
+}
+
+function openRTCDevProbeCheck(
+  name: OpenRTCDevProbeCheckName,
+  ok: boolean,
+  message: string,
+  detail?: unknown,
+): OpenRTCDevProbeCheck {
+  return detail === undefined ? { name, ok, message } : { name, ok, message, detail };
+}
+
+function openRTCDevProbeErrorMessage(error: unknown): string {
+  if (error instanceof OpenRTCDevError) {
+    return `Dev endpoint returned ${error.status}: ${error.message}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function openRTCDevProbeErrorDetail(error: unknown): unknown {
+  if (error instanceof OpenRTCDevError) {
+    return { status: error.status, body: error.body };
+  }
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message };
+  }
+  return error;
 }
 
 function parseOpenRTCDevTokenResponse(value: unknown): OpenRTCDevTokenResponse {

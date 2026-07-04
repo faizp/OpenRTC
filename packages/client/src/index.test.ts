@@ -46,6 +46,7 @@ import {
   removeCommentReaction,
   roomQuery,
   roomQueryExists,
+  runOpenRTCDevProbe,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
   type OpenRTCEvent,
@@ -1699,6 +1700,47 @@ assert.deepEqual(
     ["/dev/crash/admin", "POST"],
   ],
 );
+const devProbe = await devClient.tools.probe({ afterSequence: 8, limit: 2, restart: "runtime" });
+assert.equal(devProbe.ok, true);
+assert.equal(devProbe.room, "demo:canvas-1");
+assert.deepEqual(
+  devProbe.checks.map((check) => [check.name, check.ok]),
+  [
+    ["config", true],
+    ["seed-room", true],
+    ["status", true],
+    ["connections", true],
+    ["sockets", true],
+    ["storage", true],
+    ["yjs", true],
+    ["events", true],
+    ["restart-runtime", true],
+  ],
+);
+assert.equal(devProbe.snapshots.status?.storage_backend, "memory");
+assert.equal(devProbe.snapshots.events?.after_seq, 8);
+assert.equal(devProbe.snapshots.events?.limit, 2);
+assert.equal(devProbe.snapshots.runtimeRestart?.service_status.generation, 3);
+assert.deepEqual(
+  devToolCalls.slice(8).map((call) => [new URL(call.input).pathname, call.init?.method ?? "GET"]),
+  [
+    ["/dev/status", "GET"],
+    ["/dev/connections", "GET"],
+    ["/dev/sockets", "GET"],
+    ["/dev/storage", "GET"],
+    ["/dev/yjs", "GET"],
+    ["/dev/events", "GET"],
+    ["/dev/crash/runtime", "POST"],
+  ],
+);
+const standaloneProbe = await runOpenRTCDevProbe(devClient.tools, {
+  room: "demo:other",
+  expectSeedRoom: false,
+  expectSeedStorage: false,
+});
+assert.equal(standaloneProbe.ok, true);
+assert.equal(standaloneProbe.room, "demo:other");
+assert.equal(standaloneProbe.checks.find((check) => check.name === "seed-room")?.ok, true);
 const legacyDevTools = createOpenRTCDevTools(
   {
     publicKey: devConfig.publicKey,
@@ -1727,6 +1769,91 @@ assert.deepEqual(await legacyDevTools.restartRuntime(), {
   url: "http://127.0.0.1:3000/dev/crash/runtime",
   method: "POST",
 });
+const degradedDevTools = createOpenRTCDevTools(devConfig, {
+  room: "demo:room-1",
+  fetch: async (input) => {
+    const url = new URL(input);
+    if (url.pathname === "/dev/status") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          status: "degraded",
+          storage_backend: "memory",
+          redis: { healthy: false, error: "redis ping failed" },
+          runtime: {
+            running: false,
+            url: "http://127.0.0.1:8080",
+            healthz: "http://127.0.0.1:8080/healthz",
+            readyz: "http://127.0.0.1:8080/readyz",
+            generation: 4,
+          },
+          admin: {
+            running: true,
+            url: "http://127.0.0.1:8090",
+            healthz: "http://127.0.0.1:8090/healthz",
+            readyz: "http://127.0.0.1:8090/readyz",
+            generation: 2,
+          },
+          seed_rooms: [{ room: "demo:room-1", exists: true, storage_found: false }],
+          endpoints: { sockets: "http://127.0.0.1:3000/dev/sockets" },
+        }),
+      );
+    }
+    if (url.pathname === "/dev/storage") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          room: url.searchParams.get("room"),
+          durable: { found: false },
+          runtime: { node_id: "node-a", room: url.searchParams.get("room"), found: false, store_backed: true },
+        }),
+      );
+    }
+    if (url.pathname === "/dev/connections") {
+      return fakeResponse(200, JSON.stringify({ room: url.searchParams.get("room"), connections: [] }));
+    }
+    if (url.pathname === "/dev/sockets") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          node_id: "node-a",
+          connections: [],
+          yjs_connections: [],
+          active_sockets: 0,
+          active_room_count: 0,
+        }),
+      );
+    }
+    if (url.pathname === "/dev/yjs") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          room: url.searchParams.get("room"),
+          durable: {
+            found: false,
+            snapshot_found: false,
+            snapshot_bytes: 0,
+            snapshot_checkpoint: 0,
+            update_count: 0,
+            update_bytes: 0,
+          },
+        }),
+      );
+    }
+    if (url.pathname === "/dev/events") {
+      return fakeResponse(
+        200,
+        JSON.stringify({ room: url.searchParams.get("room"), after_seq: 0, limit: 20, events: [] }),
+      );
+    }
+    throw new Error(`unexpected degraded dev tool URL: ${input}`);
+  },
+});
+const degradedProbe = await degradedDevTools.probe();
+assert.equal(degradedProbe.ok, false);
+assert.equal(degradedProbe.checks.find((check) => check.name === "status")?.ok, false);
+assert.equal(degradedProbe.checks.find((check) => check.name === "storage")?.ok, false);
+assert.equal(degradedProbe.checks.find((check) => check.name === "events")?.ok, true);
 const devClientConnected = devClient.client.connect();
 await Promise.resolve();
 const devSocket = FakeWebSocket.instances[socketCountBeforeDevClient];

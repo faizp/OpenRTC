@@ -22,6 +22,11 @@ The in-browser Yjs panel is a transport probe for `/yjs/{room}`. CRDT merge
 semantics and editor bindings live in the `@openrtc/yjs` and
 `@openrtc/rich-text` packages.
 
+The browser `Probe all` flow has a programmatic equivalent in
+`@openrtc/client`: `createOpenRTCDevClient()` returns `tools.probe()` for typed
+status, socket, storage, Yjs, event-log, and optional restart checks against the
+same `openrtc dev` endpoints.
+
 ## Running locally
 
 Prerequisite: Go 1.18+.
