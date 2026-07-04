@@ -223,7 +223,10 @@ For product-surface state, `@openrtc/client` exports
 apps can seed from REST thread/inbox lists and apply realtime deltas
 immutably. `@openrtc/react` exposes `useRoomThreads`, `useRoomThread`,
 `useInboxNotifications`, and `useUnreadInboxCount` for the same materialized
-comment and notification state in React.
+comment and notification state in React. Wrap an `OpenRTCAdminClient` with
+`OpenRTCAdminProvider` or pass `admin` to `useRoomThreadsState` /
+`useInboxNotificationsState` when the hook should fetch the durable REST list
+before realtime deltas take over.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes

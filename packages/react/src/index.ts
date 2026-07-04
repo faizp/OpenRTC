@@ -30,6 +30,7 @@ import {
   type JSONPatchOperation,
   type JoinOptions,
   type OpenRTCAdminInboxNotification,
+  type OpenRTCAdminClient,
   type OpenRTCAdminThread,
   type OpenRTCCursor,
   type OpenRTCCursorOptions,
@@ -57,6 +58,7 @@ import {
 } from "@openrtc/client";
 
 const OpenRTCContext = createContext<OpenRTCClient | null>(null);
+const OpenRTCAdminContext = createContext<OpenRTCAdminClient | null>(null);
 const OpenRTCRoomContext = createContext<OpenRTCRoom | null>(null);
 
 export type RoomPresenceSelector<T> = (presence: OpenRTCRoomPresence) => T;
@@ -80,10 +82,30 @@ export interface StorageSelectorOptions<TSelected> extends JoinOptions {
 
 export interface RoomThreadsOptions extends JoinOptions {
   initialThreads?: readonly OpenRTCAdminThread[];
+  admin?: OpenRTCAdminClient | null;
+  fetch?: boolean;
+}
+
+export interface RoomThreadsState {
+  threads: OpenRTCAdminThread[];
+  loading: boolean;
+  error?: unknown;
+  refresh(): Promise<OpenRTCAdminThread[]>;
 }
 
 export interface InboxNotificationsOptions extends OpenRTCInboxMaterializationOptions {
   initialNotifications?: readonly OpenRTCAdminInboxNotification[];
+  admin?: OpenRTCAdminClient | null;
+  fetch?: boolean;
+  cursor?: string;
+  startingAfter?: string;
+}
+
+export interface InboxNotificationsState {
+  notifications: OpenRTCAdminInboxNotification[];
+  loading: boolean;
+  error?: unknown;
+  refresh(): Promise<OpenRTCAdminInboxNotification[]>;
 }
 
 export interface StorageMutationContext<TDocument = unknown> {
@@ -185,6 +207,7 @@ export interface OpenRTCRoomContextHooks {
   useStorageListener<TDocument = unknown>(callback: (event: OpenRTCStorageEvent<TDocument>) => void): void;
   useEventListener(callback: (event: OpenRTCEvent) => void): void;
   useCommentListener(callback: (event: OpenRTCCommentEvent) => void): void;
+  useThreadsState(options?: RoomThreadsOptions): RoomThreadsState;
   useThreads(options?: RoomThreadsOptions): OpenRTCAdminThread[];
   useThread(threadId: string, options?: RoomThreadsOptions): OpenRTCAdminThread | undefined;
   useCommentEvents(limit?: number): OpenRTCCommentEvent[];
@@ -259,8 +282,17 @@ export interface OpenRTCProviderProps {
   children: ReactNode;
 }
 
+export interface OpenRTCAdminProviderProps {
+  admin: OpenRTCAdminClient;
+  children: ReactNode;
+}
+
 export function OpenRTCProvider(props: OpenRTCProviderProps) {
   return createElement(OpenRTCContext.Provider, { value: props.client }, props.children);
+}
+
+export function OpenRTCAdminProvider(props: OpenRTCAdminProviderProps) {
+  return createElement(OpenRTCAdminContext.Provider, { value: props.admin }, props.children);
 }
 
 export function useOpenRTC(): OpenRTCClient {
@@ -269,6 +301,14 @@ export function useOpenRTC(): OpenRTCClient {
     throw new Error("useOpenRTC must be used inside OpenRTCProvider");
   }
   return client;
+}
+
+export function useOpenRTCAdmin(): OpenRTCAdminClient {
+  const admin = useContext(OpenRTCAdminContext);
+  if (!admin) {
+    throw new Error("useOpenRTCAdmin must be used inside OpenRTCAdminProvider");
+  }
+  return admin;
 }
 
 export function RoomProvider(props: OpenRTCRoomProviderProps): ReactNode {
@@ -351,6 +391,8 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
     useEventListener: (callback) => useEventListener(useRoomFromContext(context, "useEventListener").id, callback),
     useCommentListener: (callback) =>
       useCommentListener(useRoomFromContext(context, "useCommentListener").id, callback),
+    useThreadsState: (options = {}) =>
+      useRoomThreadsState(useRoomFromContext(context, "useThreadsState").id, options),
     useThreads: (options = {}) => useRoomThreads(useRoomFromContext(context, "useThreads").id, options),
     useThread: (threadId, options = {}) => useRoomThread(useRoomFromContext(context, "useThread").id, threadId, options),
     useCommentEvents: (limit = 200) => useRoomCommentEvents(useRoomFromContext(context, "useCommentEvents").id, limit),
@@ -892,11 +934,37 @@ export function useCommentListener(room: string, callback: (event: OpenRTCCommen
   useEffect(() => roomHandle.subscribe("comments", stableCallback), [roomHandle, stableCallback]);
 }
 
-export function useRoomThreads(room: string, options: RoomThreadsOptions = {}): OpenRTCAdminThread[] {
+export function useRoomThreadsState(room: string, options: RoomThreadsOptions = {}): RoomThreadsState {
   const client = useOpenRTC();
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = options.admin ?? contextAdmin ?? undefined;
   const initialThreads = useInitialThreads(room, options.initialThreads);
   const enterOptions = compactEnterRoomOptions(options);
+  const shouldFetch = options.fetch ?? admin !== undefined;
   const [threads, setThreads] = useState<OpenRTCAdminThread[]>(() => sortCommentThreads(initialThreads ?? []));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>();
+
+  const refresh = useCallback(async (): Promise<OpenRTCAdminThread[]> => {
+    if (!admin) {
+      const next = sortCommentThreads(initialThreads ?? []);
+      setThreads(next);
+      return next;
+    }
+    setLoading(true);
+    setError(undefined);
+    try {
+      const response = await admin.listThreads(room);
+      const next = sortCommentThreads(response.data);
+      setThreads(next);
+      return next;
+    } catch (caught) {
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  }, [admin, room, initialThreads]);
 
   useEffect(() => {
     const entered = client.enterRoom(room, enterOptions);
@@ -912,7 +980,26 @@ export function useRoomThreads(room: string, options: RoomThreadsOptions = {}): 
     };
   }, [client, room, enterOptions.limit, enterOptions.cursor, enterOptions.afterSequence, initialThreads]);
 
-  return threads;
+  useEffect(() => {
+    if (!shouldFetch || !admin) {
+      return;
+    }
+    void refresh().catch(() => undefined);
+  }, [admin, refresh, shouldFetch]);
+
+  return useMemo(
+    () => ({
+      threads,
+      loading,
+      ...(error !== undefined ? { error } : {}),
+      refresh,
+    }),
+    [threads, loading, error, refresh],
+  );
+}
+
+export function useRoomThreads(room: string, options: RoomThreadsOptions = {}): OpenRTCAdminThread[] {
+  return useRoomThreadsState(room, options).threads;
 }
 
 export function useRoomThread(
@@ -932,12 +1019,17 @@ export function useNotificationListener(callback: (event: OpenRTCNotificationDel
   useEffect(() => client.on("notification", stableCallback), [client, stableCallback]);
 }
 
-export function useInboxNotifications(options: InboxNotificationsOptions = {}): OpenRTCAdminInboxNotification[] {
+export function useInboxNotificationsState(options: InboxNotificationsOptions = {}): InboxNotificationsState {
   const client = useOpenRTC();
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = options.admin ?? contextAdmin ?? undefined;
   const initialNotifications = useInitialNotifications(options.userId, options.initialNotifications);
   const userId = options.userId;
   const unreadOnly = options.unreadOnly ?? false;
   const limit = options.limit;
+  const cursor = options.cursor;
+  const startingAfter = options.startingAfter;
+  const shouldFetch = options.fetch ?? (admin !== undefined && userId !== undefined);
   const materializationOptions = useMemo<OpenRTCInboxMaterializationOptions>(
     () => ({
       ...(userId !== undefined ? { userId } : {}),
@@ -949,6 +1041,34 @@ export function useInboxNotifications(options: InboxNotificationsOptions = {}): 
   const [notifications, setNotifications] = useState<OpenRTCAdminInboxNotification[]>(() =>
     sortInboxNotifications(initialNotifications ?? [], materializationOptions),
   );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>();
+
+  const refresh = useCallback(async (): Promise<OpenRTCAdminInboxNotification[]> => {
+    if (!admin || userId === undefined) {
+      const next = sortInboxNotifications(initialNotifications ?? [], materializationOptions);
+      setNotifications(next);
+      return next;
+    }
+    setLoading(true);
+    setError(undefined);
+    try {
+      const response = await admin.listInboxNotifications(userId, {
+        ...(typeof limit === "number" ? { limit } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+        ...(startingAfter !== undefined ? { startingAfter } : {}),
+        ...(unreadOnly ? { unread: true } : {}),
+      });
+      const next = sortInboxNotifications(response.data, materializationOptions);
+      setNotifications(next);
+      return next;
+    } catch (caught) {
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  }, [admin, cursor, initialNotifications, limit, materializationOptions, startingAfter, unreadOnly, userId]);
 
   useEffect(() => {
     setNotifications(sortInboxNotifications(initialNotifications ?? [], materializationOptions));
@@ -960,7 +1080,26 @@ export function useInboxNotifications(options: InboxNotificationsOptions = {}): 
     });
   }, [client, userId, materializationOptions, initialNotifications]);
 
-  return notifications;
+  useEffect(() => {
+    if (!shouldFetch || !admin || userId === undefined) {
+      return;
+    }
+    void refresh().catch(() => undefined);
+  }, [admin, refresh, shouldFetch, userId]);
+
+  return useMemo(
+    () => ({
+      notifications,
+      loading,
+      ...(error !== undefined ? { error } : {}),
+      refresh,
+    }),
+    [notifications, loading, error, refresh],
+  );
+}
+
+export function useInboxNotifications(options: InboxNotificationsOptions = {}): OpenRTCAdminInboxNotification[] {
+  return useInboxNotificationsState(options).notifications;
 }
 
 export function useUnreadInboxCount(

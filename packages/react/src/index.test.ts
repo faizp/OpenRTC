@@ -2,18 +2,22 @@ import assert from "node:assert/strict";
 import { isValidElement, type ReactElement } from "react";
 import {
   Cursor,
+  OpenRTCAdminProvider,
   RoomProvider,
   createRoomContext,
   useCommentListener,
   useCurrentRoom,
+  useOpenRTCAdmin,
   useMutation,
   useNotificationEvents,
   useNotificationListener,
   useInboxNotifications,
+  useInboxNotificationsState,
   useMutateLiveStorage,
   usePatchStorage,
   useRoomThread,
   useRoomThreads,
+  useRoomThreadsState,
   useRoomCommentEvents,
   useSetLiveStorage,
   useSetStorage,
@@ -59,8 +63,12 @@ assert.equal(typeof useNotificationListener, "function");
 assert.equal(typeof useNotificationEvents, "function");
 assert.equal(typeof useRoomThreads, "function");
 assert.equal(typeof useRoomThread, "function");
+assert.equal(typeof useRoomThreadsState, "function");
 assert.equal(typeof useInboxNotifications, "function");
+assert.equal(typeof useInboxNotificationsState, "function");
 assert.equal(typeof useUnreadInboxCount, "function");
+assert.equal(typeof OpenRTCAdminProvider, "function");
+assert.equal(typeof useOpenRTCAdmin, "function");
 assert.equal(typeof RoomProvider, "function");
 assert.equal(typeof useCurrentRoom, "function");
 
@@ -71,6 +79,7 @@ assert.equal(typeof roomContext.useOthers, "function");
 assert.equal(typeof roomContext.useStorage, "function");
 assert.equal(typeof roomContext.useMutation, "function");
 assert.equal(typeof roomContext.useThreads, "function");
+assert.equal(typeof roomContext.useThreadsState, "function");
 assert.equal(typeof roomContext.useThread, "function");
 assert.equal(typeof roomContext.useCommentEvents, "function");
 
