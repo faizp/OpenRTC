@@ -32,10 +32,13 @@ var probeHTTPClient = func() *http.Client {
 	return &http.Client{}
 }
 
-var probeWebSocketDial = func(ctx context.Context, rawURL string) (*websocket.Conn, *http.Response, error) {
+var probeWebSocketDial = func(ctx context.Context, rawURL string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 	var dialer websocket.Dialer
-	return dialer.DialContext(ctx, rawURL, nil)
+	return dialer.DialContext(ctx, rawURL, requestHeader)
 }
+
+// A valid Yjs update that sets text "ok" on a root text type named "openrtc_probe".
+var probeYJSUpdatePayload = []byte{1, 1, 186, 223, 201, 238, 5, 0, 4, 1, 13, 111, 112, 101, 110, 114, 116, 99, 95, 112, 114, 111, 98, 101, 2, 111, 107, 0}
 
 type probeOptions struct {
 	baseURL           string
@@ -43,6 +46,7 @@ type probeOptions struct {
 	restart           string
 	jsonOutput        bool
 	realtime          bool
+	yjsRealtime       bool
 	timeout           time.Duration
 	afterSequence     uint64
 	limit             int
@@ -73,6 +77,7 @@ type devProbeSnapshots struct {
 	YJS            *devYJSSnapshot                    `json:"yjs,omitempty"`
 	Events         *devEventsSnapshot                 `json:"events,omitempty"`
 	Realtime       *devRealtimeProbeSnapshot          `json:"realtime,omitempty"`
+	YJSRealtime    *devYJSRealtimeProbeSnapshot       `json:"yjsRealtime,omitempty"`
 	RuntimeRestart *devRestartSnapshot                `json:"runtimeRestart,omitempty"`
 	AdminRestart   *devRestartSnapshot                `json:"adminRestart,omitempty"`
 }
@@ -90,6 +95,18 @@ type devRealtimeProbeSnapshot struct {
 	SnapshotSequence uint64 `json:"snapshot_sequence,omitempty"`
 	AckSequence      uint64 `json:"ack_sequence,omitempty"`
 	ProbePath        string `json:"probe_path,omitempty"`
+}
+
+type devYJSRealtimeProbeSnapshot struct {
+	Connected                  bool   `json:"connected"`
+	UpdateSent                 bool   `json:"update_sent"`
+	UpdateBytes                int    `json:"update_bytes"`
+	Observed                   bool   `json:"observed"`
+	BaselineDurableUpdateCount int    `json:"baseline_durable_update_count"`
+	DurableUpdateCount         int    `json:"durable_update_count"`
+	BaselineRuntimeUpdateCount int    `json:"baseline_runtime_update_count,omitempty"`
+	RuntimeUpdateCount         int    `json:"runtime_update_count,omitempty"`
+	UpdateKind                 string `json:"update_kind"`
 }
 
 func probeMain(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -141,6 +158,7 @@ func parseProbeOptions(args []string, output io.Writer) (probeOptions, error) {
 	flags.StringVar(&opts.restart, "restart", opts.restart, "optional restart drill: none, runtime, admin, or both")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write the full probe report as JSON")
 	flags.BoolVar(&opts.realtime, "realtime", false, "open the runtime WebSocket, join the room, read storage, and perform a sequenced storage patch")
+	flags.BoolVar(&opts.yjsRealtime, "yjs-realtime", false, "open the Yjs WebSocket, send a valid update frame, and verify dev Yjs inspection sees it")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall probe timeout")
 	flags.Uint64Var(&opts.afterSequence, "after-seq", 0, "event-log sequence lower bound")
 	flags.IntVar(&opts.limit, "limit", 20, "event-log limit")
@@ -343,6 +361,26 @@ func runProbe(ctx context.Context, opts probeOptions) (devProbeResult, error) {
 			)
 		})
 	}
+	if opts.yjsRealtime {
+		captureProbeCheck(&result, "yjs-realtime", func() devProbeCheck {
+			snapshot, err := runYJSRealtimeProbe(ctx, client, opts.baseURL, config, room)
+			if err != nil {
+				return probeErrorCheck("yjs-realtime", err)
+			}
+			result.Snapshots.YJSRealtime = &snapshot
+			return probeCheck(
+				"yjs-realtime",
+				snapshot.Connected && snapshot.UpdateSent && snapshot.Observed,
+				probeYJSRealtimeMessage(snapshot),
+				map[string]interface{}{
+					"updateBytes":        snapshot.UpdateBytes,
+					"durableUpdateCount": snapshot.DurableUpdateCount,
+					"runtimeUpdateCount": snapshot.RuntimeUpdateCount,
+					"observed":           snapshot.Observed,
+				},
+			)
+		})
+	}
 
 	result.OK = true
 	for _, check := range result.Checks {
@@ -420,20 +458,13 @@ func doProbeJSON(client *http.Client, req *http.Request, allowedStatuses map[int
 }
 
 func runRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devRealtimeProbeSnapshot, error) {
-	var tokenResponse devTokenResponse
-	tokenURL := endpointURL(baseURL, config.TokenURL, "/dev/token", map[string]string{
-		"pubkey": localPublicKey,
-		"room":   room,
-	})
-	if err := probeGetJSON(ctx, client, tokenURL, nil, &tokenResponse); err != nil {
+	token, err := fetchProbeDevToken(ctx, client, baseURL, config, room)
+	if err != nil {
 		return devRealtimeProbeSnapshot{}, fmt.Errorf("fetch dev realtime token: %w", err)
 	}
-	if strings.TrimSpace(tokenResponse.Token) == "" {
-		return devRealtimeProbeSnapshot{}, fmt.Errorf("dev realtime token response missing token")
-	}
 
-	wsURL := probeRuntimeWSURL(baseURL, config.WSURL, tokenResponse.Token)
-	ws, _, err := probeWebSocketDial(ctx, wsURL)
+	wsURL := probeRuntimeWSURL(baseURL, config.WSURL, token)
+	ws, _, err := probeWebSocketDial(ctx, wsURL, probeWebSocketHeaders(baseURL))
 	if err != nil {
 		return devRealtimeProbeSnapshot{}, fmt.Errorf("dial runtime websocket: %w", err)
 	}
@@ -536,6 +567,112 @@ func runRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, 
 	return snapshot, nil
 }
 
+func runYJSRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devYJSRealtimeProbeSnapshot, error) {
+	baseline, err := fetchProbeYJSSnapshot(ctx, client, baseURL, config, room)
+	if err != nil {
+		return devYJSRealtimeProbeSnapshot{}, fmt.Errorf("fetch baseline yjs snapshot: %w", err)
+	}
+	snapshot := devYJSRealtimeProbeSnapshot{
+		BaselineDurableUpdateCount: baseline.Durable.UpdateCount,
+		BaselineRuntimeUpdateCount: runtimeYJSUpdateCount(baseline),
+		UpdateBytes:                len(probeYJSUpdatePayload),
+		UpdateKind:                 "update",
+	}
+
+	token, err := fetchProbeDevToken(ctx, client, baseURL, config, room)
+	if err != nil {
+		return snapshot, fmt.Errorf("fetch dev yjs token: %w", err)
+	}
+	wsURL := probeYJSWSURL(baseURL, config.YJSURL, room, token)
+	ws, _, err := probeWebSocketDial(ctx, wsURL, probeWebSocketHeaders(baseURL))
+	if err != nil {
+		return snapshot, fmt.Errorf("dial yjs websocket: %w", err)
+	}
+	defer ws.Close()
+
+	deadline, _ := ctx.Deadline()
+	if deadline.IsZero() {
+		deadline = time.Now().Add(defaultProbeTimeout)
+	}
+	_ = ws.SetWriteDeadline(deadline)
+	snapshot.Connected = true
+
+	frame := make([]byte, 1+len(probeYJSUpdatePayload))
+	frame[0] = byte(cluster.YJSEventUpdate)
+	copy(frame[1:], probeYJSUpdatePayload)
+	if err := ws.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+		return snapshot, fmt.Errorf("write yjs update frame: %w", err)
+	}
+	snapshot.UpdateSent = true
+
+	return waitForYJSProbeObservation(ctx, client, baseURL, config, room, baseline, snapshot)
+}
+
+func fetchProbeDevToken(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (string, error) {
+	var tokenResponse devTokenResponse
+	tokenURL := endpointURL(baseURL, config.TokenURL, "/dev/token", map[string]string{
+		"pubkey": localPublicKey,
+		"room":   room,
+	})
+	if err := probeGetJSON(ctx, client, tokenURL, nil, &tokenResponse); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(tokenResponse.Token) == "" {
+		return "", fmt.Errorf("dev token response missing token")
+	}
+	return tokenResponse.Token, nil
+}
+
+func fetchProbeYJSSnapshot(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devYJSSnapshot, error) {
+	var snapshot devYJSSnapshot
+	if err := probeGetJSON(ctx, client, endpointURL(baseURL, config.YJSInspectionURL, "/dev/yjs", map[string]string{"room": room}), nil, &snapshot); err != nil {
+		return devYJSSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func waitForYJSProbeObservation(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	config devClientConfigSnapshot,
+	room string,
+	baseline devYJSSnapshot,
+	snapshot devYJSRealtimeProbeSnapshot,
+) (devYJSRealtimeProbeSnapshot, error) {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		current, err := fetchProbeYJSSnapshot(ctx, client, baseURL, config, room)
+		if err != nil {
+			return snapshot, fmt.Errorf("fetch yjs snapshot after update: %w", err)
+		}
+		snapshot.DurableUpdateCount = current.Durable.UpdateCount
+		snapshot.RuntimeUpdateCount = runtimeYJSUpdateCount(current)
+		if yjsProbeObserved(baseline, current) {
+			snapshot.Observed = true
+			return snapshot, nil
+		}
+		select {
+		case <-ctx.Done():
+			return snapshot, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func yjsProbeObserved(baseline devYJSSnapshot, current devYJSSnapshot) bool {
+	return current.Durable.UpdateCount > baseline.Durable.UpdateCount ||
+		runtimeYJSUpdateCount(current) > runtimeYJSUpdateCount(baseline)
+}
+
+func runtimeYJSUpdateCount(snapshot devYJSSnapshot) int {
+	if snapshot.Runtime == nil {
+		return 0
+	}
+	return snapshot.Runtime.UpdateCount
+}
+
 func probeRuntimeWSURL(baseURL string, rawWSURL string, token string) string {
 	parsed := mustResolveURL(baseURL, rawWSURL)
 	switch parsed.Scheme {
@@ -548,6 +685,33 @@ func probeRuntimeWSURL(baseURL string, rawWSURL string, token string) string {
 	values.Set("token", token)
 	parsed.RawQuery = values.Encode()
 	return parsed.String()
+}
+
+func probeYJSWSURL(baseURL string, rawYJSURL string, room string, token string) string {
+	raw := rawYJSURL
+	if raw == "" {
+		raw = "/yjs"
+	}
+	parsed := mustResolveURL(baseURL, raw)
+	switch parsed.Scheme {
+	case "http":
+		parsed.Scheme = "ws"
+	case "https":
+		parsed.Scheme = "wss"
+	}
+	parsed.Path = "/yjs/" + url.PathEscape(room)
+	values := parsed.Query()
+	values.Set("token", token)
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
+}
+
+func probeWebSocketHeaders(baseURL string) http.Header {
+	parsed := mustResolveURL(baseURL, "")
+	parsed.Path = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return http.Header{"Origin": []string{parsed.String()}}
 }
 
 func readProbeWSMessage(ws *websocket.Conn) (map[string]interface{}, error) {
@@ -679,6 +843,13 @@ func probeRealtimeMessage(snapshot devRealtimeProbeSnapshot) string {
 		return "Runtime WebSocket join, storage snapshot, and sequenced storage patch completed"
 	}
 	return "Runtime WebSocket realtime probe did not complete"
+}
+
+func probeYJSRealtimeMessage(snapshot devYJSRealtimeProbeSnapshot) string {
+	if snapshot.Connected && snapshot.UpdateSent && snapshot.Observed {
+		return "Yjs WebSocket accepted an update frame and dev inspection observed it"
+	}
+	return "Yjs WebSocket realtime probe did not complete"
 }
 
 func containsString(values []string, needle string) bool {

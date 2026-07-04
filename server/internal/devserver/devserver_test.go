@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,10 +186,13 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	defer server.Close()
 	dialedURL := ""
 	previousDial := probeWebSocketDial
-	probeWebSocketDial = func(ctx context.Context, rawURL string) (*websocket.Conn, *http.Response, error) {
+	probeWebSocketDial = func(ctx context.Context, rawURL string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 		dialedURL = rawURL
+		if requestHeader.Get("Origin") != server.URL {
+			t.Fatalf("expected websocket origin %q, got %q", server.URL, requestHeader.Get("Origin"))
+		}
 		wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			upgrader := websocket.Upgrader{}
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			ws, err := upgrader.Upgrade(w, r, nil)
 			if err != nil {
 				t.Errorf("upgrade realtime probe websocket: %v", err)
@@ -258,7 +262,7 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 			_, _ = readProbeWSMessage(ws)
 		}))
 		t.Cleanup(wsServer.Close)
-		return websocket.DefaultDialer.DialContext(ctx, "ws"+wsServer.URL[len("http"):], nil)
+		return websocket.DefaultDialer.DialContext(ctx, "ws"+wsServer.URL[len("http"):], requestHeader)
 	}
 	t.Cleanup(func() {
 		probeWebSocketDial = previousDial
@@ -289,6 +293,89 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	}
 	if result.Snapshots.Realtime == nil || result.Snapshots.Realtime.ConnectionID != "probe-conn-1" || result.Snapshots.Realtime.SnapshotSequence != 1 || result.Snapshots.Realtime.AckSequence != 2 {
 		t.Fatalf("unexpected realtime snapshot: %+v", result.Snapshots.Realtime)
+	}
+}
+
+func TestRunProbeYJSRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
+	var yjsUpdateCount int64 = 1
+	var yjsUpdateBytes int64 = 10
+	server := newProbeTestServer(t, probeTestServerOptions{
+		healthy:        true,
+		yjsUpdateCount: &yjsUpdateCount,
+		yjsUpdateBytes: &yjsUpdateBytes,
+	})
+	defer server.Close()
+	dialedURL := ""
+	previousDial := probeWebSocketDial
+	probeWebSocketDial = func(ctx context.Context, rawURL string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
+		dialedURL = rawURL
+		if requestHeader.Get("Origin") != server.URL {
+			t.Fatalf("expected websocket origin %q, got %q", server.URL, requestHeader.Get("Origin"))
+		}
+		wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade yjs probe websocket: %v", err)
+				return
+			}
+			defer ws.Close()
+			messageType, frame, err := ws.ReadMessage()
+			if err != nil {
+				t.Errorf("read yjs probe frame: %v", err)
+				return
+			}
+			if messageType != websocket.BinaryMessage {
+				t.Errorf("expected binary yjs probe frame, got %d", messageType)
+				return
+			}
+			if len(frame) != 1+len(probeYJSUpdatePayload) || frame[0] != byte(cluster.YJSEventUpdate) || !bytes.Equal(frame[1:], probeYJSUpdatePayload) {
+				t.Errorf("unexpected yjs probe frame: %#v", frame)
+				return
+			}
+			atomic.AddInt64(&yjsUpdateCount, 1)
+			atomic.AddInt64(&yjsUpdateBytes, int64(len(probeYJSUpdatePayload)))
+		}))
+		t.Cleanup(wsServer.Close)
+		return websocket.DefaultDialer.DialContext(ctx, "ws"+wsServer.URL[len("http"):], requestHeader)
+	}
+	t.Cleanup(func() {
+		probeWebSocketDial = previousDial
+	})
+
+	result, err := runProbe(context.Background(), probeOptions{
+		baseURL:           server.URL,
+		room:              "demo:room-1",
+		yjsRealtime:       true,
+		timeout:           time.Second,
+		limit:             5,
+		expectSeedRoom:    true,
+		expectSeedStorage: true,
+	})
+
+	if err != nil {
+		t.Fatalf("run yjs realtime probe: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected yjs realtime probe to pass, got %+v", result.Checks)
+	}
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,yjs-realtime" {
+		t.Fatalf("unexpected yjs realtime checks: %v", got)
+	}
+	if !strings.Contains(dialedURL, "/yjs/demo:room-1") || !strings.Contains(dialedURL, "token=dev-token") {
+		t.Fatalf("expected yjs realtime probe to dial room with dev token, got %q", dialedURL)
+	}
+	if result.Snapshots.YJSRealtime == nil ||
+		!result.Snapshots.YJSRealtime.Connected ||
+		!result.Snapshots.YJSRealtime.UpdateSent ||
+		!result.Snapshots.YJSRealtime.Observed ||
+		result.Snapshots.YJSRealtime.BaselineDurableUpdateCount != 1 ||
+		result.Snapshots.YJSRealtime.DurableUpdateCount != 2 ||
+		result.Snapshots.YJSRealtime.UpdateBytes != len(probeYJSUpdatePayload) {
+		t.Fatalf("unexpected yjs realtime snapshot: %+v", result.Snapshots.YJSRealtime)
+	}
+	if server.lastTokenQuery.Get("pubkey") != localPublicKey || server.lastTokenQuery.Get("room") != "demo:room-1" {
+		t.Fatalf("expected yjs realtime probe to fetch a room-scoped dev token, got %v", server.lastTokenQuery)
 	}
 }
 
@@ -1272,7 +1359,9 @@ func (s *fakeDevStorageStore) ListPublishedEvents(_ context.Context, room string
 }
 
 type probeTestServerOptions struct {
-	healthy bool
+	healthy        bool
+	yjsUpdateCount *int64
+	yjsUpdateBytes *int64
 }
 
 type probeTestServer struct {
@@ -1395,6 +1484,14 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
 			return
 		}
+		updateCount := 1
+		updateBytes := 10
+		if opts.yjsUpdateCount != nil {
+			updateCount = int(atomic.LoadInt64(opts.yjsUpdateCount))
+		}
+		if opts.yjsUpdateBytes != nil {
+			updateBytes = int(atomic.LoadInt64(opts.yjsUpdateBytes))
+		}
 		writeJSON(w, http.StatusOK, devYJSSnapshot{
 			Room: r.URL.Query().Get("room"),
 			Durable: devYJSDocumentSnapshot{
@@ -1403,8 +1500,8 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 				SnapshotBytes:      10,
 				SnapshotHash:       "fnv1a64:abc",
 				SnapshotCheckpoint: 3,
-				UpdateCount:        1,
-				UpdateBytes:        10,
+				UpdateCount:        updateCount,
+				UpdateBytes:        updateBytes,
 			},
 		})
 	})
