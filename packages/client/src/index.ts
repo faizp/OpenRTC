@@ -669,6 +669,7 @@ export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "rem
 export interface OpenRTCStorageMutationOptions {
   opId?: string;
   expectedSequence?: number;
+  addToHistory?: boolean;
 }
 
 export interface OpenRTCLiveNodePatchOptions {
@@ -743,8 +744,29 @@ export interface OpenRTCStorageStatusUpdate {
   sequence?: number;
 }
 
+export interface OpenRTCStorageHistoryEvent {
+  room: string;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoDepth: number;
+  redoDepth: number;
+  paused: boolean;
+}
+
+export interface OpenRTCStorageHistory {
+  undo<TDocument = unknown>(options?: OpenRTCStorageMutationOptions): Promise<TDocument | undefined>;
+  redo<TDocument = unknown>(options?: OpenRTCStorageMutationOptions): Promise<TDocument | undefined>;
+  canUndo(): boolean;
+  canRedo(): boolean;
+  clear(): void;
+  pause(): void;
+  resume(): void;
+  disable<T>(callback: () => T): T;
+}
+
 export interface OpenRTCRoom {
   readonly id: string;
+  readonly history: OpenRTCStorageHistory;
   getStatus(): ConnectionStatus;
   getPresence(): OpenRTCRoomPresence;
   getSelf(): PresencePeer | undefined;
@@ -790,6 +812,7 @@ export interface OpenRTCRoom {
     type: "storage-status",
     callback: (status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void,
   ): () => void;
+  subscribe(type: "history", callback: (event: OpenRTCStorageHistoryEvent) => void): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
@@ -1267,6 +1290,7 @@ export interface OpenRTCEventMap {
   notification: OpenRTCNotificationDelta;
   storage: OpenRTCStorageEvent;
   "storage-status": OpenRTCStorageStatusUpdate;
+  history: OpenRTCStorageHistoryEvent;
   error: OpenRTCError;
   diagnostic: OpenRTCDiagnosticEvent;
   "lost-connection": OpenRTCLostConnectionUpdate;
@@ -1300,6 +1324,17 @@ interface PendingStorageMutation extends PendingStorageGet {
   operations?: JSONPatchOperation[];
   hadPreviousDocument: boolean;
   previousDocument?: unknown;
+  addToHistory: boolean;
+}
+
+interface StorageHistoryEntry {
+  undoOperations: JSONPatchOperation[];
+  redoOperations: JSONPatchOperation[];
+}
+
+interface PendingStorageHistoryGroup {
+  before: unknown;
+  after: unknown;
 }
 
 interface ActiveRoomEntry {
@@ -1326,6 +1361,7 @@ const WS_OPEN = 1;
 const DEFAULT_LOST_CONNECTION_TIMEOUT_MS = 5000;
 const MIN_LOST_CONNECTION_TIMEOUT_MS = 1000;
 const MAX_LOST_CONNECTION_TIMEOUT_MS = 30000;
+const MAX_STORAGE_HISTORY_ENTRIES = 100;
 const DEFAULT_OPENRTC_DEV_BASE_URL = "http://127.0.0.1:3000";
 const DEFAULT_OPENRTC_DEV_TOKEN_URL = "/dev/token";
 const DEFAULT_OPENRTC_DEV_CONFIG_URL = "/dev/config";
@@ -1857,6 +1893,11 @@ export class OpenRTCClient {
   private storageStatusByRoom = new Map<string, OpenRTCStorageStatus>();
   private storageSequenceByRoom = new Map<string, number>();
   private storageRequestedRooms = new Set<string>();
+  private storageUndoStackByRoom = new Map<string, StorageHistoryEntry[]>();
+  private storageRedoStackByRoom = new Map<string, StorageHistoryEntry[]>();
+  private storagePausedHistoryByRoom = new Map<string, PendingStorageHistoryGroup>();
+  private storageHistoryPauseDepthByRoom = new Map<string, number>();
+  private storageHistoryDisabledDepthByRoom = new Map<string, number>();
   private pendingRequests = new Map<string, PendingSend>();
   private pendingTraces = new Map<string, PendingSend>();
   private pendingPresenceByRoom = new Map<string, PendingPresenceSend[]>();
@@ -1864,6 +1905,7 @@ export class OpenRTCClient {
   private storageGetWaitersByRoom = new Map<string, PendingStorageGet[]>();
   private pendingStorageMutations = new Map<string, PendingStorageMutation>();
   private roomHandles = new Map<string, OpenRTCRoomHandle>();
+  private storageHistoryHandles = new Map<string, OpenRTCStorageHistoryHandle>();
   private activeRooms = new Map<string, ActiveRoomEntry>();
   private roomRetainCounts = new Map<string, number>();
   private lastEventSequenceByRoom = new Map<string, number>();
@@ -2161,6 +2203,92 @@ export class OpenRTCClient {
 
   getStoragePendingMutations(room: string): OpenRTCStoragePendingMutation[] {
     return this.storagePendingMutations(room);
+  }
+
+  getStorageHistory(room: string): OpenRTCStorageHistory {
+    let handle = this.storageHistoryHandles.get(room);
+    if (!handle) {
+      handle = new OpenRTCStorageHistoryHandle(this, room);
+      this.storageHistoryHandles.set(room, handle);
+    }
+    return handle;
+  }
+
+  undoStorage<TDocument = unknown>(
+    room: string,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument | undefined> {
+    return this.applyStorageHistoryEntry<TDocument>(room, "undo", options);
+  }
+
+  redoStorage<TDocument = unknown>(
+    room: string,
+    options: OpenRTCStorageMutationOptions = {},
+  ): Promise<TDocument | undefined> {
+    return this.applyStorageHistoryEntry<TDocument>(room, "redo", options);
+  }
+
+  canUndoStorage(room: string): boolean {
+    return (this.storageUndoStackByRoom.get(room)?.length ?? 0) > 0;
+  }
+
+  canRedoStorage(room: string): boolean {
+    return (this.storageRedoStackByRoom.get(room)?.length ?? 0) > 0;
+  }
+
+  clearStorageHistory(room: string): void {
+    this.storageUndoStackByRoom.delete(room);
+    this.storageRedoStackByRoom.delete(room);
+    this.storagePausedHistoryByRoom.delete(room);
+    this.emitStorageHistory(room);
+  }
+
+  pauseStorageHistory(room: string): void {
+    this.storageHistoryPauseDepthByRoom.set(room, this.storageHistoryPauseDepth(room) + 1);
+    this.emitStorageHistory(room);
+  }
+
+  resumeStorageHistory(room: string): void {
+    const depth = this.storageHistoryPauseDepth(room);
+    if (depth === 0) {
+      return;
+    }
+    if (depth > 1) {
+      this.storageHistoryPauseDepthByRoom.set(room, depth - 1);
+      this.emitStorageHistory(room);
+      return;
+    }
+    this.storageHistoryPauseDepthByRoom.delete(room);
+    const group = this.storagePausedHistoryByRoom.get(room);
+    this.storagePausedHistoryByRoom.delete(room);
+    if (group) {
+      this.commitStorageHistoryEntry(room, group.before, group.after);
+      return;
+    }
+    this.emitStorageHistory(room);
+  }
+
+  disableStorageHistory<T>(room: string, callback: () => T): T {
+    this.storageHistoryDisabledDepthByRoom.set(room, this.storageHistoryDisabledDepth(room) + 1);
+    const finish = (): void => {
+      const depth = this.storageHistoryDisabledDepth(room);
+      if (depth <= 1) {
+        this.storageHistoryDisabledDepthByRoom.delete(room);
+      } else {
+        this.storageHistoryDisabledDepthByRoom.set(room, depth - 1);
+      }
+    };
+    try {
+      const result = callback();
+      if (isPromiseLike(result)) {
+        return result.finally(finish) as T;
+      }
+      finish();
+      return result;
+    } catch (error) {
+      finish();
+      throw error;
+    }
   }
 
   setStorage<TDocument = unknown>(
@@ -2663,6 +2791,7 @@ export class OpenRTCClient {
         ...(kind === "patch" && operations ? { operations } : {}),
         hadPreviousDocument,
         ...(hadPreviousDocument ? { previousDocument } : {}),
+        addToHistory: options.addToHistory !== false,
         resolve: (document) => {
           resolve(document as TDocument);
         },
@@ -2950,14 +3079,18 @@ export class OpenRTCClient {
         ...(opId ? { opId } : {}),
         ...(sequence !== undefined ? { sequence } : {}),
       } as const;
+      let pending: PendingStorageMutation | undefined;
       if (requestId) {
-        const pending = this.pendingStorageMutations.get(requestId);
+        pending = this.pendingStorageMutations.get(requestId);
         if (pending) {
           this.pendingStorageMutations.delete(requestId);
-          pending.resolve(document);
         }
       }
-      this.applyAuthoritativeStorageMessage(room, document, event);
+      const applied = this.applyAuthoritativeStorageMessage(room, document, event);
+      if (pending && applied) {
+        this.recordStorageHistoryFromMutation(pending, document);
+      }
+      pending?.resolve(document);
       return;
     }
 
@@ -3334,6 +3467,127 @@ export class OpenRTCClient {
     return pending;
   }
 
+  private recordStorageHistoryFromMutation(mutation: PendingStorageMutation, document: unknown): void {
+    if (!mutation.addToHistory || !mutation.hadPreviousDocument || this.storageHistoryDisabledDepth(mutation.room) > 0) {
+      return;
+    }
+    this.recordStorageHistoryEntry(
+      mutation.room,
+      cloneStorageDocument(mutation.previousDocument),
+      cloneStorageDocument(document),
+    );
+  }
+
+  private recordStorageHistoryEntry(room: string, before: unknown, after: unknown): void {
+    if (jsonEqual(before, after)) {
+      return;
+    }
+    if (this.storageHistoryPauseDepth(room) > 0) {
+      const group = this.storagePausedHistoryByRoom.get(room);
+      if (group) {
+        group.after = cloneStorageDocument(after);
+      } else {
+        this.storagePausedHistoryByRoom.set(room, {
+          before: cloneStorageDocument(before),
+          after: cloneStorageDocument(after),
+        });
+      }
+      this.emitStorageHistory(room);
+      return;
+    }
+    this.commitStorageHistoryEntry(room, before, after);
+  }
+
+  private commitStorageHistoryEntry(room: string, before: unknown, after: unknown): void {
+    const redoOperations = diffJSONPatch(before, after);
+    const undoOperations = diffJSONPatch(after, before);
+    if (redoOperations.length === 0 || undoOperations.length === 0) {
+      return;
+    }
+    const stack = this.storageUndoStackByRoom.get(room) ?? [];
+    stack.push({
+      undoOperations,
+      redoOperations,
+    });
+    if (stack.length > MAX_STORAGE_HISTORY_ENTRIES) {
+      stack.splice(0, stack.length - MAX_STORAGE_HISTORY_ENTRIES);
+    }
+    this.storageUndoStackByRoom.set(room, stack);
+    this.storageRedoStackByRoom.delete(room);
+    this.emitStorageHistory(room);
+  }
+
+  private applyStorageHistoryEntry<TDocument>(
+    room: string,
+    direction: "undo" | "redo",
+    options: OpenRTCStorageMutationOptions,
+  ): Promise<TDocument | undefined> {
+    const sourceStack =
+      direction === "undo" ? this.storageUndoStackByRoom.get(room) : this.storageRedoStackByRoom.get(room);
+    const entry = sourceStack?.pop();
+    if (!entry) {
+      this.emitStorageHistory(room);
+      return Promise.resolve(undefined);
+    }
+    const targetStack =
+      direction === "undo"
+        ? this.storageRedoStackByRoom.get(room) ?? []
+        : this.storageUndoStackByRoom.get(room) ?? [];
+    targetStack.push(entry);
+    if (direction === "undo") {
+      this.storageRedoStackByRoom.set(room, targetStack);
+    } else {
+      this.storageUndoStackByRoom.set(room, targetStack);
+    }
+    this.emitStorageHistory(room);
+
+    const operations = cloneStorageDocument(direction === "undo" ? entry.undoOperations : entry.redoOperations);
+    return this.patchStorage<TDocument>(room, operations, {
+      ...options,
+      addToHistory: false,
+    }).catch((error) => {
+      targetStack.pop();
+      const restoredSourceStack =
+        direction === "undo" ? this.storageUndoStackByRoom.get(room) ?? [] : this.storageRedoStackByRoom.get(room) ?? [];
+      restoredSourceStack.push(entry);
+      if (direction === "undo") {
+        this.storageUndoStackByRoom.set(room, restoredSourceStack);
+      } else {
+        this.storageRedoStackByRoom.set(room, restoredSourceStack);
+      }
+      this.emitStorageHistory(room);
+      throw error;
+    });
+  }
+
+  private storageHistoryPauseDepth(room: string): number {
+    return this.storageHistoryPauseDepthByRoom.get(room) ?? 0;
+  }
+
+  private storageHistoryDisabledDepth(room: string): number {
+    return this.storageHistoryDisabledDepthByRoom.get(room) ?? 0;
+  }
+
+  private emitStorageHistory(room: string): void {
+    this.emit("history", {
+      room,
+      canUndo: this.canUndoStorage(room),
+      canRedo: this.canRedoStorage(room),
+      undoDepth: this.storageUndoStackByRoom.get(room)?.length ?? 0,
+      redoDepth: this.storageRedoStackByRoom.get(room)?.length ?? 0,
+      paused: this.storageHistoryPauseDepth(room) > 0,
+    });
+  }
+
+  private resetStorageHistory(room: string): void {
+    this.storageUndoStackByRoom.delete(room);
+    this.storageRedoStackByRoom.delete(room);
+    this.storagePausedHistoryByRoom.delete(room);
+    this.storageHistoryPauseDepthByRoom.delete(room);
+    this.storageHistoryDisabledDepthByRoom.delete(room);
+    this.emitStorageHistory(room);
+  }
+
   private resetRooms(options: { rooms?: Iterable<string>; preserveLocal: boolean }): void {
     const rooms = new Set<string>(
       options.rooms
@@ -3360,6 +3614,7 @@ export class OpenRTCClient {
         this.storageByRoom.delete(room);
         this.storageSequenceByRoom.delete(room);
         this.storageRequestedRooms.delete(room);
+        this.resetStorageHistory(room);
         this.rejectStorageGetWaiters(room, new Error(`Room ${room} was left before storage request completed`));
         for (const [id, pendingRoom] of this.pendingStorageGets) {
           if (pendingRoom === room) {
@@ -3658,11 +3913,54 @@ export class OpenRTCAdminClient {
   }
 }
 
+class OpenRTCStorageHistoryHandle implements OpenRTCStorageHistory {
+  constructor(
+    private readonly client: OpenRTCClient,
+    private readonly room: string,
+  ) {}
+
+  undo<TDocument = unknown>(options: OpenRTCStorageMutationOptions = {}): Promise<TDocument | undefined> {
+    return this.client.undoStorage<TDocument>(this.room, options);
+  }
+
+  redo<TDocument = unknown>(options: OpenRTCStorageMutationOptions = {}): Promise<TDocument | undefined> {
+    return this.client.redoStorage<TDocument>(this.room, options);
+  }
+
+  canUndo(): boolean {
+    return this.client.canUndoStorage(this.room);
+  }
+
+  canRedo(): boolean {
+    return this.client.canRedoStorage(this.room);
+  }
+
+  clear(): void {
+    this.client.clearStorageHistory(this.room);
+  }
+
+  pause(): void {
+    this.client.pauseStorageHistory(this.room);
+  }
+
+  resume(): void {
+    this.client.resumeStorageHistory(this.room);
+  }
+
+  disable<T>(callback: () => T): T {
+    return this.client.disableStorageHistory(this.room, callback);
+  }
+}
+
 class OpenRTCRoomHandle implements OpenRTCRoom {
   constructor(
     private readonly client: OpenRTCClient,
     readonly id: string,
   ) {}
+
+  get history(): OpenRTCStorageHistory {
+    return this.client.getStorageHistory(this.id);
+  }
 
   getStatus(): ConnectionStatus {
     return this.client.status;
@@ -3774,6 +4072,7 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
     type: "storage-status",
     callback: (status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void,
   ): () => void;
+  subscribe(type: "history", callback: (event: OpenRTCStorageHistoryEvent) => void): () => void;
   subscribe(type: "status", callback: (status: ConnectionStatus) => void): () => void;
   subscribe(type: "error", callback: (error: OpenRTCError) => void): () => void;
   subscribe(type: "lost-connection", callback: (event: OpenRTCLostConnectionEvent) => void): () => void;
@@ -3785,6 +4084,7 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
       | "comments"
       | "storage"
       | "storage-status"
+      | "history"
       | "status"
       | "error"
       | "lost-connection",
@@ -3795,6 +4095,7 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
       | ((event: OpenRTCCommentEvent) => void)
       | ((event: OpenRTCStorageEvent) => void)
       | ((status: OpenRTCStorageStatus, update: OpenRTCStorageStatusUpdate) => void)
+      | ((event: OpenRTCStorageHistoryEvent) => void)
       | ((status: ConnectionStatus) => void)
       | ((error: OpenRTCError) => void)
       | ((event: OpenRTCLostConnectionEvent) => void),
@@ -3833,6 +4134,13 @@ class OpenRTCRoomHandle implements OpenRTCRoom {
             event.status,
             event,
           );
+        }
+      });
+    }
+    if (type === "history") {
+      return this.client.on("history", (event) => {
+        if (event.room === this.id) {
+          (callback as (event: OpenRTCStorageHistoryEvent) => void)(event);
         }
       });
     }
@@ -5197,6 +5505,37 @@ function parsePatchArrayIndex(part: string, length: number, allowEnd: boolean): 
 
 function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function diffJSONPatch(before: unknown, after: unknown, path = ""): JSONPatchOperation[] {
+  if (jsonEqual(before, after)) {
+    return [];
+  }
+  if (isRecordObject(before) && isRecordObject(after)) {
+    const operations: JSONPatchOperation[] = [];
+    const beforeKeys = Object.keys(before).sort();
+    const afterKeys = Object.keys(after).sort();
+    const afterKeySet = new Set(afterKeys);
+    for (const key of beforeKeys) {
+      if (!afterKeySet.has(key)) {
+        operations.push({ op: "remove", path: joinJSONPointer(path, key) });
+      }
+    }
+    for (const key of afterKeys) {
+      const childPath = joinJSONPointer(path, key);
+      if (!Object.prototype.hasOwnProperty.call(before, key)) {
+        operations.push({ op: "add", path: childPath, value: cloneStorageDocument(after[key]) });
+        continue;
+      }
+      operations.push(...diffJSONPatch(before[key], after[key], childPath));
+    }
+    return operations;
+  }
+  return [{ op: "replace", path, value: cloneStorageDocument(after) }];
+}
+
+function isPromiseLike<T>(value: T): value is T & PromiseLike<unknown> & { finally(callback: () => void): unknown } {
+  return isObject(value) && typeof value["then"] === "function" && typeof value["finally"] === "function";
 }
 
 function normalizeRoomEvent(event: RoomBroadcastInput, payload: unknown): { event: string; payload: unknown } {

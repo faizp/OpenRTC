@@ -49,6 +49,7 @@ import {
   type OpenRTCLiveStorageMutationInput,
   type OpenRTCInboxMaterializationOptions,
   type OpenRTCStorageEvent,
+  type OpenRTCStorageHistory,
   type OpenRTCStorageMutationOptions,
   type OpenRTCStoragePendingMutation,
   type OpenRTCStorageStatus,
@@ -176,6 +177,11 @@ export interface OpenRTCRoomContextHooks {
   useStorageStatus(): OpenRTCStorageStatus;
   useStorageSequence(): number | undefined;
   useStoragePendingMutations(): OpenRTCStoragePendingMutation[];
+  useHistory(): OpenRTCStorageHistory;
+  useUndo<TDocument = unknown>(): (options?: OpenRTCStorageMutationOptions) => Promise<TDocument | undefined>;
+  useRedo<TDocument = unknown>(): (options?: OpenRTCStorageMutationOptions) => Promise<TDocument | undefined>;
+  useCanUndo(): boolean;
+  useCanRedo(): boolean;
   useSetStorage<TDocument = unknown>(): (
     document: TDocument,
     options?: OpenRTCStorageMutationOptions,
@@ -378,6 +384,11 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
     useStorageSequence: () => useStorageSequence(useRoomFromContext(context, "useStorageSequence").id),
     useStoragePendingMutations: () =>
       useStoragePendingMutations(useRoomFromContext(context, "useStoragePendingMutations").id),
+    useHistory: () => useHistory(useRoomFromContext(context, "useHistory").id),
+    useUndo: () => useUndo(useRoomFromContext(context, "useUndo").id),
+    useRedo: () => useRedo(useRoomFromContext(context, "useRedo").id),
+    useCanUndo: () => useCanUndo(useRoomFromContext(context, "useCanUndo").id),
+    useCanRedo: () => useCanRedo(useRoomFromContext(context, "useCanRedo").id),
     useSetStorage: () => useSetStorage(useRoomFromContext(context, "useSetStorage").id),
     usePatchStorage: () => usePatchStorage(useRoomFromContext(context, "usePatchStorage").id),
     useSetLiveStorage: () => useSetLiveStorage(useRoomFromContext(context, "useSetLiveStorage").id),
@@ -784,6 +795,54 @@ export function useStoragePendingMutations(room: string): OpenRTCStoragePendingM
   }, [roomHandle]);
 
   return mutations;
+}
+
+export function useHistory(room: string): OpenRTCStorageHistory {
+  return useRoomHandle(room).history;
+}
+
+export function useUndo<TDocument = unknown>(
+  room: string,
+): (options?: OpenRTCStorageMutationOptions) => Promise<TDocument | undefined> {
+  const history = useHistory(room);
+  return useCallback((options?: OpenRTCStorageMutationOptions) => history.undo<TDocument>(options), [history]);
+}
+
+export function useRedo<TDocument = unknown>(
+  room: string,
+): (options?: OpenRTCStorageMutationOptions) => Promise<TDocument | undefined> {
+  const history = useHistory(room);
+  return useCallback((options?: OpenRTCStorageMutationOptions) => history.redo<TDocument>(options), [history]);
+}
+
+export function useCanUndo(room: string): boolean {
+  const roomHandle = useRoomHandle(room);
+  return useSyncExternalStore(
+    useCallback(
+      (onStoreChange) =>
+        roomHandle.subscribe("history", () => {
+          onStoreChange();
+        }),
+      [roomHandle],
+    ),
+    () => roomHandle.history.canUndo(),
+    () => false,
+  );
+}
+
+export function useCanRedo(room: string): boolean {
+  const roomHandle = useRoomHandle(room);
+  return useSyncExternalStore(
+    useCallback(
+      (onStoreChange) =>
+        roomHandle.subscribe("history", () => {
+          onStoreChange();
+        }),
+      [roomHandle],
+    ),
+    () => roomHandle.history.canRedo(),
+    () => false,
+  );
 }
 
 export function useSetStorage<TDocument = unknown>(

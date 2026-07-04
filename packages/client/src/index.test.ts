@@ -64,6 +64,7 @@ import {
   type OpenRTCEvent,
   type OpenRTCNotificationDelta,
   type OpenRTCStorageEvent,
+  type OpenRTCStorageHistoryEvent,
   type OpenRTCStorageStatusUpdate,
   type OpenRTCWebSocket,
   type PresenceState,
@@ -1364,6 +1365,175 @@ roomSocket.close();
 assert.equal(roomClient.status, "closed");
 assert.deepEqual(room.getOthers(), []);
 offRoomReset();
+
+FakeWebSocket.instances = [];
+const historyClient = new OpenRTCClient({
+  url: "http://localhost:8080/ws",
+  token: "token-history",
+  WebSocket: FakeWebSocket,
+  autoReconnect: false,
+});
+const historyConnected = historyClient.connect();
+await Promise.resolve();
+const historySocket = FakeWebSocket.instances[0];
+assert.ok(historySocket);
+historySocket.open();
+await historyConnected;
+historySocket.receive({
+  t: "HELLO",
+  payload: { conn_id: "history-self", server: { node_id: "node-history" } },
+});
+const { room: historyRoom } = historyClient.enterRoom("tenant-a:history");
+historySocket.receive({
+  t: "JOINED",
+  room: "tenant-a:history",
+  payload: { members: ["history-self"], presence: { "history-self": {} } },
+});
+const historyEvents: OpenRTCStorageHistoryEvent[] = [];
+const offHistoryEvents = historyRoom.subscribe("history", (event) => {
+  historyEvents.push(event);
+});
+const historySnapshot = historyRoom.getStorage<{ title: string; count: number }>();
+let historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+historySocket.receive({
+  t: "STORAGE_SNAPSHOT",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { document: { title: "Draft", count: 0 } },
+});
+assert.deepEqual(await historySnapshot, { title: "Draft", count: 0 });
+assert.equal(historyRoom.history.canUndo(), false);
+assert.equal(historyRoom.history.canRedo(), false);
+
+const historySet = historyRoom.setStorage({ title: "A", count: 1 }, { opId: "history-set-1" });
+assert.equal(historyRoom.history.canUndo(), false);
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "set", op_id: "history-set-1", document: { title: "A", count: 1 } },
+});
+assert.deepEqual(await historySet, { title: "A", count: 1 });
+assert.equal(historyRoom.history.canUndo(), true);
+assert.deepEqual(historyEvents.at(-1), {
+  room: "tenant-a:history",
+  canUndo: true,
+  canRedo: false,
+  undoDepth: 1,
+  redoDepth: 0,
+  paused: false,
+});
+
+const historyUndo = historyRoom.history.undo<{ title: string; count: number }>({ opId: "history-undo-1" });
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+assert.deepEqual(historyMessage, {
+  t: "STORAGE_PATCH",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: [
+    { op: "replace", path: "/count", value: 0 },
+    { op: "replace", path: "/title", value: "Draft" },
+  ],
+  meta: { op_id: "history-undo-1" },
+});
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "patch", op_id: "history-undo-1", document: { title: "Draft", count: 0 } },
+});
+assert.deepEqual(await historyUndo, { title: "Draft", count: 0 });
+assert.equal(historyRoom.history.canUndo(), false);
+assert.equal(historyRoom.history.canRedo(), true);
+
+const historyRedo = historyRoom.history.redo<{ title: string; count: number }>({ opId: "history-redo-1" });
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+assert.deepEqual(historyMessage, {
+  t: "STORAGE_PATCH",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: [
+    { op: "replace", path: "/count", value: 1 },
+    { op: "replace", path: "/title", value: "A" },
+  ],
+  meta: { op_id: "history-redo-1" },
+});
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "patch", op_id: "history-redo-1", document: { title: "A", count: 1 } },
+});
+assert.deepEqual(await historyRedo, { title: "A", count: 1 });
+assert.equal(historyRoom.history.canUndo(), true);
+assert.equal(historyRoom.history.canRedo(), false);
+
+historyRoom.history.clear();
+assert.equal(historyRoom.history.canUndo(), false);
+historyRoom.history.pause();
+assert.equal(historyEvents.at(-1)?.paused, true);
+const pausedCount = historyRoom.patchStorage([{ op: "replace", path: "/count", value: 2 }], {
+  opId: "history-pause-count",
+});
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "patch", op_id: "history-pause-count", document: { title: "A", count: 2 } },
+});
+await pausedCount;
+const pausedTitle = historyRoom.patchStorage([{ op: "replace", path: "/title", value: "B" }], {
+  opId: "history-pause-title",
+});
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "patch", op_id: "history-pause-title", document: { title: "B", count: 2 } },
+});
+await pausedTitle;
+assert.equal(historyRoom.history.canUndo(), false);
+historyRoom.history.resume();
+assert.deepEqual(historyEvents.at(-1), {
+  room: "tenant-a:history",
+  canUndo: true,
+  canRedo: false,
+  undoDepth: 1,
+  redoDepth: 0,
+  paused: false,
+});
+const groupedUndo = historyRoom.history.undo<{ title: string; count: number }>({ opId: "history-group-undo" });
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+assert.deepEqual(historyMessage["payload"], [
+  { op: "replace", path: "/count", value: 1 },
+  { op: "replace", path: "/title", value: "A" },
+]);
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "patch", op_id: "history-group-undo", document: { title: "A", count: 1 } },
+});
+assert.deepEqual(await groupedUndo, { title: "A", count: 1 });
+
+historyRoom.history.clear();
+const disabledPatch = historyRoom.history.disable(() =>
+  historyRoom.patchStorage([{ op: "replace", path: "/count", value: 9 }], { opId: "history-disabled" }),
+);
+historyMessage = JSON.parse(historySocket.sent.at(-1) ?? "{}") as Record<string, unknown>;
+historySocket.receive({
+  t: "STORAGE_ACK",
+  id: historyMessage.id,
+  room: "tenant-a:history",
+  payload: { kind: "patch", op_id: "history-disabled", document: { title: "A", count: 9 } },
+});
+assert.deepEqual(await disabledPatch, { title: "A", count: 9 });
+assert.equal(historyRoom.history.canUndo(), false);
+offHistoryEvents();
+historySocket.close();
 
 FakeWebSocket.instances = [];
 let reconnectToken = 0;

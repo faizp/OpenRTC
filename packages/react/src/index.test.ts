@@ -5,8 +5,11 @@ import {
   OpenRTCAdminProvider,
   RoomProvider,
   createRoomContext,
+  useCanRedo,
+  useCanUndo,
   useCommentListener,
   useCurrentRoom,
+  useHistory,
   useOpenRTCAdmin,
   useMutation,
   useNotificationEvents,
@@ -19,6 +22,7 @@ import {
   useRoomThreads,
   useRoomThreadsState,
   useRoomCommentEvents,
+  useRedo,
   useSetLiveStorage,
   useSetStorage,
   useStorage,
@@ -28,6 +32,7 @@ import {
   useStorageSequence,
   useStorageSelector,
   useStorageStatus,
+  useUndo,
   useUpdateLiveStorage,
   useUnreadInboxCount,
 } from "./index.ts";
@@ -57,6 +62,11 @@ assert.equal(typeof useStorageMutation, "function");
 assert.equal(typeof useMutation, "function");
 assert.equal(typeof useStorageListener, "function");
 assert.equal(typeof useStoragePendingMutations, "function");
+assert.equal(typeof useHistory, "function");
+assert.equal(typeof useUndo, "function");
+assert.equal(typeof useRedo, "function");
+assert.equal(typeof useCanUndo, "function");
+assert.equal(typeof useCanRedo, "function");
 assert.equal(typeof useCommentListener, "function");
 assert.equal(typeof useRoomCommentEvents, "function");
 assert.equal(typeof useNotificationListener, "function");
@@ -77,6 +87,11 @@ assert.equal(typeof roomContext.RoomProvider, "function");
 assert.equal(typeof roomContext.useRoom, "function");
 assert.equal(typeof roomContext.useOthers, "function");
 assert.equal(typeof roomContext.useStorage, "function");
+assert.equal(typeof roomContext.useHistory, "function");
+assert.equal(typeof roomContext.useUndo, "function");
+assert.equal(typeof roomContext.useRedo, "function");
+assert.equal(typeof roomContext.useCanUndo, "function");
+assert.equal(typeof roomContext.useCanRedo, "function");
 assert.equal(typeof roomContext.useMutation, "function");
 assert.equal(typeof roomContext.useThreads, "function");
 assert.equal(typeof roomContext.useThreadsState, "function");

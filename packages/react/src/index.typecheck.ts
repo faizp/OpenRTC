@@ -29,12 +29,15 @@ import {
   useMyPresence,
   useMyPresenceSelector,
   useMutation,
+  useCanRedo,
+  useCanUndo,
   useOther,
   useOtherCursors,
   useOthers,
   useOthersConnectionIds,
   useOthersMapped,
   useRoomReconnect,
+  useRedo,
   useRoomEvents,
   useRoomSelector,
   useRoomStatus,
@@ -51,6 +54,8 @@ import {
   useStoragePendingMutations,
   useStorageSequence,
   useStorageStatus,
+  useHistory,
+  useUndo,
   useUpdateLiveStorage,
 } from "./index.ts";
 
@@ -159,6 +164,11 @@ function StorageIntegrationTypes() {
   expectType<OpenRTCStorageStatus>(useStorageStatus(roomId));
   expectType<number | undefined>(useStorageSequence(roomId));
   expectType<OpenRTCStoragePendingMutation[]>(useStoragePendingMutations(roomId));
+  expectType<boolean>(useCanUndo(roomId));
+  expectType<boolean>(useCanRedo(roomId));
+  expectType<boolean>(useHistory(roomId).canUndo());
+  expectType<Promise<CanvasStorage | undefined>>(useUndo<CanvasStorage>(roomId)({ opId: "undo-1" }));
+  expectType<Promise<CanvasStorage | undefined>>(useRedo<CanvasStorage>(roomId)({ opId: "redo-1" }));
 
   const setStorage = useSetStorage<CanvasStorage>(roomId);
   expectType<Promise<CanvasStorage>>(setStorage({ title: "Draft", items: [] }, { opId: "set-1" }));
@@ -253,6 +263,11 @@ function RoomContextIntegrationTypes() {
   expectType<OpenRTCStorageStatus>(boundRoom.useStorageStatus());
   expectType<number | undefined>(boundRoom.useStorageSequence());
   expectType<OpenRTCStoragePendingMutation[]>(boundRoom.useStoragePendingMutations());
+  expectType<boolean>(boundRoom.useCanUndo());
+  expectType<boolean>(boundRoom.useCanRedo());
+  expectType<boolean>(boundRoom.useHistory().canRedo());
+  expectType<Promise<CanvasStorage | undefined>>(boundRoom.useUndo<CanvasStorage>()({ opId: "bound-undo-1" }));
+  expectType<Promise<CanvasStorage | undefined>>(boundRoom.useRedo<CanvasStorage>()({ opId: "bound-redo-1" }));
   expectType<Promise<CanvasStorage>>(boundRoom.useSetStorage<CanvasStorage>()({ title: "Draft", items: [] }));
 
   const boundMutation = boundRoom.useMutation<CanvasStorage, [title: string], Promise<void>>(

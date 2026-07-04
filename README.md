@@ -218,6 +218,12 @@ sequence handling. `liveObjectDelete`, `liveMapPatch`, `liveMapDelete`,
 `liveListMove` remain available when callers want raw nested typed-node JSON
 Patch operations for `room.patchStorage`. Collaborative text
 remains owned by the Yjs provider.
+Room handles also expose `room.history` for Liveblocks-style local undo/redo of
+acknowledged storage writes. `room.history.undo()` and `redo()` send focused
+JSON Patch mutations built from the accepted before/after documents, and
+`pause()` / `resume()` merge multiple accepted writes into one undo item. Use
+`room.history.disable(() => write())` or pass `{ addToHistory: false }` for
+background reconciliation writes that should not appear on the local undo stack.
 For product-surface state, `@openrtc/client` exports
 `applyCommentEventToThreads` and `applyNotificationDeltaToInbox` reducers so
 apps can seed from REST thread/inbox lists and apply realtime deltas
@@ -258,7 +264,8 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useStorageSequence`, `useSetStorage`, `usePatchStorage`,
 `useStoragePendingMutations`, `useSetLiveStorage`, `useUpdateLiveStorage`,
-`useMutateLiveStorage`, `useStorageMutation`, `useMutation`, and
+`useMutateLiveStorage`, `useHistory`, `useUndo`, `useRedo`, `useCanUndo`,
+`useCanRedo`, `useStorageMutation`, `useMutation`, and
 `useStorageListener`. It also exports `RoomProvider`, `useCurrentRoom`, and
 `createRoomContext()` for Liveblocks-style room-bound hooks where components call
 `useOthers()`, `useStorage()`, and `useMutation()` without passing a room ID
@@ -282,10 +289,12 @@ import {
   AvatarStack,
   Cursors,
   useBroadcastEventWithAck,
+  useCanUndo,
   useEnterRoom,
   useLostConnectionListener,
   usePatchStorage,
   useStorage,
+  useUndo,
 } from "@openrtc/react";
 
 export function CanvasPresence() {
@@ -295,6 +304,8 @@ export function CanvasPresence() {
   const broadcastWithAck = useBroadcastEventWithAck(room.id);
   const storage = useStorage<{ title?: string }>(room.id);
   const patchStorage = usePatchStorage(room.id);
+  const canUndo = useCanUndo(room.id);
+  const undo = useUndo(room.id);
 
   useLostConnectionListener(room.id, (event) => {
     console.info("room connection", event);
@@ -312,6 +323,9 @@ export function CanvasPresence() {
         onClick={() => patchStorage([{ op: "replace", path: "/title", value: "Review" }])}
       >
         {storage?.title ?? "Untitled"}
+      </button>
+      <button type="button" disabled={!canUndo} onClick={() => undo()}>
+        Undo
       </button>
       <Canvas onPing={() => broadcastWithAck({ type: "canvas.ping", at: Date.now() })} />
     </Cursors>
