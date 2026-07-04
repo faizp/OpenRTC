@@ -1643,11 +1643,15 @@ assert.equal(devToken.config.crashAdminURL, "http://127.0.0.1:3000/dev/crash/adm
 
 const devToolCalls: Array<{ input: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }> =
   [];
+let devRuntimeSocketConnId = "conn-dev-1";
+let devRuntimeSocketRooms = ["demo:canvas-1"];
+let devRuntimeCrashSocketToClose: FakeWebSocket | undefined;
 const socketCountBeforeDevClient = FakeWebSocket.instances.length;
 const devClient = await createOpenRTCDevClient({
   baseURL: "http://127.0.0.1:3000",
   room: "demo:canvas-1",
   WebSocket: FakeWebSocket,
+  reconnect: { initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
   fetch: async (input, init) => {
     const url = new URL(input);
     if (url.pathname !== "/dev/token") {
@@ -1700,7 +1704,14 @@ const devClient = await createOpenRTCDevClient({
           200,
           JSON.stringify({
             node_id: "openrtc-dev-runtime",
-            connections: [{ connection_id: "conn-dev-1", subject: "ada", tenant: "demo", rooms: ["demo:canvas-1"] }],
+            connections: [
+              {
+                connection_id: devRuntimeSocketConnId,
+                subject: "ada",
+                tenant: "demo",
+                rooms: devRuntimeSocketRooms,
+              },
+            ],
             yjs_connections: [{ connection_id: "yjs-dev-1", subject: "ada", tenant: "demo", room: "demo:canvas-1" }],
             active_sockets: 2,
             active_room_count: 1,
@@ -1755,6 +1766,9 @@ const devClient = await createOpenRTCDevClient({
       }
       if (url.pathname === "/dev/crash/runtime") {
         assert.equal(init?.method, "POST");
+        const crashSocket = devRuntimeCrashSocketToClose;
+        devRuntimeCrashSocketToClose = undefined;
+        crashSocket?.close();
         return fakeResponse(
           200,
           JSON.stringify({
@@ -2076,6 +2090,77 @@ assert.equal(realtimeProbe.snapshots.realtime?.connection_id, "dev-probe-conn");
 assert.equal(realtimeProbe.snapshots.realtime?.snapshot_sequence, 1);
 assert.equal(realtimeProbe.snapshots.realtime?.ack_sequence, 2);
 assert.equal(realtimeProbe.snapshots.realtime?.probe_path, "/data/__openrtc_probe");
+
+devClient.client.close();
+const socketCountBeforeReconnectProbe = FakeWebSocket.instances.length;
+const reconnectProbePromise = devClient.tools.probe({ reconnect: true });
+await waitFor(
+  () => FakeWebSocket.instances.length > socketCountBeforeReconnectProbe,
+  "expected reconnect probe initial socket",
+);
+const reconnectProbeSocketA = FakeWebSocket.instances[socketCountBeforeReconnectProbe];
+assert.ok(reconnectProbeSocketA);
+devRuntimeCrashSocketToClose = reconnectProbeSocketA;
+reconnectProbeSocketA.open();
+reconnectProbeSocketA.receive({
+  t: "HELLO",
+  payload: { conn_id: "dev-reconnect-a", server: { name: "openrtc", node_id: "openrtc-dev-runtime" } },
+});
+await waitFor(
+  () => reconnectProbeSocketA.sent.some((item) => (JSON.parse(item) as Record<string, unknown>).t === "JOIN"),
+  "expected reconnect probe initial join",
+);
+const reconnectJoinA = latestSentMessage(reconnectProbeSocketA, "JOIN");
+assert.equal(reconnectJoinA.room, "demo:canvas-1");
+devRuntimeSocketConnId = "dev-reconnect-a";
+devRuntimeSocketRooms = ["demo:canvas-1"];
+reconnectProbeSocketA.receive({
+  t: "JOINED",
+  id: reconnectJoinA.id,
+  room: "demo:canvas-1",
+  payload: { members: ["dev-reconnect-a"], presence: {} },
+});
+await waitFor(
+  () => FakeWebSocket.instances.length > socketCountBeforeReconnectProbe + 1,
+  "expected reconnect probe replacement socket",
+  1500,
+);
+const reconnectProbeSocketB = FakeWebSocket.instances[socketCountBeforeReconnectProbe + 1];
+assert.ok(reconnectProbeSocketB);
+reconnectProbeSocketB.open();
+reconnectProbeSocketB.receive({
+  t: "HELLO",
+  payload: { conn_id: "dev-reconnect-b", server: { name: "openrtc", node_id: "openrtc-dev-runtime" } },
+});
+await waitFor(
+  () => reconnectProbeSocketB.sent.some((item) => (JSON.parse(item) as Record<string, unknown>).t === "JOIN"),
+  "expected reconnect probe rejoin",
+);
+const reconnectJoinB = latestSentMessage(reconnectProbeSocketB, "JOIN");
+assert.equal(reconnectJoinB.room, "demo:canvas-1");
+devRuntimeSocketConnId = "dev-reconnect-b";
+devRuntimeSocketRooms = ["demo:canvas-1"];
+reconnectProbeSocketB.receive({
+  t: "JOINED",
+  id: reconnectJoinB.id,
+  room: "demo:canvas-1",
+  payload: { members: ["dev-reconnect-b"], presence: {} },
+});
+const reconnectProbe = await reconnectProbePromise;
+assert.equal(reconnectProbe.ok, true);
+assert.deepEqual(reconnectProbe.checks.map((check) => [check.name, check.ok]).at(-1), [
+  "runtime-reconnect",
+  true,
+]);
+assert.equal(reconnectProbe.snapshots.runtimeReconnect?.initial_connection_id, "dev-reconnect-a");
+assert.equal(reconnectProbe.snapshots.runtimeReconnect?.reconnect_connection_id, "dev-reconnect-b");
+assert.equal(reconnectProbe.snapshots.runtimeReconnect?.close_observed, true);
+assert.equal(reconnectProbe.snapshots.runtimeReconnect?.rejoined, true);
+assert.equal(reconnectProbe.snapshots.runtimeReconnect?.connection_id_changed, true);
+assert.deepEqual(
+  reconnectProbe.snapshots.runtimeReconnect?.status_history,
+  ["connecting", "open", "reconnecting", "open"],
+);
 devClient.client.close();
 
 const devAdmin = await createOpenRTCDevAdminClient({

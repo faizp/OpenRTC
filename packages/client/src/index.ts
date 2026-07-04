@@ -317,6 +317,23 @@ export interface OpenRTCDevRealtimeProbeSnapshot {
   probe_path?: string;
 }
 
+export interface OpenRTCDevRuntimeReconnectProbeSnapshot {
+  initial_connected: boolean;
+  initial_connection_id?: string;
+  initial_joined: boolean;
+  before_generation?: number;
+  before_active_sockets: number;
+  restarted: boolean;
+  after_generation?: number;
+  close_observed: boolean;
+  reconnected: boolean;
+  reconnect_connection_id?: string;
+  rejoined: boolean;
+  connection_id_changed: boolean;
+  after_active_sockets: number;
+  status_history: ConnectionStatus[];
+}
+
 export interface OpenRTCDevRestartSnapshot {
   status: string;
   service: string;
@@ -347,6 +364,7 @@ export type OpenRTCDevProbeCheckName =
   | "yjs"
   | "events"
   | "realtime"
+  | "runtime-reconnect"
   | "restart-runtime"
   | "restart-admin";
 
@@ -357,6 +375,7 @@ export interface OpenRTCDevProbeOptions extends OpenRTCDevEventsOptions {
   expectSeedRoom?: boolean;
   expectSeedStorage?: boolean;
   realtime?: boolean;
+  reconnect?: boolean;
   client?: OpenRTCClient;
 }
 
@@ -375,6 +394,7 @@ export interface OpenRTCDevProbeSnapshots {
   yjs?: OpenRTCDevYJSSnapshot;
   events?: OpenRTCDevEventsSnapshot;
   realtime?: OpenRTCDevRealtimeProbeSnapshot;
+  runtimeReconnect?: OpenRTCDevRuntimeReconnectProbeSnapshot;
   runtimeRestart?: OpenRTCDevRestartSnapshot;
   adminRestart?: OpenRTCDevRestartSnapshot;
 }
@@ -1499,6 +1519,28 @@ export async function runOpenRTCDevProbe(
     });
   }
 
+  if (options.reconnect) {
+    await captureOpenRTCDevProbeCheck(checks, "runtime-reconnect", async () => {
+      if (!options.client) {
+        return openRTCDevProbeCheck(
+          "runtime-reconnect",
+          false,
+          "Runtime reconnect drill requires an OpenRTCClient",
+        );
+      }
+      const reconnect = await runOpenRTCDevRuntimeReconnectProbe(options.client, tools, room);
+      snapshots.runtimeReconnect = reconnect;
+      return openRTCDevProbeCheck(
+        "runtime-reconnect",
+        openRTCDevRuntimeReconnectProbeOK(reconnect),
+        openRTCDevRuntimeReconnectProbeOK(reconnect)
+          ? "Runtime restart closed the old socket, then a fresh socket connected and rejoined the room"
+          : "Runtime reconnect drill did not complete",
+        reconnect,
+      );
+    });
+  }
+
   if (options.realtime) {
     await captureOpenRTCDevProbeCheck(checks, "realtime", async () => {
       if (!options.client) {
@@ -1570,6 +1612,73 @@ async function runOpenRTCDevRealtimeProbe(
     };
   } finally {
     entry.leave();
+  }
+}
+
+async function runOpenRTCDevRuntimeReconnectProbe(
+  client: OpenRTCClient,
+  tools: Omit<OpenRTCDevTools, "probe">,
+  room: string,
+): Promise<OpenRTCDevRuntimeReconnectProbeSnapshot> {
+  const statusHistory: ConnectionStatus[] = [];
+  const offStatus = client.on("status", (status) => {
+    statusHistory.push(status);
+  });
+  try {
+    await client.connect();
+    await waitForOpenRTCDevProbeCondition(() => Boolean(client.connId), "Timed out waiting for initial dev runtime connection id");
+    const initialConnectionID = client.connId;
+    const entry = client.enterRoom(room);
+    try {
+      const beforeStatus = await tools.fetchStatus();
+      const beforeSockets = initialConnectionID
+        ? await waitForOpenRTCDevSocketRoom(tools, room, initialConnectionID)
+        : await tools.fetchSockets({ room });
+      const restart = await tools.restartRuntime();
+      const closeObserved = await tryWaitForOpenRTCDevProbeCondition(
+        () =>
+          statusHistory.includes("reconnecting") ||
+          statusHistory.includes("closed") ||
+          (initialConnectionID !== undefined && client.connId !== initialConnectionID),
+        "Timed out waiting for dev runtime socket close after restart",
+      );
+      const reconnected = await tryWaitForOpenRTCDevProbeCondition(
+        () => client.status === "open" && Boolean(client.connId) && client.connId !== initialConnectionID,
+        "Timed out waiting for dev runtime reconnect",
+      );
+      const reconnectConnectionID = client.connId;
+      const afterSockets = reconnectConnectionID
+        ? await waitForOpenRTCDevSocketRoom(tools, room, reconnectConnectionID)
+        : await tools.fetchSockets({ room });
+      const rejoined = reconnectConnectionID
+        ? openRTCDevSocketSnapshotHasConnectionRoom(afterSockets, room, reconnectConnectionID)
+        : false;
+      return {
+        initial_connected: true,
+        ...(initialConnectionID ? { initial_connection_id: initialConnectionID } : {}),
+        initial_joined: initialConnectionID
+          ? openRTCDevSocketSnapshotHasConnectionRoom(beforeSockets, room, initialConnectionID)
+          : false,
+        ...(beforeStatus.runtime.generation ? { before_generation: beforeStatus.runtime.generation } : {}),
+        before_active_sockets: beforeSockets.active_sockets,
+        restarted: restart.service === "runtime" && restart.service_status.running,
+        ...(restart.service_status.generation ? { after_generation: restart.service_status.generation } : {}),
+        close_observed: closeObserved,
+        reconnected,
+        ...(reconnectConnectionID ? { reconnect_connection_id: reconnectConnectionID } : {}),
+        rejoined,
+        connection_id_changed:
+          initialConnectionID === undefined ||
+          reconnectConnectionID === undefined ||
+          reconnectConnectionID !== initialConnectionID,
+        after_active_sockets: afterSockets.active_sockets,
+        status_history: statusHistory,
+      };
+    } finally {
+      entry.leave();
+    }
+  } finally {
+    offStatus();
   }
 }
 
@@ -3955,6 +4064,66 @@ async function fetchOpenRTCDevJSON<TResponse>(
   return body as TResponse;
 }
 
+async function waitForOpenRTCDevSocketRoom(
+  tools: Omit<OpenRTCDevTools, "probe">,
+  room: string,
+  connectionID: string,
+  timeoutMs = 5000,
+): Promise<OpenRTCDevSocketSnapshot> {
+  const started = Date.now();
+  let latest = await tools.fetchSockets({ room });
+  while (Date.now() - started < timeoutMs) {
+    if (openRTCDevSocketSnapshotHasConnectionRoom(latest, room, connectionID)) {
+      return latest;
+    }
+    await openRTCDevProbeDelay(25);
+    latest = await tools.fetchSockets({ room });
+  }
+  return latest;
+}
+
+function openRTCDevSocketSnapshotHasConnectionRoom(
+  snapshot: OpenRTCDevSocketSnapshot,
+  room: string,
+  connectionID: string,
+): boolean {
+  return snapshot.connections.some(
+    (connection) => connection.connection_id === connectionID && connection.rooms.includes(room),
+  );
+}
+
+async function tryWaitForOpenRTCDevProbeCondition(
+  condition: () => boolean,
+  message: string,
+  timeoutMs = 5000,
+): Promise<boolean> {
+  try {
+    await waitForOpenRTCDevProbeCondition(condition, message, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForOpenRTCDevProbeCondition(
+  condition: () => boolean,
+  message: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (condition()) {
+      return;
+    }
+    await openRTCDevProbeDelay(25);
+  }
+  throw new Error(message);
+}
+
+async function openRTCDevProbeDelay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function captureOpenRTCDevProbeCheck(
   checks: OpenRTCDevProbeCheck[],
   name: OpenRTCDevProbeCheckName,
@@ -3986,6 +4155,23 @@ function openRTCDevProbeCheck(
   detail?: unknown,
 ): OpenRTCDevProbeCheck {
   return detail === undefined ? { name, ok, message } : { name, ok, message, detail };
+}
+
+function openRTCDevRuntimeReconnectProbeOK(snapshot: OpenRTCDevRuntimeReconnectProbeSnapshot): boolean {
+  const generationAdvanced =
+    snapshot.before_generation === undefined ||
+    snapshot.after_generation === undefined ||
+    snapshot.after_generation > snapshot.before_generation;
+  return (
+    snapshot.initial_connected &&
+    snapshot.initial_joined &&
+    snapshot.restarted &&
+    generationAdvanced &&
+    snapshot.close_observed &&
+    snapshot.reconnected &&
+    snapshot.rejoined &&
+    snapshot.connection_id_changed
+  );
 }
 
 function openRTCDevProbeErrorMessage(error: unknown): string {

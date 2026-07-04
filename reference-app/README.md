@@ -24,8 +24,8 @@ semantics and editor bindings live in the `@openrtc/yjs` and
 
 The browser `Probe all` flow has a programmatic equivalent in
 `@openrtc/client`: `createOpenRTCDevClient()` returns `tools.probe()` for typed
-status, socket, storage, Yjs, event-log, and optional restart checks against the
-same `openrtc dev` endpoints.
+status, socket, storage, Yjs, event-log, and optional restart/reconnect checks
+against the same `openrtc dev` endpoints.
 
 ## Running locally
 
@@ -39,7 +39,7 @@ go run ./server/cmd/openrtc dev
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 
 # In another terminal, run a terminal/CI smoke probe.
-go run ./server/cmd/openrtc dev probe --restart runtime
+go run ./server/cmd/openrtc dev probe --reconnect --realtime
 
 # Fetch a local token for scripts.
 go run ./server/cmd/openrtc dev token --room demo:room-1 --env

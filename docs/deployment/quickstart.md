@@ -26,13 +26,14 @@ URLs, and default `room`, so browser clients can connect without hard-coding dev
 `@openrtc/client` `createOpenRTCDevClient()` and
 `createOpenRTCDevAdminClient()` helpers consume this response directly and return
 typed `tools` helpers for status, sockets, storage, Yjs metadata, event logs, and
-runtime/admin restart drills. `openrtc dev token` fetches local client/admin JWTs
+runtime/admin restart plus reconnect drills. `openrtc dev token` fetches local client/admin JWTs
 from a terminal, using token-only stdout by default, `--json` for the full token
 response, and `--env` for shell-safe `OPENRTC_DEV_*` assignments. `openrtc dev
 probe` runs the same status, socket, storage, Yjs, event-log, and optional
-restart checks from a terminal or CI job; use `--realtime` for runtime join/storage,
-`--yjs-realtime` for a live Yjs WebSocket update check, and `--json` for
-machine-readable output. Use
+restart checks from a terminal or CI job; use `--reconnect` to restart the local
+runtime and verify the old socket closes before a fresh socket rejoins,
+`--realtime` for runtime join/storage, `--yjs-realtime` for a live Yjs WebSocket
+update check, and `--json` for machine-readable output. Use
 `http://127.0.0.1:3000/dev/status` to verify storage backend, Redis protocol health, runtime/admin generation,
 seeded-room, and endpoint readiness. Use
 `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect room active

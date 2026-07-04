@@ -47,6 +47,7 @@ type probeOptions struct {
 	jsonOutput        bool
 	realtime          bool
 	yjsRealtime       bool
+	reconnect         bool
 	timeout           time.Duration
 	afterSequence     uint64
 	limit             int
@@ -69,17 +70,18 @@ type devProbeCheck struct {
 }
 
 type devProbeSnapshots struct {
-	Config         *devClientConfigSnapshot           `json:"config,omitempty"`
-	Status         *devStatusSnapshot                 `json:"status,omitempty"`
-	Connections    *devConnectionsSnapshot            `json:"connections,omitempty"`
-	Sockets        *runtimeapp.DevConnectionsSnapshot `json:"sockets,omitempty"`
-	Storage        *devStorageSnapshot                `json:"storage,omitempty"`
-	YJS            *devYJSSnapshot                    `json:"yjs,omitempty"`
-	Events         *devEventsSnapshot                 `json:"events,omitempty"`
-	Realtime       *devRealtimeProbeSnapshot          `json:"realtime,omitempty"`
-	YJSRealtime    *devYJSRealtimeProbeSnapshot       `json:"yjsRealtime,omitempty"`
-	RuntimeRestart *devRestartSnapshot                `json:"runtimeRestart,omitempty"`
-	AdminRestart   *devRestartSnapshot                `json:"adminRestart,omitempty"`
+	Config           *devClientConfigSnapshot           `json:"config,omitempty"`
+	Status           *devStatusSnapshot                 `json:"status,omitempty"`
+	Connections      *devConnectionsSnapshot            `json:"connections,omitempty"`
+	Sockets          *runtimeapp.DevConnectionsSnapshot `json:"sockets,omitempty"`
+	Storage          *devStorageSnapshot                `json:"storage,omitempty"`
+	YJS              *devYJSSnapshot                    `json:"yjs,omitempty"`
+	Events           *devEventsSnapshot                 `json:"events,omitempty"`
+	Realtime         *devRealtimeProbeSnapshot          `json:"realtime,omitempty"`
+	YJSRealtime      *devYJSRealtimeProbeSnapshot       `json:"yjsRealtime,omitempty"`
+	RuntimeReconnect *devRuntimeReconnectProbeSnapshot  `json:"runtimeReconnect,omitempty"`
+	RuntimeRestart   *devRestartSnapshot                `json:"runtimeRestart,omitempty"`
+	AdminRestart     *devRestartSnapshot                `json:"adminRestart,omitempty"`
 }
 
 type devConnectionsSnapshot struct {
@@ -107,6 +109,22 @@ type devYJSRealtimeProbeSnapshot struct {
 	BaselineRuntimeUpdateCount int    `json:"baseline_runtime_update_count,omitempty"`
 	RuntimeUpdateCount         int    `json:"runtime_update_count,omitempty"`
 	UpdateKind                 string `json:"update_kind"`
+}
+
+type devRuntimeReconnectProbeSnapshot struct {
+	InitialConnected      bool   `json:"initial_connected"`
+	InitialConnectionID   string `json:"initial_connection_id,omitempty"`
+	InitialJoined         bool   `json:"initial_joined"`
+	BeforeGeneration      uint64 `json:"before_generation,omitempty"`
+	BeforeActiveSockets   int    `json:"before_active_sockets"`
+	Restarted             bool   `json:"restarted"`
+	AfterGeneration       uint64 `json:"after_generation,omitempty"`
+	CloseObserved         bool   `json:"close_observed"`
+	Reconnected           bool   `json:"reconnected"`
+	ReconnectConnectionID string `json:"reconnect_connection_id,omitempty"`
+	Rejoined              bool   `json:"rejoined"`
+	ConnectionIDChanged   bool   `json:"connection_id_changed"`
+	AfterActiveSockets    int    `json:"after_active_sockets"`
 }
 
 func probeMain(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -159,6 +177,7 @@ func parseProbeOptions(args []string, output io.Writer) (probeOptions, error) {
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write the full probe report as JSON")
 	flags.BoolVar(&opts.realtime, "realtime", false, "open the runtime WebSocket, join the room, read storage, and perform a sequenced storage patch")
 	flags.BoolVar(&opts.yjsRealtime, "yjs-realtime", false, "open the Yjs WebSocket, send a valid update frame, and verify dev Yjs inspection sees it")
+	flags.BoolVar(&opts.reconnect, "reconnect", false, "open a runtime WebSocket, restart the dev runtime, verify the old socket closes, reconnect, and rejoin the room")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall probe timeout")
 	flags.Uint64Var(&opts.afterSequence, "after-seq", 0, "event-log sequence lower bound")
 	flags.IntVar(&opts.limit, "limit", 20, "event-log limit")
@@ -338,6 +357,29 @@ func runProbe(ctx context.Context, opts probeOptions) (devProbeResult, error) {
 			}
 			result.Snapshots.AdminRestart = &snapshot
 			return probeCheck("restart-admin", snapshot.Service == "admin" && snapshot.ServiceStatus.Running, "Admin restart drill completed", map[string]interface{}{"generation": snapshot.ServiceStatus.Generation})
+		})
+	}
+	if opts.reconnect {
+		captureProbeCheck(&result, "runtime-reconnect", func() devProbeCheck {
+			snapshot, err := runRuntimeReconnectProbe(ctx, client, opts.baseURL, config, room)
+			if err != nil {
+				return probeErrorCheck("runtime-reconnect", err)
+			}
+			result.Snapshots.RuntimeReconnect = &snapshot
+			return probeCheck(
+				"runtime-reconnect",
+				runtimeReconnectProbeOK(snapshot),
+				probeRuntimeReconnectMessage(snapshot),
+				map[string]interface{}{
+					"initialConnectionID":   snapshot.InitialConnectionID,
+					"reconnectConnectionID": snapshot.ReconnectConnectionID,
+					"beforeGeneration":      snapshot.BeforeGeneration,
+					"afterGeneration":       snapshot.AfterGeneration,
+					"closeObserved":         snapshot.CloseObserved,
+					"beforeActiveSockets":   snapshot.BeforeActiveSockets,
+					"afterActiveSockets":    snapshot.AfterActiveSockets,
+				},
+			)
 		})
 	}
 	if opts.realtime {
@@ -567,6 +609,129 @@ func runRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, 
 	return snapshot, nil
 }
 
+type joinedRuntimeProbeSocket struct {
+	ws           *websocket.Conn
+	connectionID string
+	joined       bool
+}
+
+func runRuntimeReconnectProbe(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devRuntimeReconnectProbeSnapshot, error) {
+	snapshot := devRuntimeReconnectProbeSnapshot{}
+	status, err := fetchProbeStatusSnapshot(ctx, client, baseURL, config)
+	if err != nil {
+		return snapshot, fmt.Errorf("fetch dev status before reconnect drill: %w", err)
+	}
+	snapshot.BeforeGeneration = status.Runtime.Generation
+
+	initial, err := openJoinedRuntimeProbeSocket(ctx, client, baseURL, config, room, "dev-probe-reconnect-join")
+	if err != nil {
+		return snapshot, err
+	}
+	defer initial.ws.Close()
+	snapshot.InitialConnected = true
+	snapshot.InitialConnectionID = initial.connectionID
+	snapshot.InitialJoined = initial.joined
+
+	if sockets, err := fetchProbeSocketsSnapshot(ctx, client, baseURL, config, room); err == nil {
+		snapshot.BeforeActiveSockets = sockets.ActiveSockets
+	}
+
+	var restart devRestartSnapshot
+	if err := probePostJSON(ctx, client, endpointURL(baseURL, config.CrashRuntimeURL, "/dev/crash/runtime", nil), &restart); err != nil {
+		return snapshot, fmt.Errorf("restart runtime: %w", err)
+	}
+	snapshot.Restarted = restart.Service == "runtime" && restart.ServiceStatus.Running
+	snapshot.AfterGeneration = restart.ServiceStatus.Generation
+	snapshot.CloseObserved = waitForProbeWebSocketClose(ctx, initial.ws)
+
+	reconnected, err := openJoinedRuntimeProbeSocket(ctx, client, baseURL, config, room, "dev-probe-reconnect-rejoin")
+	if err != nil {
+		return snapshot, fmt.Errorf("reconnect runtime websocket: %w", err)
+	}
+	defer reconnected.ws.Close()
+	snapshot.Reconnected = true
+	snapshot.ReconnectConnectionID = reconnected.connectionID
+	snapshot.Rejoined = reconnected.joined
+	snapshot.ConnectionIDChanged = snapshot.InitialConnectionID == "" || snapshot.ReconnectConnectionID == "" || snapshot.InitialConnectionID != snapshot.ReconnectConnectionID
+
+	if sockets, err := fetchProbeSocketsSnapshot(ctx, client, baseURL, config, room); err == nil {
+		snapshot.AfterActiveSockets = sockets.ActiveSockets
+	}
+
+	return snapshot, nil
+}
+
+func openJoinedRuntimeProbeSocket(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string, joinID string) (joinedRuntimeProbeSocket, error) {
+	token, err := fetchProbeDevToken(ctx, client, baseURL, config, room)
+	if err != nil {
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("fetch dev runtime token: %w", err)
+	}
+	wsURL := probeRuntimeWSURL(baseURL, config.WSURL, token)
+	ws, _, err := probeWebSocketDial(ctx, wsURL, probeWebSocketHeaders(baseURL))
+	if err != nil {
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("dial runtime websocket: %w", err)
+	}
+	deadline, _ := ctx.Deadline()
+	if deadline.IsZero() {
+		deadline = time.Now().Add(defaultProbeTimeout)
+	}
+	_ = ws.SetReadDeadline(deadline)
+	_ = ws.SetWriteDeadline(deadline)
+
+	probeSocket := joinedRuntimeProbeSocket{ws: ws}
+	hello, err := readProbeWSMessage(ws)
+	if err != nil {
+		ws.Close()
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("read hello: %w", err)
+	}
+	if asStringFromMap(hello, "t") != "HELLO" {
+		ws.Close()
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("expected HELLO, got %s", asStringFromMap(hello, "t"))
+	}
+	if payload, _ := hello["payload"].(map[string]interface{}); payload != nil {
+		probeSocket.connectionID = asStringFromMap(payload, "conn_id")
+	}
+	if err := writeProbeWSMessage(ws, map[string]interface{}{
+		"t":    "JOIN",
+		"id":   joinID,
+		"room": room,
+	}); err != nil {
+		ws.Close()
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("write join: %w", err)
+	}
+	joined, err := readProbeWSMessage(ws)
+	if err != nil {
+		ws.Close()
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("read joined: %w", err)
+	}
+	if asStringFromMap(joined, "t") != "JOINED" {
+		ws.Close()
+		return joinedRuntimeProbeSocket{}, fmt.Errorf("expected JOINED, got %s", asStringFromMap(joined, "t"))
+	}
+	probeSocket.joined = true
+	return probeSocket, nil
+}
+
+func waitForProbeWebSocketClose(ctx context.Context, ws *websocket.Conn) bool {
+	deadline, _ := ctx.Deadline()
+	if deadline.IsZero() {
+		deadline = time.Now().Add(defaultProbeTimeout)
+	}
+	_ = ws.SetReadDeadline(deadline)
+	for {
+		_, _, err := ws.ReadMessage()
+		if err != nil {
+			if timeout, ok := err.(interface{ Timeout() bool }); ok && timeout.Timeout() {
+				return false
+			}
+			if ctx.Err() != nil {
+				return false
+			}
+			return true
+		}
+	}
+}
+
 func runYJSRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devYJSRealtimeProbeSnapshot, error) {
 	baseline, err := fetchProbeYJSSnapshot(ctx, client, baseURL, config, room)
 	if err != nil {
@@ -621,6 +786,22 @@ func fetchProbeDevToken(ctx context.Context, client *http.Client, baseURL string
 		return "", fmt.Errorf("dev token response missing token")
 	}
 	return tokenResponse.Token, nil
+}
+
+func fetchProbeStatusSnapshot(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot) (devStatusSnapshot, error) {
+	var snapshot devStatusSnapshot
+	if err := probeGetJSON(ctx, client, endpointURL(baseURL, config.StatusURL, "/dev/status", nil), map[int]bool{http.StatusServiceUnavailable: true}, &snapshot); err != nil {
+		return devStatusSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func fetchProbeSocketsSnapshot(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (runtimeapp.DevConnectionsSnapshot, error) {
+	var snapshot runtimeapp.DevConnectionsSnapshot
+	if err := probeGetJSON(ctx, client, endpointURL(baseURL, config.SocketsURL, "/dev/sockets", map[string]string{"room": room}), nil, &snapshot); err != nil {
+		return runtimeapp.DevConnectionsSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func fetchProbeYJSSnapshot(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devYJSSnapshot, error) {
@@ -850,6 +1031,25 @@ func probeYJSRealtimeMessage(snapshot devYJSRealtimeProbeSnapshot) string {
 		return "Yjs WebSocket accepted an update frame and dev inspection observed it"
 	}
 	return "Yjs WebSocket realtime probe did not complete"
+}
+
+func runtimeReconnectProbeOK(snapshot devRuntimeReconnectProbeSnapshot) bool {
+	generationAdvanced := snapshot.BeforeGeneration == 0 || snapshot.AfterGeneration == 0 || snapshot.AfterGeneration > snapshot.BeforeGeneration
+	return snapshot.InitialConnected &&
+		snapshot.InitialJoined &&
+		snapshot.Restarted &&
+		generationAdvanced &&
+		snapshot.CloseObserved &&
+		snapshot.Reconnected &&
+		snapshot.Rejoined &&
+		snapshot.ConnectionIDChanged
+}
+
+func probeRuntimeReconnectMessage(snapshot devRuntimeReconnectProbeSnapshot) string {
+	if runtimeReconnectProbeOK(snapshot) {
+		return "Runtime restart closed the old socket, then a fresh socket connected and rejoined the room"
+	}
+	return "Runtime reconnect drill did not complete"
 }
 
 func containsString(values []string, needle string) bool {

@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -293,6 +294,110 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	}
 	if result.Snapshots.Realtime == nil || result.Snapshots.Realtime.ConnectionID != "probe-conn-1" || result.Snapshots.Realtime.SnapshotSequence != 1 || result.Snapshots.Realtime.AckSequence != 2 {
 		t.Fatalf("unexpected realtime snapshot: %+v", result.Snapshots.Realtime)
+	}
+}
+
+func TestRunProbeRuntimeReconnectCheckRestartsAndRejoins(t *testing.T) {
+	closeFirstSocket := make(chan struct{})
+	var closeFirstSocketCalled int32
+	server := newProbeTestServer(t, probeTestServerOptions{
+		healthy: true,
+		onRuntimeCrash: func() {
+			if atomic.CompareAndSwapInt32(&closeFirstSocketCalled, 0, 1) {
+				close(closeFirstSocket)
+			}
+		},
+	})
+	defer server.Close()
+
+	var dialCount int32
+	previousDial := probeWebSocketDial
+	probeWebSocketDial = func(ctx context.Context, rawURL string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
+		count := atomic.AddInt32(&dialCount, 1)
+		if requestHeader.Get("Origin") != server.URL {
+			t.Fatalf("expected websocket origin %q, got %q", server.URL, requestHeader.Get("Origin"))
+		}
+		wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade reconnect probe websocket: %v", err)
+				return
+			}
+			defer ws.Close()
+
+			connID := fmt.Sprintf("probe-reconnect-%d", count)
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":       "HELLO",
+				"payload": map[string]interface{}{"conn_id": connID},
+			}); err != nil {
+				t.Errorf("write reconnect hello: %v", err)
+				return
+			}
+			joinID := "dev-probe-reconnect-join"
+			if count == 2 {
+				joinID = "dev-probe-reconnect-rejoin"
+			}
+			expectProbeWSMessage(t, ws, "JOIN", joinID)
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":       "JOINED",
+				"id":      joinID,
+				"room":    "demo:room-1",
+				"payload": map[string]interface{}{"members": []string{connID}, "presence": map[string]interface{}{}},
+			}); err != nil {
+				t.Errorf("write reconnect joined: %v", err)
+				return
+			}
+			if count == 1 {
+				select {
+				case <-closeFirstSocket:
+					_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "runtime restart"), time.Now().Add(time.Second))
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Errorf("timed out waiting for runtime crash")
+				}
+				return
+			}
+			_, _, _ = ws.ReadMessage()
+		}))
+		t.Cleanup(wsServer.Close)
+		return websocket.DefaultDialer.DialContext(ctx, "ws"+wsServer.URL[len("http"):], requestHeader)
+	}
+	t.Cleanup(func() {
+		probeWebSocketDial = previousDial
+	})
+
+	result, err := runProbe(context.Background(), probeOptions{
+		baseURL:           server.URL,
+		room:              "demo:room-1",
+		reconnect:         true,
+		timeout:           2 * time.Second,
+		limit:             5,
+		expectSeedRoom:    true,
+		expectSeedStorage: true,
+	})
+
+	if err != nil {
+		t.Fatalf("run reconnect probe: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected reconnect probe to pass, got %+v", result.Checks)
+	}
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,runtime-reconnect" {
+		t.Fatalf("unexpected reconnect checks: %v", got)
+	}
+	if atomic.LoadInt32(&dialCount) != 2 {
+		t.Fatalf("expected two reconnect drill websocket dials, got %d", dialCount)
+	}
+	reconnect := result.Snapshots.RuntimeReconnect
+	if reconnect == nil ||
+		reconnect.InitialConnectionID != "probe-reconnect-1" ||
+		reconnect.ReconnectConnectionID != "probe-reconnect-2" ||
+		!reconnect.CloseObserved ||
+		!reconnect.ConnectionIDChanged ||
+		reconnect.BeforeGeneration != 2 ||
+		reconnect.AfterGeneration != 3 {
+		t.Fatalf("unexpected reconnect snapshot: %+v", reconnect)
 	}
 }
 
@@ -1362,6 +1467,7 @@ type probeTestServerOptions struct {
 	healthy        bool
 	yjsUpdateCount *int64
 	yjsUpdateBytes *int64
+	onRuntimeCrash func()
 }
 
 type probeTestServer struct {
@@ -1541,6 +1647,9 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 		if r.Method != http.MethodPost {
 			http.Error(w, "method must be POST", http.StatusMethodNotAllowed)
 			return
+		}
+		if opts.onRuntimeCrash != nil {
+			opts.onRuntimeCrash()
 		}
 		writeJSON(w, http.StatusOK, devRestartSnapshot{Status: "restarted", Service: "runtime", ServiceStatus: devManagedServiceStatus{Running: true, Generation: 3}})
 	})
