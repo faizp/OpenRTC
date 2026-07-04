@@ -2037,6 +2037,7 @@ const devConfig = {
   eventsURL: "http://127.0.0.1:3000/dev/events?room=demo:room-1",
   crashRuntimeURL: "http://127.0.0.1:3000/dev/crash/runtime",
   crashAdminURL: "http://127.0.0.1:3000/dev/crash/admin",
+  seedURL: "http://127.0.0.1:3000/dev/seed",
   seedRooms: ["demo:room-1", "demo:canvas-1"],
 };
 
@@ -2105,6 +2106,7 @@ assert.equal(devToken.config.yjsInspectionURL, "http://127.0.0.1:3000/dev/yjs?ro
 assert.equal(devToken.config.eventsURL, "http://127.0.0.1:3000/dev/events?room=demo:room-1");
 assert.equal(devToken.config.crashRuntimeURL, "http://127.0.0.1:3000/dev/crash/runtime");
 assert.equal(devToken.config.crashAdminURL, "http://127.0.0.1:3000/dev/crash/admin");
+assert.equal(devToken.config.seedURL, "http://127.0.0.1:3000/dev/seed");
 
 const devToolCalls: Array<{ input: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }> =
   [];
@@ -2231,6 +2233,28 @@ const devClient = await createOpenRTCDevClient({
           }),
         );
       }
+      if (url.pathname === "/dev/seed") {
+        return fakeResponse(
+          200,
+          JSON.stringify({
+            status: init?.method === "POST" ? "reset" : "ok",
+            seed_file: "openrtc.seed.json",
+            rooms: [
+              { room: "demo:room-1", exists: true, storage_found: true },
+              { room: "demo:canvas-1", exists: true, storage_found: true },
+            ],
+            fixture: {
+              rooms: [
+                {
+                  room: "demo:room-1",
+                  metadata: { name: "Room 1" },
+                  storage: { liveblocksType: "LiveObject", data: { title: "Room 1" } },
+                },
+              ],
+            },
+          }),
+        );
+      }
       if (url.pathname === "/dev/crash/runtime") {
         assert.equal(init?.method, "POST");
         const crashSocket = devRuntimeCrashSocketToClose;
@@ -2323,6 +2347,13 @@ assert.equal(devEvents.after_seq, 7);
 assert.equal(devEvents.limit, 3);
 assert.equal(devEvents.events[0]?.event, "demo.event");
 assert.equal(devEvents.events[0]?.seq, 8);
+const devSeed = await devClient.tools.fetchSeed();
+assert.equal(devSeed.status, "ok");
+assert.equal(devSeed.seed_file, "openrtc.seed.json");
+assert.equal(devSeed.rooms[1]?.room, "demo:canvas-1");
+assert.equal(devSeed.fixture.rooms[0]?.storage && typeof devSeed.fixture.rooms[0].storage, "object");
+const devSeedReset = await devClient.tools.resetSeed();
+assert.equal(devSeedReset.status, "reset");
 const runtimeRestart = await devClient.tools.restartRuntime();
 assert.equal(runtimeRestart.service, "runtime");
 assert.equal(runtimeRestart.service_status.generation, 3);
@@ -2338,6 +2369,8 @@ assert.deepEqual(
     ["/dev/storage", "GET"],
     ["/dev/yjs", "GET"],
     ["/dev/events", "GET"],
+    ["/dev/seed", "GET"],
+    ["/dev/seed", "POST"],
     ["/dev/crash/runtime", "POST"],
     ["/dev/crash/admin", "POST"],
   ],
@@ -2351,6 +2384,7 @@ assert.deepEqual(
     ["config", true],
     ["seed-room", true],
     ["status", true],
+    ["seed", true],
     ["connections", true],
     ["sockets", true],
     ["storage", true],
@@ -2360,13 +2394,15 @@ assert.deepEqual(
   ],
 );
 assert.equal(devProbe.snapshots.status?.storage_backend, "memory");
+assert.equal(devProbe.snapshots.seed?.rooms[1]?.room, "demo:canvas-1");
 assert.equal(devProbe.snapshots.events?.after_seq, 8);
 assert.equal(devProbe.snapshots.events?.limit, 2);
 assert.equal(devProbe.snapshots.runtimeRestart?.service_status.generation, 3);
 assert.deepEqual(
-  devToolCalls.slice(8).map((call) => [new URL(call.input).pathname, call.init?.method ?? "GET"]),
+  devToolCalls.slice(10).map((call) => [new URL(call.input).pathname, call.init?.method ?? "GET"]),
   [
     ["/dev/status", "GET"],
+    ["/dev/seed", "GET"],
     ["/dev/connections", "GET"],
     ["/dev/sockets", "GET"],
     ["/dev/storage", "GET"],
@@ -2411,6 +2447,10 @@ assert.deepEqual(await legacyDevTools.restartRuntime(), {
   url: "http://127.0.0.1:3000/dev/crash/runtime",
   method: "POST",
 });
+assert.deepEqual(await legacyDevTools.resetSeed(), {
+  url: "http://127.0.0.1:3000/dev/seed",
+  method: "POST",
+});
 const degradedDevTools = createOpenRTCDevTools(devConfig, {
   room: "demo:room-1",
   fetch: async (input) => {
@@ -2448,6 +2488,16 @@ const degradedDevTools = createOpenRTCDevTools(devConfig, {
           room: url.searchParams.get("room"),
           durable: { found: false },
           runtime: { node_id: "node-a", room: url.searchParams.get("room"), found: false, store_backed: true },
+        }),
+      );
+    }
+    if (url.pathname === "/dev/seed") {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          status: "ok",
+          rooms: [{ room: "demo:room-1", exists: true, storage_found: false }],
+          fixture: { rooms: [{ room: "demo:room-1" }] },
         }),
       );
     }

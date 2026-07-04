@@ -1,0 +1,33 @@
+{
+  "rooms": [
+    {
+      "room": "demo:room-1",
+      "metadata": {
+        "name": "Demo room",
+        "dev": true
+      },
+      "defaultAccesses": ["room:write", "storage:write", "comments:write"],
+      "usersAccesses": {
+        "readonly-user": ["room:read", "storage:read", "comments:read"]
+      },
+      "groupsAccesses": {
+        "editors": ["room:write", "storage:write", "comments:write"]
+      },
+      "storage": {
+        "liveblocksType": "LiveObject",
+        "data": {
+          "title": "Seeded OpenRTC room",
+          "items": {
+            "liveblocksType": "LiveList",
+            "data": [
+              {
+                "id": "intro",
+                "text": "Seeded typed storage"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -17,6 +17,9 @@ go run ./server/cmd/openrtc dev
 
 # Optional external Redis:
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
+
+# Optional deterministic local fixture:
+go run ./server/cmd/openrtc dev --seed-file ./docs/config/openrtc.seed.example.json
 ```
 
 Open `http://127.0.0.1:3000`. Use
@@ -25,11 +28,13 @@ tokens. The token response also includes the local `config` object, debug endpoi
 URLs, and default `room`, so browser clients can connect without hard-coding dev URLs; the
 `@openrtc/client` `createOpenRTCDevClient()` and
 `createOpenRTCDevAdminClient()` helpers consume this response directly and return
-typed `tools` helpers for status, sockets, storage, Yjs metadata, event logs, and
-runtime/admin restart plus reconnect drills. `openrtc dev token` fetches local client/admin JWTs
+typed `tools` helpers for status, seed fixtures, sockets, storage, Yjs metadata,
+event logs, and runtime/admin restart plus reconnect drills. `tools.resetSeed()`
+calls `POST /dev/seed` to restore deterministic local fixture data without
+restarting the stack. `openrtc dev token` fetches local client/admin JWTs
 from a terminal, using token-only stdout by default, `--json` for the full token
 response, and `--env` for shell-safe `OPENRTC_DEV_*` assignments. `openrtc dev
-probe` runs the same status, socket, storage, Yjs, event-log, and optional
+probe` runs the same status, seed, socket, storage, Yjs, event-log, and optional
 restart checks from a terminal or CI job; use `--reconnect` to restart the local
 runtime and verify the old socket closes before a fresh socket rejoins,
 `--realtime` for runtime join/storage, `--yjs-realtime` for a live Yjs WebSocket
@@ -46,8 +51,9 @@ event log that powers join catch-up. The Ops tab includes dev status,
 socket/event inspection, and a runtime reconnect drill that restarts the local
 runtime, verifies the generation advanced, and checks reconnect plus presence echo.
 Seeded rooms include a small typed `LiveObject` storage document unless storage
-already exists, so `http://127.0.0.1:3000/dev/storage?room=demo:room-1` is useful
-immediately after startup.
+already exists. `http://127.0.0.1:3000/dev/seed` reports the active fixture, and
+`POST http://127.0.0.1:3000/dev/seed` deletes and reseeds configured dev rooms.
+Seed files use the shape in `docs/config/openrtc.seed.example.json`.
 
 ## Option 1: Docker Compose (Recommended for Getting Started)
 

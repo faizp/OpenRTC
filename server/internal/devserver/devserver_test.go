@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -135,6 +137,39 @@ func TestParseOptionsRejectsUnknownStorage(t *testing.T) {
 	}
 }
 
+func TestParseOptionsLoadsSeedFile(t *testing.T) {
+	clearDevStorageEnv(t)
+	seedFile := filepath.Join(t.TempDir(), "openrtc-seed.json")
+	if err := os.WriteFile(seedFile, []byte(`{
+		"rooms": [
+			{
+				"room": "demo:seed-file",
+				"metadata": {"name": "Seed File"},
+				"defaultAccesses": ["room:read", "storage:read"],
+				"storage": {"liveblocksType": "LiveObject", "data": {"title": "Seeded"}}
+			}
+		]
+	}`), 0o600); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	var output bytes.Buffer
+
+	opts, err := parseOptions([]string{"--seed-file", seedFile}, &output)
+
+	if err != nil {
+		t.Fatalf("parse options: %v", err)
+	}
+	if opts.seedFile != seedFile {
+		t.Fatalf("expected seed file path, got %q", opts.seedFile)
+	}
+	if !reflect.DeepEqual(opts.seedRooms, []string{"demo:seed-file"}) {
+		t.Fatalf("expected seed rooms from file, got %+v", opts.seedRooms)
+	}
+	if len(opts.seedFixture.Rooms) != 1 || string(opts.seedFixture.Rooms[0].Storage) == "" {
+		t.Fatalf("expected loaded fixture storage, got %+v", opts.seedFixture)
+	}
+}
+
 func TestParseProbeOptionsRejectsBadRestart(t *testing.T) {
 	var output bytes.Buffer
 
@@ -169,7 +204,7 @@ func TestRunProbeReportsHealthyDevStack(t *testing.T) {
 	if result.Room != "demo:room-1" {
 		t.Fatalf("unexpected room: %q", result.Room)
 	}
-	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,restart-runtime,restart-admin" {
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,seed,connections,sockets,storage,yjs,events,restart-runtime,restart-admin" {
 		t.Fatalf("unexpected checks: %v", got)
 	}
 	if result.Snapshots.Events == nil || result.Snapshots.Events.AfterSequence != 4 || result.Snapshots.Events.Limit != 5 {
@@ -305,7 +340,7 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("expected realtime probe to pass, got %+v", result.Checks)
 	}
-	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,restart-runtime,realtime" {
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,seed,connections,sockets,storage,yjs,events,restart-runtime,realtime" {
 		t.Fatalf("unexpected realtime checks: %v", got)
 	}
 	if !strings.Contains(dialedURL, "token=dev-token") {
@@ -407,7 +442,7 @@ func TestRunProbeRuntimeReconnectCheckRestartsAndRejoins(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("expected reconnect probe to pass, got %+v", result.Checks)
 	}
-	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,runtime-reconnect" {
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,seed,connections,sockets,storage,yjs,events,runtime-reconnect" {
 		t.Fatalf("unexpected reconnect checks: %v", got)
 	}
 	if atomic.LoadInt32(&dialCount) != 2 {
@@ -488,7 +523,7 @@ func TestRunProbeYJSRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("expected yjs realtime probe to pass, got %+v", result.Checks)
 	}
-	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,yjs-realtime" {
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,seed,connections,sockets,storage,yjs,events,yjs-realtime" {
 		t.Fatalf("unexpected yjs realtime checks: %v", got)
 	}
 	if !strings.Contains(dialedURL, "/yjs/demo:room-1") || !strings.Contains(dialedURL, "token=dev-token") {
@@ -750,7 +785,8 @@ func TestHandleTokenWithOptionsReturnsIntegrationConfig(t *testing.T) {
 		body.Config.YJSInspectionURL != "http://127.0.0.1:3000/dev/yjs?room=demo:room-1" ||
 		body.Config.EventsURL != "http://127.0.0.1:3000/dev/events?room=demo:room-1" ||
 		body.Config.CrashRuntimeURL != "http://127.0.0.1:3000/dev/crash/runtime" ||
-		body.Config.CrashAdminURL != "http://127.0.0.1:3000/dev/crash/admin" {
+		body.Config.CrashAdminURL != "http://127.0.0.1:3000/dev/crash/admin" ||
+		body.Config.SeedURL != "http://127.0.0.1:3000/dev/seed" {
 		t.Fatalf("unexpected integration config: %+v", body.Config)
 	}
 	if len(body.Config.SeedRooms) != 2 || body.Config.SeedRooms[0] != "demo:room-1" || body.Config.SeedRooms[1] != "demo:canvas-1" {
@@ -782,7 +818,8 @@ func TestHandleDevConfigReturnsIntegrationConfig(t *testing.T) {
 		body.WSURL != "ws://127.0.0.1:8080/ws" ||
 		body.AdminProxyURL != "/admin" ||
 		body.StatusURL != "http://127.0.0.1:3000/dev/status" ||
-		body.StorageURL != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" {
+		body.StorageURL != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" ||
+		body.SeedURL != "http://127.0.0.1:3000/dev/seed" {
 		t.Fatalf("unexpected integration config: %+v", body)
 	}
 	if len(body.SeedRooms) != 2 || body.SeedRooms[0] != "demo:room-1" || body.SeedRooms[1] != "demo:canvas-1" {
@@ -911,6 +948,65 @@ func TestSeedRoomsCreatesRoomsAndDefaultStorage(t *testing.T) {
 	}
 }
 
+func TestSeedFixtureCreatesCustomRoomsAndStorage(t *testing.T) {
+	store := newFakeSeedStore()
+	fixture := devSeedFixture{Rooms: []devSeedRoomFixture{
+		{
+			Room:            "demo:custom",
+			Metadata:        json.RawMessage(`{"name":"Custom","kind":"fixture"}`),
+			DefaultAccesses: []string{cluster.PermissionRoomRead, cluster.PermissionStorageRead},
+			UsersAccesses: map[string][]string{
+				"ada": {cluster.PermissionStorageWrite},
+			},
+			GroupsAccesses: map[string][]string{
+				"editors": {cluster.PermissionCommentsWrite},
+			},
+			Storage: json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Custom seed"}}`),
+		},
+	}}
+
+	if err := seedFixture(context.Background(), store, fixture); err != nil {
+		t.Fatalf("seed fixture: %v", err)
+	}
+	room := store.rooms["demo:custom"]
+	if room.ID != "demo:custom" || string(room.Metadata) != `{"name":"Custom","kind":"fixture"}` {
+		t.Fatalf("unexpected seeded room: %+v", room)
+	}
+	if !reflect.DeepEqual(room.DefaultAccesses, []string{cluster.PermissionRoomRead, cluster.PermissionStorageRead}) {
+		t.Fatalf("unexpected default accesses: %+v", room.DefaultAccesses)
+	}
+	if !reflect.DeepEqual(room.UsersAccesses["ada"], []string{cluster.PermissionStorageWrite}) {
+		t.Fatalf("unexpected user accesses: %+v", room.UsersAccesses)
+	}
+	if !reflect.DeepEqual(room.GroupsAccesses["editors"], []string{cluster.PermissionCommentsWrite}) {
+		t.Fatalf("unexpected group accesses: %+v", room.GroupsAccesses)
+	}
+	if string(store.storage["demo:custom"]) != `{"liveblocksType":"LiveObject","data":{"title":"Custom seed"}}` {
+		t.Fatalf("unexpected custom storage: %s", store.storage["demo:custom"])
+	}
+}
+
+func TestResetSeedFixtureRecreatesRoomsAndStorage(t *testing.T) {
+	store := newFakeSeedStore()
+	store.rooms["demo:room-1"] = cluster.RoomRecord{ID: "demo:room-1", Metadata: json.RawMessage(`{"name":"Old"}`)}
+	store.storage["demo:room-1"] = json.RawMessage(`{"title":"Old"}`)
+	fixture := devSeedFixture{Rooms: []devSeedRoomFixture{{
+		Room:     "demo:room-1",
+		Metadata: json.RawMessage(`{"name":"Reset"}`),
+		Storage:  json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Reset"}}`),
+	}}}
+
+	if err := resetSeedFixture(context.Background(), store, fixture); err != nil {
+		t.Fatalf("reset seed fixture: %v", err)
+	}
+	if string(store.rooms["demo:room-1"].Metadata) != `{"name":"Reset"}` {
+		t.Fatalf("expected room metadata to be reset, got %+v", store.rooms["demo:room-1"])
+	}
+	if string(store.storage["demo:room-1"]) != `{"liveblocksType":"LiveObject","data":{"title":"Reset"}}` {
+		t.Fatalf("expected storage to be reset, got %s", store.storage["demo:room-1"])
+	}
+}
+
 func TestSeedRoomsPreservesExistingStorage(t *testing.T) {
 	store := newFakeSeedStore()
 	store.rooms["demo:room-1"] = cluster.RoomRecord{ID: "demo:room-1"}
@@ -970,7 +1066,8 @@ func TestHandleStatusReportsHealthyDevStack(t *testing.T) {
 	if body.Endpoints.Token != "http://127.0.0.1:3000/dev/token?pubkey=pk_localdev" ||
 		body.Endpoints.RuntimeWS != "ws://127.0.0.1:8080/ws" ||
 		body.Endpoints.Storage != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" ||
-		body.Endpoints.YJS != "http://127.0.0.1:3000/dev/yjs?room=demo:room-1" {
+		body.Endpoints.YJS != "http://127.0.0.1:3000/dev/yjs?room=demo:room-1" ||
+		body.Endpoints.Seed != "http://127.0.0.1:3000/dev/seed" {
 		t.Fatalf("unexpected endpoints: %+v", body.Endpoints)
 	}
 }
@@ -1012,6 +1109,59 @@ func TestHandleStatusReportsDegradedDevStack(t *testing.T) {
 	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/status", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected POST 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleSeedReportsAndResetsFixture(t *testing.T) {
+	store := newFakeSeedStore()
+	store.rooms["demo:room-1"] = cluster.RoomRecord{ID: "demo:room-1", Metadata: json.RawMessage(`{"name":"Old"}`)}
+	store.storage["demo:room-1"] = json.RawMessage(`{"title":"Old"}`)
+	opts := options{
+		seedFile:  "openrtc.seed.json",
+		seedRooms: []string{"demo:room-1"},
+		seedFixture: devSeedFixture{Rooms: []devSeedRoomFixture{{
+			Room:     "demo:room-1",
+			Metadata: json.RawMessage(`{"name":"Fresh"}`),
+			Storage:  json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Fresh"}}`),
+		}}},
+	}
+	handler := handleSeed(opts, store)
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/dev/seed", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected GET 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devSeedSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode seed response: %v", err)
+	}
+	if body.Status != "ok" || body.SeedFile != "openrtc.seed.json" || len(body.Rooms) != 1 || !body.Rooms[0].Exists {
+		t.Fatalf("unexpected seed GET response: %+v", body)
+	}
+	if string(store.storage["demo:room-1"]) != `{"title":"Old"}` {
+		t.Fatalf("GET should not reset storage, got %s", store.storage["demo:room-1"])
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodPost, "/dev/seed", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected POST 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode reset seed response: %v", err)
+	}
+	if body.Status != "reset" || !body.Rooms[0].StorageFound {
+		t.Fatalf("unexpected seed reset response: %+v", body)
+	}
+	if string(store.storage["demo:room-1"]) != `{"liveblocksType":"LiveObject","data":{"title":"Fresh"}}` {
+		t.Fatalf("expected storage to be reset, got %s", store.storage["demo:room-1"])
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodDelete, "/dev/seed", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected DELETE 405, got %d", rec.Code)
 	}
 }
 
@@ -1426,6 +1576,22 @@ func (s *fakeSeedStore) SetStorage(_ context.Context, room string, document json
 	return document, nil
 }
 
+func (s *fakeSeedStore) DeleteRoom(_ context.Context, room string) error {
+	if _, ok := s.rooms[room]; !ok {
+		return cluster.ErrRoomNotFound
+	}
+	delete(s.rooms, room)
+	return nil
+}
+
+func (s *fakeSeedStore) DeleteStorage(_ context.Context, room string) error {
+	if _, ok := s.storage[room]; !ok {
+		return cluster.ErrStorageNotFound
+	}
+	delete(s.storage, room)
+	return nil
+}
+
 func runningManagedService(name string) *managedService {
 	return &managedService{
 		name:       name,
@@ -1543,6 +1709,7 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 			EventsURL:        baseURL + "/dev/events?room=demo:room-1",
 			CrashRuntimeURL:  baseURL + "/dev/crash/runtime",
 			CrashAdminURL:    baseURL + "/dev/crash/admin",
+			SeedURL:          baseURL + "/dev/seed",
 			SeedRooms:        []string{"demo:room-1", "demo:canvas-1"},
 		}
 	}
@@ -1582,6 +1749,20 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 			body.SeedRooms = []devSeedRoomStatus{{Room: "demo:room-1", Exists: true, StorageFound: false}}
 		}
 		writeJSON(w, statusCode, body)
+	})
+	mux.HandleFunc("/dev/seed", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, devSeedSnapshot{
+			Status: "ok",
+			Rooms: []devSeedRoomStatus{
+				{Room: "demo:room-1", Exists: true, StorageFound: opts.healthy},
+				{Room: "demo:canvas-1", Exists: true, StorageFound: opts.healthy},
+			},
+			Fixture: devSeedFixture{Rooms: []devSeedRoomFixture{{Room: "demo:room-1"}, {Room: "demo:canvas-1"}}},
+		})
 	})
 	mux.HandleFunc("/dev/connections", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

@@ -65,6 +65,10 @@ Implemented:
 - Runtime room admission controls for JSON and Yjs sockets, with configurable
   per-room caps, retryable `ROOM_CAPACITY` JSON join errors, Yjs HTTP 429
   upgrade rejection, and dev socket room activity/limit inspection.
+- First-class `openrtc dev` stack with local issuer/JWKS, embedded or external
+  Redis-backed local state, anonymous `pk_localdev` tokens, seeded room fixtures,
+  `/dev/seed` reset, active socket/storage/Yjs/event inspection, and
+  crash/reconnect probes.
 - Non-Yjs room event delivery ACKs: `@openrtc/client` tracks latest delivered
   `EVENT.meta.seq`, sends bounded reconnect catch-up with `JOIN.meta.after_seq`,
   automatically sends `EVENT_ACK`, Redis-backed runtimes persist per-subject

@@ -72,6 +72,7 @@ type devProbeCheck struct {
 type devProbeSnapshots struct {
 	Config           *devClientConfigSnapshot           `json:"config,omitempty"`
 	Status           *devStatusSnapshot                 `json:"status,omitempty"`
+	Seed             *devSeedSnapshot                   `json:"seed,omitempty"`
 	Connections      *devConnectionsSnapshot            `json:"connections,omitempty"`
 	Sockets          *runtimeapp.DevConnectionsSnapshot `json:"sockets,omitempty"`
 	Storage          *devStorageSnapshot                `json:"storage,omitempty"`
@@ -266,6 +267,23 @@ func runProbe(ctx context.Context, opts probeOptions) (devProbeResult, error) {
 				"redisHealthy":   snapshot.Redis.Healthy,
 				"runtimeRunning": snapshot.Runtime.Running,
 				"adminRunning":   snapshot.Admin.Running,
+			},
+		)
+	})
+
+	captureProbeCheck(&result, "seed", func() devProbeCheck {
+		var snapshot devSeedSnapshot
+		if err := probeGetJSON(ctx, client, endpointURL(opts.baseURL, config.SeedURL, "/dev/seed", nil), nil, &snapshot); err != nil {
+			return probeErrorCheck("seed", err)
+		}
+		result.Snapshots.Seed = &snapshot
+		return probeCheck(
+			"seed",
+			seedSnapshotHasRoom(snapshot, room) || !opts.expectSeedRoom,
+			probeSeedEndpointMessage(room, opts.expectSeedRoom),
+			map[string]interface{}{
+				"status": snapshot.Status,
+				"rooms":  len(snapshot.Rooms),
 			},
 		)
 	})
@@ -1027,6 +1045,13 @@ func probeSeedRoomMessage(room string, expect bool) string {
 	return fmt.Sprintf("Dev room %s selected", room)
 }
 
+func probeSeedEndpointMessage(room string, expect bool) string {
+	if expect {
+		return fmt.Sprintf("Dev seed endpoint advertises %s", room)
+	}
+	return "Dev seed endpoint is reachable"
+}
+
 func probeStatusMessage(ok bool) string {
 	if ok {
 		return "Dev stack status is ok"
@@ -1102,6 +1127,15 @@ func seedStorageFound(rooms []devSeedRoomStatus, room string) bool {
 	for _, candidate := range rooms {
 		if candidate.Room == room {
 			return candidate.Exists && candidate.StorageFound && candidate.Error == ""
+		}
+	}
+	return false
+}
+
+func seedSnapshotHasRoom(snapshot devSeedSnapshot, room string) bool {
+	for _, candidate := range snapshot.Rooms {
+		if candidate.Room == room {
+			return candidate.Exists && candidate.Error == ""
 		}
 	}
 	return false

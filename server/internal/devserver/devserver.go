@@ -1,6 +1,7 @@
 package devserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -55,7 +56,9 @@ type options struct {
 	redisURL    string
 	storage     string
 	staticDir   string
+	seedFile    string
 	seedRooms   []string
+	seedFixture devSeedFixture
 }
 
 type devStoreHandle struct {
@@ -83,8 +86,20 @@ type seedStore interface {
 	SetStorage(ctx context.Context, room string, document json.RawMessage) (json.RawMessage, error)
 }
 
+type seedResetStore interface {
+	seedStore
+	GetRoom(ctx context.Context, room string) (cluster.RoomRecord, error)
+	DeleteRoom(ctx context.Context, room string) error
+	DeleteStorage(ctx context.Context, room string) error
+}
+
 type devStatusStore interface {
 	Healthy(ctx context.Context) error
+	GetRoom(ctx context.Context, room string) (cluster.RoomRecord, error)
+	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
+}
+
+type seedStatusStore interface {
 	GetRoom(ctx context.Context, room string) (cluster.RoomRecord, error)
 	GetStorage(ctx context.Context, room string) (json.RawMessage, error)
 }
@@ -138,6 +153,27 @@ type devEventsSnapshot struct {
 	Events        []cluster.PublishedEvent `json:"events"`
 }
 
+type devSeedFixture struct {
+	Rooms []devSeedRoomFixture `json:"rooms"`
+}
+
+type devSeedRoomFixture struct {
+	ID              string              `json:"id,omitempty"`
+	Room            string              `json:"room,omitempty"`
+	Metadata        json.RawMessage     `json:"metadata,omitempty"`
+	DefaultAccesses []string            `json:"defaultAccesses,omitempty"`
+	UsersAccesses   map[string][]string `json:"usersAccesses,omitempty"`
+	GroupsAccesses  map[string][]string `json:"groupsAccesses,omitempty"`
+	Storage         json.RawMessage     `json:"storage,omitempty"`
+}
+
+type devSeedSnapshot struct {
+	Status   string              `json:"status"`
+	SeedFile string              `json:"seed_file,omitempty"`
+	Rooms    []devSeedRoomStatus `json:"rooms"`
+	Fixture  devSeedFixture      `json:"fixture"`
+}
+
 type devClientConfigSnapshot struct {
 	PublicKey        string   `json:"publicKey"`
 	TokenURL         string   `json:"tokenURL"`
@@ -156,12 +192,14 @@ type devClientConfigSnapshot struct {
 	EventsURL        string   `json:"eventsURL"`
 	CrashRuntimeURL  string   `json:"crashRuntimeURL"`
 	CrashAdminURL    string   `json:"crashAdminURL"`
+	SeedURL          string   `json:"seedURL"`
 	SeedRooms        []string `json:"seedRooms"`
 }
 
 type devStatusSnapshot struct {
 	Status         string                  `json:"status"`
 	StorageBackend string                  `json:"storage_backend"`
+	SeedFile       string                  `json:"seed_file,omitempty"`
 	Redis          devDependencyStatus     `json:"redis"`
 	Runtime        devManagedServiceStatus `json:"runtime"`
 	Admin          devManagedServiceStatus `json:"admin"`
@@ -211,6 +249,7 @@ type devEndpointSnapshot struct {
 	Storage      string `json:"storage"`
 	YJS          string `json:"yjs"`
 	Events       string `json:"events"`
+	Seed         string `json:"seed"`
 	CrashRuntime string `json:"crash_runtime"`
 	CrashAdmin   string `json:"crash_admin"`
 }
@@ -258,6 +297,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&opts.redisURL, "redis-url", envOr("OPENRTC_DEV_REDIS_URL", envOr("REDIS_URL", "redis://localhost:6379/0")), "Redis URL for local durable state")
 	flags.StringVar(&rawStorage, "storage", envOr("OPENRTC_DEV_STORAGE", ""), "local storage backend: memory or redis")
 	flags.StringVar(&opts.staticDir, "static-dir", envOr("OPENRTC_DEV_STATIC_DIR", ""), "static UI directory")
+	flags.StringVar(&opts.seedFile, "seed-file", envOr("OPENRTC_DEV_SEED_FILE", ""), "JSON seed fixture file for rooms and typed storage")
 	flags.StringVar(&rawSeedRooms, "seed-rooms", envOr("OPENRTC_DEV_SEED_ROOMS", defaultSeedRooms), "comma-separated rooms to seed")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
@@ -277,6 +317,16 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 		return options{}, fmt.Errorf("storage must be memory or redis")
 	}
 	opts.seedRooms = csvList(rawSeedRooms)
+	if opts.seedFile != "" {
+		fixture, err := loadSeedFixture(opts.seedFile)
+		if err != nil {
+			return options{}, err
+		}
+		opts.seedFixture = fixture
+		opts.seedRooms = seedFixtureRooms(fixture)
+	} else {
+		opts.seedFixture = seedFixtureFromRooms(opts.seedRooms)
+	}
 	if opts.staticDir == "" {
 		opts.staticDir = findStaticDir()
 	}
@@ -299,7 +349,7 @@ func run(ctx context.Context, opts options) error {
 	}
 	defer devStore.close()
 	store := devStore.store
-	if err := seedRooms(ctx, store, opts.seedRooms); err != nil {
+	if err := seedFixture(ctx, store, seedFixtureForOptions(opts)); err != nil {
 		return fmt.Errorf("seed rooms: %w", err)
 	}
 
@@ -376,6 +426,7 @@ func run(ctx context.Context, opts options) error {
 	mux.HandleFunc("/dev/storage", handleStorage(store, currentRuntimeService))
 	mux.HandleFunc("/dev/yjs", handleYJSDocument(store, currentRuntimeService))
 	mux.HandleFunc("/dev/events", handleEvents(store))
+	mux.HandleFunc("/dev/seed", handleSeed(opts, store))
 	mux.HandleFunc("/dev/crash/runtime", handleRestart(runtimeSvc))
 	mux.HandleFunc("/dev/crash/admin", handleRestart(adminSvc))
 	mux.Handle("/admin/", reverseProxy("/admin", fmt.Sprintf("http://%s:%d", opts.host, opts.adminPort)))
@@ -550,36 +601,155 @@ func devConfig(nodeID string, host string, port int, wsPath string, allowedOrigi
 }
 
 func seedRooms(ctx context.Context, store seedStore, rooms []string) error {
-	for _, room := range rooms {
+	return seedFixture(ctx, store, seedFixtureFromRooms(rooms))
+}
+
+func seedFixture(ctx context.Context, store seedStore, fixture devSeedFixture) error {
+	for _, roomFixture := range fixture.Rooms {
+		room := roomFixtureName(roomFixture)
 		if room == "" {
 			continue
 		}
-		_, err := store.CreateRoom(ctx, cluster.RoomRecord{
-			ID:              room,
-			Metadata:        json.RawMessage(fmt.Sprintf(`{"name":%q,"dev":true}`, room)),
-			DefaultAccesses: []string{cluster.PermissionRoomWrite},
-		})
+		record := seedRoomRecord(roomFixture)
+		_, err := store.CreateRoom(ctx, record)
 		if errors.Is(err, cluster.ErrRoomAlreadyExists) {
 			err = nil
 		}
 		if err != nil {
 			return err
 		}
-		if err := seedRoomStorage(ctx, store, room); err != nil {
+		if err := seedRoomStorage(ctx, store, roomFixture); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func seedRoomStorage(ctx context.Context, store seedStore, room string) error {
+func resetSeedFixture(ctx context.Context, store seedResetStore, fixture devSeedFixture) error {
+	for _, roomFixture := range fixture.Rooms {
+		room := roomFixtureName(roomFixture)
+		if room == "" {
+			continue
+		}
+		if err := store.DeleteStorage(ctx, room); err != nil && !errors.Is(err, cluster.ErrStorageNotFound) {
+			return err
+		}
+		if err := store.DeleteRoom(ctx, room); err != nil && !errors.Is(err, cluster.ErrRoomNotFound) {
+			return err
+		}
+	}
+	return seedFixture(ctx, store, fixture)
+}
+
+func seedRoomStorage(ctx context.Context, store seedStore, roomFixture devSeedRoomFixture) error {
+	room := roomFixtureName(roomFixture)
 	if _, err := store.GetStorage(ctx, room); err == nil {
 		return nil
 	} else if !errors.Is(err, cluster.ErrStorageNotFound) {
 		return err
 	}
-	_, err := store.SetStorage(ctx, room, defaultSeedStorage(room))
+	storage := roomFixture.Storage
+	if len(bytes.TrimSpace(storage)) == 0 || bytes.Equal(bytes.TrimSpace(storage), []byte("null")) {
+		storage = defaultSeedStorage(room)
+	} else if err := cluster.ValidateStorageDocument(storage); err != nil {
+		return err
+	}
+	_, err := store.SetStorage(ctx, room, storage)
 	return err
+}
+
+func seedRoomRecord(roomFixture devSeedRoomFixture) cluster.RoomRecord {
+	room := roomFixtureName(roomFixture)
+	metadata := roomFixture.Metadata
+	if len(bytes.TrimSpace(metadata)) == 0 || bytes.Equal(bytes.TrimSpace(metadata), []byte("null")) {
+		metadata = json.RawMessage(fmt.Sprintf(`{"name":%q,"dev":true}`, room))
+	}
+	defaultAccesses := []string{cluster.PermissionRoomWrite}
+	if roomFixture.DefaultAccesses != nil {
+		defaultAccesses = append([]string(nil), roomFixture.DefaultAccesses...)
+	}
+	return cluster.RoomRecord{
+		ID:              room,
+		Metadata:        append(json.RawMessage(nil), metadata...),
+		DefaultAccesses: defaultAccesses,
+		UsersAccesses:   cloneAccessMap(roomFixture.UsersAccesses),
+		GroupsAccesses:  cloneAccessMap(roomFixture.GroupsAccesses),
+	}
+}
+
+func seedFixtureFromRooms(rooms []string) devSeedFixture {
+	fixture := devSeedFixture{Rooms: make([]devSeedRoomFixture, 0, len(rooms))}
+	for _, room := range rooms {
+		room = strings.TrimSpace(room)
+		if room == "" {
+			continue
+		}
+		fixture.Rooms = append(fixture.Rooms, devSeedRoomFixture{Room: room})
+	}
+	return fixture
+}
+
+func seedFixtureForOptions(opts options) devSeedFixture {
+	if len(opts.seedFixture.Rooms) > 0 {
+		return opts.seedFixture
+	}
+	return seedFixtureFromRooms(opts.seedRooms)
+}
+
+func seedFixtureRooms(fixture devSeedFixture) []string {
+	rooms := make([]string, 0, len(fixture.Rooms))
+	for _, roomFixture := range fixture.Rooms {
+		if room := roomFixtureName(roomFixture); room != "" {
+			rooms = append(rooms, room)
+		}
+	}
+	return rooms
+}
+
+func roomFixtureName(roomFixture devSeedRoomFixture) string {
+	if room := strings.TrimSpace(roomFixture.Room); room != "" {
+		return room
+	}
+	return strings.TrimSpace(roomFixture.ID)
+}
+
+func loadSeedFixture(path string) (devSeedFixture, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return devSeedFixture{}, fmt.Errorf("read seed file: %w", err)
+	}
+	var fixture devSeedFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		return devSeedFixture{}, fmt.Errorf("parse seed file: %w", err)
+	}
+	if len(fixture.Rooms) == 0 {
+		return devSeedFixture{}, fmt.Errorf("seed file must include at least one room")
+	}
+	for index, room := range fixture.Rooms {
+		if roomFixtureName(room) == "" {
+			return devSeedFixture{}, fmt.Errorf("seed room %d must include room or id", index)
+		}
+		if len(bytes.TrimSpace(room.Metadata)) > 0 && !bytes.Equal(bytes.TrimSpace(room.Metadata), []byte("null")) && !json.Valid(room.Metadata) {
+			return devSeedFixture{}, fmt.Errorf("seed room %s metadata must be valid JSON", roomFixtureName(room))
+		}
+		if len(bytes.TrimSpace(room.Storage)) > 0 && !bytes.Equal(bytes.TrimSpace(room.Storage), []byte("null")) {
+			if err := cluster.ValidateStorageDocument(room.Storage); err != nil {
+				return devSeedFixture{}, fmt.Errorf("seed room %s storage: %w", roomFixtureName(room), err)
+			}
+		}
+	}
+	return fixture, nil
+}
+
+func cloneAccessMap(input map[string][]string) map[string][]string {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make(map[string][]string, len(input))
+	for key, value := range input {
+		output[key] = append([]string(nil), value...)
+	}
+	return output
 }
 
 func defaultSeedStorage(room string) json.RawMessage {
@@ -743,6 +913,7 @@ func devClientConfig(opts options) devClientConfigSnapshot {
 		EventsURL:        appURL + "/dev/events?room=" + firstRoom,
 		CrashRuntimeURL:  appURL + "/dev/crash/runtime",
 		CrashAdminURL:    appURL + "/dev/crash/admin",
+		SeedURL:          appURL + "/dev/seed",
 		SeedRooms:        opts.seedRooms,
 	}
 }
@@ -757,6 +928,7 @@ func handleStatus(opts options, store devStatusStore, runtimeSvc *managedService
 		snapshot := devStatusSnapshot{
 			Status:         "ok",
 			StorageBackend: opts.storage,
+			SeedFile:       opts.seedFile,
 			Redis:          devDependencyStatus{Healthy: true},
 			Runtime:        managedServiceStatus(runtimeSvc, devHTTPURL(opts.host, opts.runtimePort, "")),
 			Admin:          managedServiceStatus(adminSvc, devHTTPURL(opts.host, opts.adminPort, "")),
@@ -796,7 +968,7 @@ func managedServiceStatus(service *managedService, baseURL string) devManagedSer
 	return status
 }
 
-func seedRoomStatuses(ctx context.Context, store devStatusStore, rooms []string) []devSeedRoomStatus {
+func seedRoomStatuses(ctx context.Context, store seedStatusStore, rooms []string) []devSeedRoomStatus {
 	statuses := make([]devSeedRoomStatus, 0, len(rooms))
 	for _, room := range rooms {
 		if room == "" {
@@ -861,6 +1033,7 @@ func devEndpoints(opts options) devEndpointSnapshot {
 		Storage:      appURL + "/dev/storage?room=" + firstRoom,
 		YJS:          appURL + "/dev/yjs?room=" + firstRoom,
 		Events:       appURL + "/dev/events?room=" + firstRoom,
+		Seed:         appURL + "/dev/seed",
 		CrashRuntime: appURL + "/dev/crash/runtime",
 		CrashAdmin:   appURL + "/dev/crash/admin",
 	}
@@ -1075,6 +1248,37 @@ func handleEvents(store publishedEventLister) http.HandlerFunc {
 			Events:        events,
 		})
 	}
+}
+
+func handleSeed(opts options, store seedResetStore) http.HandlerFunc {
+	fixture := seedFixtureForOptions(opts)
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+		case http.MethodPost:
+			if err := resetSeedFixture(r.Context(), store, fixture); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		default:
+			http.Error(w, "method must be GET or POST", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(devSeedSnapshot{
+			Status:   seedResponseStatus(r.Method),
+			SeedFile: opts.seedFile,
+			Rooms:    seedRoomStatuses(r.Context(), store, seedFixtureRooms(fixture)),
+			Fixture:  fixture,
+		})
+	}
+}
+
+func seedResponseStatus(method string) string {
+	if method == http.MethodPost {
+		return "reset"
+	}
+	return "ok"
 }
 
 func filterSocketSnapshot(snapshot runtimeapp.DevConnectionsSnapshot, room string) runtimeapp.DevConnectionsSnapshot {

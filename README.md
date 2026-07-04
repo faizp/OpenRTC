@@ -42,6 +42,9 @@ go run ./server/cmd/openrtc dev
 # Optional: use external Redis instead of the embedded local store.
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 
+# Optional: load deterministic rooms/storage/accesses from a seed fixture.
+go run ./server/cmd/openrtc dev --seed-file ./docs/config/openrtc.seed.example.json
+
 # In another terminal, run a typed smoke probe against the live dev stack.
 go run ./server/cmd/openrtc dev probe --reconnect --realtime --yjs-realtime
 go run ./server/cmd/openrtc dev probe --json
@@ -64,11 +67,12 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/sockets` for local runtime WebSocket/Yjs socket inspection, including per-room activity and configured room admission caps.
 - `http://127.0.0.1:3000/dev/storage?room=demo:room-1` for durable and runtime-observed room storage inspection, including storage sequence metadata when available.
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
+- `http://127.0.0.1:3000/dev/seed` to inspect the active seed fixture and `POST /dev/seed` to delete and reseed configured dev rooms. Seed files use the shape in `docs/config/openrtc.seed.example.json`.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
-- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills, JSON output, `--reconnect` for a runtime crash/reconnect/rejoin drill, `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch and duplicate `op_id` retry, and `--yjs-realtime` for a live Yjs WebSocket update check.
+- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including seed fixture checks, optional runtime/admin restart drills, JSON output, `--reconnect` for a runtime crash/reconnect/rejoin drill, `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch and duplicate `op_id` retry, and `--yjs-realtime` for a live Yjs WebSocket update check.
 - `openrtc dev token` fetches local client/admin JWTs from a terminal, defaulting to a token-only stdout value for command substitution, with `--json` for the full response and `--env` for shell-safe `OPENRTC_DEV_*` assignments.
-- `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, sockets, storage, Yjs metadata, event logs, restart/reconnect drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs.
+- `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, seed fixtures, sockets, storage, Yjs metadata, event logs, restart/reconnect drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs. Use `tools.resetSeed()` to restore deterministic local data without restarting the stack.
 
 For a zero-config local client, let the SDK fetch the dev token response and
 use its embedded config:

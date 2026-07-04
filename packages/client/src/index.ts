@@ -111,6 +111,7 @@ export interface OpenRTCDevClientConfig {
   eventsURL?: string;
   crashRuntimeURL?: string;
   crashAdminURL?: string;
+  seedURL?: string;
   seedRooms: string[];
 }
 
@@ -182,6 +183,27 @@ export interface OpenRTCDevSeedRoomStatus {
   error?: string;
 }
 
+export interface OpenRTCDevSeedRoomFixture {
+  id?: string;
+  room?: string;
+  metadata?: unknown;
+  defaultAccesses?: string[];
+  usersAccesses?: Record<string, string[]>;
+  groupsAccesses?: Record<string, string[]>;
+  storage?: unknown;
+}
+
+export interface OpenRTCDevSeedFixture {
+  rooms: OpenRTCDevSeedRoomFixture[];
+}
+
+export interface OpenRTCDevSeedSnapshot {
+  status: string;
+  seed_file?: string;
+  rooms: OpenRTCDevSeedRoomStatus[];
+  fixture: OpenRTCDevSeedFixture;
+}
+
 export interface OpenRTCDevEndpointSnapshot {
   app: string;
   config: string;
@@ -197,6 +219,7 @@ export interface OpenRTCDevEndpointSnapshot {
   storage: string;
   yjs: string;
   events: string;
+  seed: string;
   crash_runtime: string;
   crash_admin: string;
 }
@@ -368,6 +391,8 @@ export interface OpenRTCDevTools {
   fetchStorage(options?: OpenRTCDevRoomOptions): Promise<OpenRTCDevStorageSnapshot>;
   fetchYJS(options?: OpenRTCDevRoomOptions): Promise<OpenRTCDevYJSSnapshot>;
   fetchEvents(options?: OpenRTCDevEventsOptions): Promise<OpenRTCDevEventsSnapshot>;
+  fetchSeed(): Promise<OpenRTCDevSeedSnapshot>;
+  resetSeed(): Promise<OpenRTCDevSeedSnapshot>;
   restartRuntime(): Promise<OpenRTCDevRestartSnapshot>;
   restartAdmin(): Promise<OpenRTCDevRestartSnapshot>;
   probe(options?: OpenRTCDevProbeOptions): Promise<OpenRTCDevProbeResult>;
@@ -382,6 +407,7 @@ export type OpenRTCDevProbeCheckName =
   | "storage"
   | "yjs"
   | "events"
+  | "seed"
   | "realtime"
   | "runtime-reconnect"
   | "restart-runtime"
@@ -412,6 +438,7 @@ export interface OpenRTCDevProbeSnapshots {
   storage?: OpenRTCDevStorageSnapshot;
   yjs?: OpenRTCDevYJSSnapshot;
   events?: OpenRTCDevEventsSnapshot;
+  seed?: OpenRTCDevSeedSnapshot;
   realtime?: OpenRTCDevRealtimeProbeSnapshot;
   runtimeReconnect?: OpenRTCDevRuntimeReconnectProbeSnapshot;
   runtimeRestart?: OpenRTCDevRestartSnapshot;
@@ -1667,6 +1694,17 @@ export function createOpenRTCDevTools(
         openRTCDevEndpointURL(config, "eventsURL", baseURL, urlOptions),
       );
     },
+    fetchSeed: () =>
+      fetchOpenRTCDevJSON<OpenRTCDevSeedSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "seedURL", baseURL),
+      ),
+    resetSeed: () =>
+      fetchOpenRTCDevJSON<OpenRTCDevSeedSnapshot>(
+        fetchImpl,
+        openRTCDevEndpointURL(config, "seedURL", baseURL),
+        { method: "POST" },
+      ),
     restartRuntime: () =>
       fetchOpenRTCDevJSON<OpenRTCDevRestartSnapshot>(
         fetchImpl,
@@ -1747,6 +1785,18 @@ export async function runOpenRTCDevProbe(
         runtimeRunning: status.runtime.running,
         adminRunning: status.admin.running,
       },
+    );
+  });
+
+  await captureOpenRTCDevProbeCheck(checks, "seed", async () => {
+    const seed = await tools.fetchSeed();
+    snapshots.seed = seed;
+    const hasRoom = seed.rooms.some((candidate) => candidate.room === room && candidate.exists && !candidate.error);
+    return openRTCDevProbeCheck(
+      "seed",
+      hasRoom || !expectSeedRoom,
+      expectSeedRoom ? `Dev seed endpoint advertises ${room}` : "Dev seed endpoint is reachable",
+      { status: seed.status, rooms: seed.rooms.length },
     );
   });
 
@@ -4917,6 +4967,7 @@ type OpenRTCDevEndpointKey =
   | "storageURL"
   | "yjsInspectionURL"
   | "eventsURL"
+  | "seedURL"
   | "crashRuntimeURL"
   | "crashAdminURL";
 
@@ -4927,6 +4978,7 @@ const OPENRTC_DEV_ENDPOINT_PATHS: Record<OpenRTCDevEndpointKey, string> = {
   storageURL: "/dev/storage",
   yjsInspectionURL: "/dev/yjs",
   eventsURL: "/dev/events",
+  seedURL: "/dev/seed",
   crashRuntimeURL: "/dev/crash/runtime",
   crashAdminURL: "/dev/crash/admin",
 };
@@ -5148,6 +5200,7 @@ function parseOpenRTCDevClientConfig(
   const eventsURL = optionalString(value["eventsURL"]);
   const crashRuntimeURL = optionalString(value["crashRuntimeURL"]);
   const crashAdminURL = optionalString(value["crashAdminURL"]);
+  const seedURL = optionalString(value["seedURL"]);
   if (
     !publicKey ||
     !tokenURL ||
@@ -5179,6 +5232,7 @@ function parseOpenRTCDevClientConfig(
     ...(eventsURL ? { eventsURL } : {}),
     ...(crashRuntimeURL ? { crashRuntimeURL } : {}),
     ...(crashAdminURL ? { crashAdminURL } : {}),
+    ...(seedURL ? { seedURL } : {}),
     seedRooms: asStringArray(value["seedRooms"]),
   };
 }
