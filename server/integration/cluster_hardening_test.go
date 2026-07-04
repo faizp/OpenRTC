@@ -210,6 +210,111 @@ func TestClusterRuntimeUsesRoomAccessGrants(t *testing.T) {
 	}
 }
 
+func TestClusterRuntimeStorageUsesRoomAccessGrants(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	cfg, server, signToken := clusterConfig(t, redisServer.Addr(), "node-storage")
+	store, err := cluster.NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("seed redis store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.CreateRoom(context.Background(), cluster.RoomRecord{
+		ID:              "tenant-a:storage-grant-room",
+		DefaultAccesses: []string{cluster.PermissionStorageRead},
+		UsersAccesses: map[string][]string{
+			"storage-writer":         {cluster.PermissionStorageWrite},
+			"blocked-storage-writer": {},
+		},
+		GroupsAccesses: map[string][]string{
+			"storage-writers": {cluster.PermissionStorageWrite},
+		},
+	}); err != nil {
+		t.Fatalf("create room grant record: %v", err)
+	}
+	if _, err := store.SetStorage(context.Background(), "tenant-a:storage-grant-room", json.RawMessage(`{"title":"Seeded"}`)); err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
+
+	readOnly := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+signToken(t, "openrtc-clients", map[string]any{
+		"tenant": "tenant-a",
+	}))
+	defer readOnly.Close()
+	readJSON(t, readOnly) // HELLO
+	mustWriteJSON(t, readOnly, map[string]any{"t": "STORAGE_GET", "id": "storage-read-default", "room": "tenant-a:storage-grant-room"})
+	expectStorageSnapshotTitle(t, readJSON(t, readOnly), "storage-read-default", "Seeded")
+	mustWriteJSON(t, readOnly, map[string]any{
+		"t":       "STORAGE_SET",
+		"id":      "storage-write-default",
+		"room":    "tenant-a:storage-grant-room",
+		"payload": map[string]any{"title": "Denied"},
+	})
+	expectRuntimeError(t, readJSON(t, readOnly), "storage-write-default")
+
+	userWriter := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+signToken(t, "openrtc-clients", map[string]any{
+		"sub":    "storage-writer",
+		"tenant": "tenant-a",
+	}))
+	defer userWriter.Close()
+	readJSON(t, userWriter) // HELLO
+	mustWriteJSON(t, userWriter, map[string]any{
+		"t":       "STORAGE_SET",
+		"id":      "storage-write-user",
+		"room":    "tenant-a:storage-grant-room",
+		"payload": map[string]any{"title": "User Write"},
+		"meta":    map[string]any{"op_id": "op-user-write"},
+	})
+	expectStorageAck(t, readJSON(t, userWriter), "storage-write-user", "set", "op-user-write")
+
+	groupWriter := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+signToken(t, "openrtc-clients", map[string]any{
+		"sub":      "group-storage-writer",
+		"tenant":   "tenant-a",
+		"groupIds": []string{"storage-writers"},
+	}))
+	defer groupWriter.Close()
+	readJSON(t, groupWriter) // HELLO
+	mustWriteJSON(t, groupWriter, map[string]any{
+		"t":    "STORAGE_PATCH",
+		"id":   "storage-patch-group",
+		"room": "tenant-a:storage-grant-room",
+		"payload": []map[string]any{
+			{"op": "replace", "path": "/title", "value": "Group Write"},
+		},
+		"meta": map[string]any{"op_id": "op-group-patch"},
+	})
+	expectStorageAck(t, readJSON(t, groupWriter), "storage-patch-group", "patch", "op-group-patch")
+
+	blockedWriter := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+signToken(t, "openrtc-clients", map[string]any{
+		"sub":      "blocked-storage-writer",
+		"tenant":   "tenant-a",
+		"groupIds": []string{"storage-writers"},
+	}))
+	defer blockedWriter.Close()
+	readJSON(t, blockedWriter) // HELLO
+	mustWriteJSON(t, blockedWriter, map[string]any{"t": "STORAGE_GET", "id": "storage-read-blocked", "room": "tenant-a:storage-grant-room"})
+	expectRuntimeError(t, readJSON(t, blockedWriter), "storage-read-blocked")
+	mustWriteJSON(t, blockedWriter, map[string]any{
+		"t":       "STORAGE_SET",
+		"id":      "storage-write-blocked",
+		"room":    "tenant-a:storage-grant-room",
+		"payload": map[string]any{"title": "Blocked"},
+	})
+	expectRuntimeError(t, readJSON(t, blockedWriter), "storage-write-blocked")
+
+	crossTenant := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+signToken(t, "openrtc-clients", map[string]any{
+		"tenant":   "tenant-b",
+		"groupIds": []string{"storage-writers"},
+	}))
+	defer crossTenant.Close()
+	readJSON(t, crossTenant) // HELLO
+	mustWriteJSON(t, crossTenant, map[string]any{"t": "STORAGE_GET", "id": "storage-read-cross", "room": "tenant-a:storage-grant-room"})
+	expectRuntimeErrorWithoutID(t, readJSON(t, crossTenant))
+}
+
 func TestAdminPublishWithAuth(t *testing.T) {
 	redisServer, err := miniredis.Run()
 	if err != nil {
@@ -1205,6 +1310,66 @@ func TestClusterPresenceStoredInRedisAndBroadcastsLive(t *testing.T) {
 	}
 
 	t.Log("Cross-node presence snapshot, live update, and offline event test passed!")
+}
+
+func expectStorageSnapshotTitle(t *testing.T, message map[string]any, requestID string, title string) {
+	t.Helper()
+	if message["t"] != "STORAGE_SNAPSHOT" || message["id"] != requestID {
+		t.Fatalf("expected STORAGE_SNAPSHOT %q, got %v", requestID, message)
+	}
+	payload, ok := message["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected storage snapshot payload object, got %v", message["payload"])
+	}
+	document, ok := payload["document"].(map[string]any)
+	if !ok || document["title"] != title {
+		t.Fatalf("expected storage title %q, got %v", title, payload["document"])
+	}
+}
+
+func expectStorageAck(t *testing.T, message map[string]any, requestID string, kind string, opID string) {
+	t.Helper()
+	if message["t"] != "STORAGE_ACK" || message["id"] != requestID {
+		t.Fatalf("expected STORAGE_ACK %q, got %v", requestID, message)
+	}
+	payload, ok := message["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected storage ack payload object, got %v", message["payload"])
+	}
+	if payload["kind"] != kind || payload["op_id"] != opID {
+		t.Fatalf("expected storage ack kind=%q op_id=%q, got %v", kind, opID, payload)
+	}
+}
+
+func expectRuntimeError(t *testing.T, message map[string]any, requestID string) {
+	t.Helper()
+	if message["t"] != "ERROR" || message["id"] != requestID {
+		t.Fatalf("expected ERROR %q, got %v", requestID, message)
+	}
+	payload, ok := message["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload object, got %v", message["payload"])
+	}
+	if payload["code"] != "ROOM_FORBIDDEN" {
+		t.Fatalf("expected ROOM_FORBIDDEN error, got %v", payload)
+	}
+}
+
+func expectRuntimeErrorWithoutID(t *testing.T, message map[string]any) {
+	t.Helper()
+	if message["t"] != "ERROR" {
+		t.Fatalf("expected ERROR, got %v", message)
+	}
+	if _, ok := message["id"]; ok {
+		t.Fatalf("expected error without request ID, got %v", message)
+	}
+	payload, ok := message["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload object, got %v", message["payload"])
+	}
+	if payload["code"] != "ROOM_FORBIDDEN" {
+		t.Fatalf("expected ROOM_FORBIDDEN error, got %v", payload)
+	}
 }
 
 func doAdminJSON(t *testing.T, method string, url string, token string, body any) *http.Response {
