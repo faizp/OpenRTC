@@ -229,10 +229,15 @@ For product-surface state, `@openrtc/client` exports
 apps can seed from REST thread/inbox lists and apply realtime deltas
 immutably. `@openrtc/react` exposes `useRoomThreads`, `useRoomThread`,
 `useInboxNotifications`, and `useUnreadInboxCount` for the same materialized
-comment and notification state in React. Wrap an `OpenRTCAdminClient` with
-`OpenRTCAdminProvider` or pass `admin` to `useRoomThreadsState` /
-`useInboxNotificationsState` when the hook should fetch the durable REST list
-before realtime deltas take over.
+comment and notification state in React. It also exposes action hooks for
+creating threads/comments, editing comment body/metadata, adding or removing
+reactions and mentions, triggering and clearing inbox notifications, marking
+notifications as read, and updating/resetting room subscription settings. Wrap
+an `OpenRTCAdminClient` with `OpenRTCAdminProvider` or pass `admin` to the state
+and action hooks when the hook should fetch or mutate durable REST state before
+realtime deltas take over. Reaction and mention action hooks accept current
+arrays when the caller already has them; otherwise they load the comment through
+the admin client before writing the derived update.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes
@@ -266,10 +271,17 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useStoragePendingMutations`, `useSetLiveStorage`, `useUpdateLiveStorage`,
 `useMutateLiveStorage`, `useHistory`, `useUndo`, `useRedo`, `useCanUndo`,
 `useCanRedo`, `useStorageMutation`, `useMutation`, and
-`useStorageListener`. It also exports `RoomProvider`, `useCurrentRoom`, and
+`useStorageListener`, plus product-surface hooks `useCreateThread`,
+`useCreateComment`, `useEditComment`, `useEditCommentMetadata`,
+`useAddReaction`, `useRemoveReaction`, `useAddCommentMention`,
+`useRemoveCommentMention`, `useTriggerInboxNotification`,
+`useMarkInboxNotificationAsRead`, `useDeleteInboxNotification`,
+`useDeleteAllInboxNotifications`, `useUpdateRoomSubscriptionSettings`, and
+`useResetRoomSubscriptionSettings`. It also exports `RoomProvider`, `useCurrentRoom`, and
 `createRoomContext()` for Liveblocks-style room-bound hooks where components call
 `useOthers()`, `useStorage()`, and `useMutation()` without passing a room ID
-through every hook. It also exports Liveblocks-style `Cursors`, `Cursor`, and
+through every hook; the room context also binds the room-scoped comment and
+subscription action hooks. It also exports Liveblocks-style `Cursors`, `Cursor`, and
 `AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with

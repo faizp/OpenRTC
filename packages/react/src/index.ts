@@ -16,12 +16,16 @@ import {
 } from "react";
 import {
   OpenRTCClient,
+  addCommentMention,
+  addCommentReaction,
   applyCommentEventToThreads,
   applyNotificationDeltaToInbox,
   getCursorPeers,
   getPresenceColor,
   getPresenceCursor,
   getPresenceUser,
+  removeCommentMention,
+  removeCommentReaction,
   sortCommentThreads,
   sortInboxNotifications,
   type BroadcastOptions,
@@ -29,9 +33,16 @@ import {
   type EnterRoomOptions,
   type JSONPatchOperation,
   type JoinOptions,
+  type OpenRTCAdminCommentInput,
+  type OpenRTCAdminCommentReaction,
+  type OpenRTCAdminCommentUpdate,
   type OpenRTCAdminInboxNotification,
+  type OpenRTCAdminInboxNotificationInput,
   type OpenRTCAdminClient,
+  type OpenRTCAdminRoomSubscriptionSettings,
+  type OpenRTCAdminRoomSubscriptionSettingsInput,
   type OpenRTCAdminThread,
+  type OpenRTCAdminThreadInput,
   type OpenRTCCursor,
   type OpenRTCCursorOptions,
   type OpenRTCCursorPeer,
@@ -107,6 +118,30 @@ export interface InboxNotificationsState {
   loading: boolean;
   error?: unknown;
   refresh(): Promise<OpenRTCAdminInboxNotification[]>;
+}
+
+export interface OpenRTCAdminActionOptions {
+  admin?: OpenRTCAdminClient | null;
+}
+
+export interface CommentReactionActionInput {
+  threadId: string;
+  commentId: string;
+  reaction: OpenRTCAdminCommentReaction;
+  currentReactions?: readonly OpenRTCAdminCommentReaction[];
+}
+
+export interface CommentMentionActionInput {
+  threadId: string;
+  commentId: string;
+  userId: string;
+  currentMentions?: readonly string[];
+}
+
+export interface EditCommentMetadataInput {
+  threadId: string;
+  commentId: string;
+  metadata: unknown;
 }
 
 export interface StorageMutationContext<TDocument = unknown> {
@@ -217,6 +252,31 @@ export interface OpenRTCRoomContextHooks {
   useThreads(options?: RoomThreadsOptions): OpenRTCAdminThread[];
   useThread(threadId: string, options?: RoomThreadsOptions): OpenRTCAdminThread | undefined;
   useCommentEvents(limit?: number): OpenRTCCommentEvent[];
+  useCreateThread(options?: OpenRTCAdminActionOptions): (thread: OpenRTCAdminThreadInput) => Promise<OpenRTCAdminThread>;
+  useCreateComment(
+    options?: OpenRTCAdminActionOptions,
+  ): (threadId: string, comment: OpenRTCAdminCommentInput) => Promise<OpenRTCAdminThread>;
+  useEditComment(
+    options?: OpenRTCAdminActionOptions,
+  ): (threadId: string, commentId: string, update: OpenRTCAdminCommentUpdate) => Promise<OpenRTCAdminThread>;
+  useEditCommentMetadata(
+    options?: OpenRTCAdminActionOptions,
+  ): (input: EditCommentMetadataInput) => Promise<OpenRTCAdminThread>;
+  useAddReaction(options?: OpenRTCAdminActionOptions): (input: CommentReactionActionInput) => Promise<OpenRTCAdminThread>;
+  useRemoveReaction(
+    options?: OpenRTCAdminActionOptions,
+  ): (input: CommentReactionActionInput) => Promise<OpenRTCAdminThread>;
+  useAddCommentMention(
+    options?: OpenRTCAdminActionOptions,
+  ): (input: CommentMentionActionInput) => Promise<OpenRTCAdminThread>;
+  useRemoveCommentMention(
+    options?: OpenRTCAdminActionOptions,
+  ): (input: CommentMentionActionInput) => Promise<OpenRTCAdminThread>;
+  useUpdateRoomSubscriptionSettings(
+    userId: string,
+    options?: OpenRTCAdminActionOptions,
+  ): (settings: OpenRTCAdminRoomSubscriptionSettingsInput) => Promise<OpenRTCAdminRoomSubscriptionSettings>;
+  useResetRoomSubscriptionSettings(userId: string, options?: OpenRTCAdminActionOptions): () => Promise<void>;
   useLostConnectionListener(callback: (event: OpenRTCLostConnectionEvent) => void): void;
   useRoomReconnect(): () => Promise<void>;
   useSetCursor(): (cursor: OpenRTCCursor | null, options?: OpenRTCCursorOptions) => void;
@@ -407,6 +467,29 @@ function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRo
     useThreads: (options = {}) => useRoomThreads(useRoomFromContext(context, "useThreads").id, options),
     useThread: (threadId, options = {}) => useRoomThread(useRoomFromContext(context, "useThread").id, threadId, options),
     useCommentEvents: (limit = 200) => useRoomCommentEvents(useRoomFromContext(context, "useCommentEvents").id, limit),
+    useCreateThread: (options = {}) => useCreateThread(useRoomFromContext(context, "useCreateThread").id, options),
+    useCreateComment: (options = {}) => useCreateComment(useRoomFromContext(context, "useCreateComment").id, options),
+    useEditComment: (options = {}) => useEditComment(useRoomFromContext(context, "useEditComment").id, options),
+    useEditCommentMetadata: (options = {}) =>
+      useEditCommentMetadata(useRoomFromContext(context, "useEditCommentMetadata").id, options),
+    useAddReaction: (options = {}) => useAddReaction(useRoomFromContext(context, "useAddReaction").id, options),
+    useRemoveReaction: (options = {}) => useRemoveReaction(useRoomFromContext(context, "useRemoveReaction").id, options),
+    useAddCommentMention: (options = {}) =>
+      useAddCommentMention(useRoomFromContext(context, "useAddCommentMention").id, options),
+    useRemoveCommentMention: (options = {}) =>
+      useRemoveCommentMention(useRoomFromContext(context, "useRemoveCommentMention").id, options),
+    useUpdateRoomSubscriptionSettings: (userId, options = {}) =>
+      useUpdateRoomSubscriptionSettings(
+        useRoomFromContext(context, "useUpdateRoomSubscriptionSettings").id,
+        userId,
+        options,
+      ),
+    useResetRoomSubscriptionSettings: (userId, options = {}) =>
+      useResetRoomSubscriptionSettings(
+        useRoomFromContext(context, "useResetRoomSubscriptionSettings").id,
+        userId,
+        options,
+      ),
     useLostConnectionListener: (callback) =>
       useLostConnectionListener(useRoomFromContext(context, "useLostConnectionListener").id, callback),
     useRoomReconnect: () => useRoomReconnect(useRoomFromContext(context, "useRoomReconnect").id),
@@ -1071,6 +1154,117 @@ export function useRoomThread(
   return useMemo(() => threads.find((thread) => thread.id === threadId), [threads, threadId]);
 }
 
+export function useCreateThread(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (thread: OpenRTCAdminThreadInput) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useCreateThread");
+  return useCallback((thread: OpenRTCAdminThreadInput) => admin.createThread(room, thread), [admin, room]);
+}
+
+export function useCreateComment(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string, comment: OpenRTCAdminCommentInput) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useCreateComment");
+  return useCallback(
+    (threadId: string, comment: OpenRTCAdminCommentInput) => admin.addComment(room, threadId, comment),
+    [admin, room],
+  );
+}
+
+export function useEditComment(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (threadId: string, commentId: string, update: OpenRTCAdminCommentUpdate) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useEditComment");
+  return useCallback(
+    (threadId: string, commentId: string, update: OpenRTCAdminCommentUpdate) =>
+      admin.updateComment(room, threadId, commentId, update),
+    [admin, room],
+  );
+}
+
+export function useEditCommentMetadata(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (input: EditCommentMetadataInput) => Promise<OpenRTCAdminThread> {
+  const editComment = useEditComment(room, options);
+  return useCallback(
+    (input: EditCommentMetadataInput) =>
+      editComment(input.threadId, input.commentId, { metadata: input.metadata }),
+    [editComment],
+  );
+}
+
+export function useAddReaction(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (input: CommentReactionActionInput) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useAddReaction");
+  return useCallback(
+    async (input: CommentReactionActionInput) => {
+      const currentReactions =
+        input.currentReactions ?? (await loadCommentForAction(admin, room, input.threadId, input.commentId)).reactions;
+      return admin.updateComment(room, input.threadId, input.commentId, {
+        reactions: addCommentReaction(currentReactions, input.reaction),
+      });
+    },
+    [admin, room],
+  );
+}
+
+export function useRemoveReaction(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (input: CommentReactionActionInput) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useRemoveReaction");
+  return useCallback(
+    async (input: CommentReactionActionInput) => {
+      const currentReactions =
+        input.currentReactions ?? (await loadCommentForAction(admin, room, input.threadId, input.commentId)).reactions;
+      return admin.updateComment(room, input.threadId, input.commentId, {
+        reactions: removeCommentReaction(currentReactions, input.reaction),
+      });
+    },
+    [admin, room],
+  );
+}
+
+export function useAddCommentMention(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (input: CommentMentionActionInput) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useAddCommentMention");
+  return useCallback(
+    async (input: CommentMentionActionInput) => {
+      const currentMentions =
+        input.currentMentions ?? (await loadCommentForAction(admin, room, input.threadId, input.commentId)).mentions;
+      return admin.updateComment(room, input.threadId, input.commentId, {
+        mentions: addCommentMention(currentMentions, input.userId),
+      });
+    },
+    [admin, room],
+  );
+}
+
+export function useRemoveCommentMention(
+  room: string,
+  options: OpenRTCAdminActionOptions = {},
+): (input: CommentMentionActionInput) => Promise<OpenRTCAdminThread> {
+  const admin = useAdminActionClient(options, "useRemoveCommentMention");
+  return useCallback(
+    async (input: CommentMentionActionInput) => {
+      const currentMentions =
+        input.currentMentions ?? (await loadCommentForAction(admin, room, input.threadId, input.commentId)).mentions;
+      return admin.updateComment(room, input.threadId, input.commentId, {
+        mentions: removeCommentMention(currentMentions, input.userId),
+      });
+    },
+    [admin, room],
+  );
+}
+
 export function useNotificationListener(callback: (event: OpenRTCNotificationDelta) => void): void {
   const client = useOpenRTC();
   const stableCallback = useStableCallback(callback);
@@ -1165,6 +1359,61 @@ export function useUnreadInboxCount(
   options: Omit<InboxNotificationsOptions, "unreadOnly"> = {},
 ): number {
   return useInboxNotifications({ ...options, unreadOnly: true }).length;
+}
+
+export function useTriggerInboxNotification(
+  options: OpenRTCAdminActionOptions = {},
+): (input: OpenRTCAdminInboxNotificationInput) => Promise<OpenRTCAdminInboxNotification> {
+  const admin = useAdminActionClient(options, "useTriggerInboxNotification");
+  return useCallback(
+    (input: OpenRTCAdminInboxNotificationInput) => admin.triggerInboxNotification(input),
+    [admin],
+  );
+}
+
+export function useMarkInboxNotificationAsRead(
+  options: OpenRTCAdminActionOptions = {},
+): (notificationId: string) => Promise<OpenRTCAdminInboxNotification> {
+  const admin = useAdminActionClient(options, "useMarkInboxNotificationAsRead");
+  return useCallback((notificationId: string) => admin.markInboxNotificationRead(notificationId), [admin]);
+}
+
+export function useDeleteInboxNotification(
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): (notificationId: string) => Promise<void> {
+  const admin = useAdminActionClient(options, "useDeleteInboxNotification");
+  return useCallback((notificationId: string) => admin.deleteInboxNotification(userId, notificationId), [admin, userId]);
+}
+
+export function useDeleteAllInboxNotifications(
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): () => Promise<void> {
+  const admin = useAdminActionClient(options, "useDeleteAllInboxNotifications");
+  return useCallback(() => admin.deleteAllInboxNotifications(userId), [admin, userId]);
+}
+
+export function useUpdateRoomSubscriptionSettings(
+  room: string,
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): (settings: OpenRTCAdminRoomSubscriptionSettingsInput) => Promise<OpenRTCAdminRoomSubscriptionSettings> {
+  const admin = useAdminActionClient(options, "useUpdateRoomSubscriptionSettings");
+  return useCallback(
+    (settings: OpenRTCAdminRoomSubscriptionSettingsInput) =>
+      admin.setRoomSubscriptionSettings(room, userId, settings),
+    [admin, room, userId],
+  );
+}
+
+export function useResetRoomSubscriptionSettings(
+  room: string,
+  userId: string,
+  options: OpenRTCAdminActionOptions = {},
+): () => Promise<void> {
+  const admin = useAdminActionClient(options, "useResetRoomSubscriptionSettings");
+  return useCallback(() => admin.deleteRoomSubscriptionSettings(room, userId), [admin, room, userId]);
 }
 
 export function useLostConnectionListener(
@@ -1568,6 +1817,33 @@ function useInitialNotifications(
     ref.current = { key, notifications: initialNotifications };
   }
   return ref.current.notifications;
+}
+
+function useAdminActionClient(options: OpenRTCAdminActionOptions, hookName: string): OpenRTCAdminClient {
+  const contextAdmin = useContext(OpenRTCAdminContext);
+  const admin = options.admin ?? contextAdmin;
+  if (!admin) {
+    throw new Error(`${hookName} requires an OpenRTCAdminProvider or an admin option`);
+  }
+  return admin;
+}
+
+async function loadCommentForAction(
+  admin: OpenRTCAdminClient,
+  room: string,
+  threadId: string,
+  commentId: string,
+): Promise<{
+  mentions?: string[];
+  reactions?: OpenRTCAdminCommentReaction[];
+}> {
+  const response = await admin.listThreads(room);
+  const thread = response.data.find((candidate) => candidate.id === threadId);
+  const comment = thread?.comments.find((candidate) => candidate.id === commentId);
+  if (!comment) {
+    throw new Error(`Comment ${commentId} was not found in thread ${threadId}`);
+  }
+  return comment;
 }
 
 function useInitialPresence(room: string, initialPresence: PresenceState | undefined): PresenceState | undefined {

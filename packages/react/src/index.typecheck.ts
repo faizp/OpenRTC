@@ -1,5 +1,10 @@
 import type {
   ConnectionStatus,
+  OpenRTCAdminInboxNotification,
+  OpenRTCAdminInboxNotificationInput,
+  OpenRTCAdminRoomSubscriptionSettings,
+  OpenRTCAdminThread,
+  OpenRTCAdminThreadInput,
   OpenRTCCursorPeer,
   OpenRTCEvent,
   OpenRTCLiveObject,
@@ -17,15 +22,24 @@ import {
   Cursors,
   RoomProvider,
   createRoomContext,
+  useAddCommentMention,
+  useAddReaction,
   useCursor,
   useCursors,
   useCursorsMapped,
   useBroadcastEvent,
   useBroadcastEventWithAck,
   useCurrentRoom,
+  useCreateComment,
+  useCreateThread,
+  useDeleteAllInboxNotifications,
+  useDeleteInboxNotification,
+  useEditComment,
+  useEditCommentMetadata,
   useEnterRoom,
   useErrorListener,
   useLostConnectionListener,
+  useMarkInboxNotificationAsRead,
   useMyPresence,
   useMyPresenceSelector,
   useMutation,
@@ -38,6 +52,8 @@ import {
   useOthersMapped,
   useRoomReconnect,
   useRedo,
+  useRemoveCommentMention,
+  useRemoveReaction,
   useRoomEvents,
   useRoomSelector,
   useRoomStatus,
@@ -54,9 +70,12 @@ import {
   useStoragePendingMutations,
   useStorageSequence,
   useStorageStatus,
+  useTriggerInboxNotification,
   useHistory,
   useUndo,
+  useUpdateRoomSubscriptionSettings,
   useUpdateLiveStorage,
+  useResetRoomSubscriptionSettings,
 } from "./index.ts";
 
 function expectType<T>(_value: T): void {}
@@ -218,6 +237,75 @@ function StorageIntegrationTypes() {
   return null;
 }
 
+function ProductSurfaceActionTypes() {
+  const roomId = "tenant-a:canvas-1";
+  const createThread = useCreateThread(roomId);
+  const createComment = useCreateComment(roomId);
+  const editComment = useEditComment(roomId);
+  const editCommentMetadata = useEditCommentMetadata(roomId);
+  const addReaction = useAddReaction(roomId);
+  const removeReaction = useRemoveReaction(roomId);
+  const addMention = useAddCommentMention(roomId);
+  const removeMention = useRemoveCommentMention(roomId);
+  const triggerInboxNotification = useTriggerInboxNotification();
+  const markInboxRead = useMarkInboxNotificationAsRead();
+  const deleteInboxNotification = useDeleteInboxNotification("user-1");
+  const deleteAllInboxNotifications = useDeleteAllInboxNotifications("user-1");
+  const updateRoomSubscriptionSettings = useUpdateRoomSubscriptionSettings(roomId, "user-1");
+  const resetRoomSubscriptionSettings = useResetRoomSubscriptionSettings(roomId, "user-1");
+
+  const threadInput: OpenRTCAdminThreadInput = {
+    comment: {
+      userId: "user-1",
+      body: { type: "text", text: "Review" },
+    },
+  };
+  expectType<Promise<OpenRTCAdminThread>>(createThread(threadInput));
+  expectType<Promise<OpenRTCAdminThread>>(
+    createComment("thread-1", { userId: "user-1", body: { type: "text", text: "Next" } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(editComment("thread-1", "comment-1", { metadata: { status: "open" } }));
+  expectType<Promise<OpenRTCAdminThread>>(
+    editCommentMetadata({ threadId: "thread-1", commentId: "comment-1", metadata: { status: "resolved" } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    addReaction({
+      threadId: "thread-1",
+      commentId: "comment-1",
+      reaction: { emoji: "+1", userId: "user-2" },
+      currentReactions: [],
+    }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    removeReaction({
+      threadId: "thread-1",
+      commentId: "comment-1",
+      reaction: { emoji: "+1", userId: "user-2" },
+    }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    addMention({ threadId: "thread-1", commentId: "comment-1", userId: "user-2", currentMentions: [] }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    removeMention({ threadId: "thread-1", commentId: "comment-1", userId: "user-2" }),
+  );
+  const inboxInput: OpenRTCAdminInboxNotificationInput = {
+    userId: "user-1",
+    kind: "$custom",
+    roomId,
+  };
+  expectType<Promise<OpenRTCAdminInboxNotification>>(triggerInboxNotification(inboxInput));
+  expectType<Promise<OpenRTCAdminInboxNotification>>(markInboxRead("in_1"));
+  expectType<Promise<void>>(deleteInboxNotification("in_1"));
+  expectType<Promise<void>>(deleteAllInboxNotifications());
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(
+    updateRoomSubscriptionSettings({ threads: "all", textMentions: "mine" }),
+  );
+  expectType<Promise<void>>(resetRoomSubscriptionSettings());
+
+  return null;
+}
+
 const boundRoom = createRoomContext();
 
 function RoomContextIntegrationTypes() {
@@ -268,6 +356,46 @@ function RoomContextIntegrationTypes() {
   expectType<boolean>(boundRoom.useHistory().canRedo());
   expectType<Promise<CanvasStorage | undefined>>(boundRoom.useUndo<CanvasStorage>()({ opId: "bound-undo-1" }));
   expectType<Promise<CanvasStorage | undefined>>(boundRoom.useRedo<CanvasStorage>()({ opId: "bound-redo-1" }));
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useCreateThread()({ comment: { userId: "user-1", body: { type: "text", text: "Review" } } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useCreateComment()("thread-1", { userId: "user-1", body: { type: "text", text: "Reply" } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useEditComment()("thread-1", "comment-1", { body: { type: "text", text: "Edited" } }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useEditCommentMetadata()({
+      threadId: "thread-1",
+      commentId: "comment-1",
+      metadata: { status: "resolved" },
+    }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useAddReaction()({
+      threadId: "thread-1",
+      commentId: "comment-1",
+      reaction: { emoji: "+1", userId: "user-2" },
+    }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useRemoveReaction()({
+      threadId: "thread-1",
+      commentId: "comment-1",
+      reaction: { emoji: "+1", userId: "user-2" },
+    }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useAddCommentMention()({ threadId: "thread-1", commentId: "comment-1", userId: "user-2" }),
+  );
+  expectType<Promise<OpenRTCAdminThread>>(
+    boundRoom.useRemoveCommentMention()({ threadId: "thread-1", commentId: "comment-1", userId: "user-2" }),
+  );
+  expectType<Promise<OpenRTCAdminRoomSubscriptionSettings>>(
+    boundRoom.useUpdateRoomSubscriptionSettings("user-1")({ threads: "none" }),
+  );
+  expectType<Promise<void>>(boundRoom.useResetRoomSubscriptionSettings("user-1")());
   expectType<Promise<CanvasStorage>>(boundRoom.useSetStorage<CanvasStorage>()({ title: "Draft", items: [] }));
 
   const boundMutation = boundRoom.useMutation<CanvasStorage, [title: string], Promise<void>>(
@@ -290,4 +418,5 @@ function RoomContextIntegrationTypes() {
 
 void PresenceIntegrationTypes;
 void StorageIntegrationTypes;
+void ProductSurfaceActionTypes;
 void RoomContextIntegrationTypes;

@@ -5,11 +5,20 @@ import {
   OpenRTCAdminProvider,
   RoomProvider,
   createRoomContext,
+  useAddCommentMention,
+  useAddReaction,
   useCanRedo,
   useCanUndo,
   useCommentListener,
+  useCreateComment,
+  useCreateThread,
   useCurrentRoom,
+  useDeleteAllInboxNotifications,
+  useDeleteInboxNotification,
+  useEditComment,
+  useEditCommentMetadata,
   useHistory,
+  useMarkInboxNotificationAsRead,
   useOpenRTCAdmin,
   useMutation,
   useNotificationEvents,
@@ -18,6 +27,8 @@ import {
   useInboxNotificationsState,
   useMutateLiveStorage,
   usePatchStorage,
+  useRemoveCommentMention,
+  useRemoveReaction,
   useRoomThread,
   useRoomThreads,
   useRoomThreadsState,
@@ -32,9 +43,12 @@ import {
   useStorageSequence,
   useStorageSelector,
   useStorageStatus,
+  useTriggerInboxNotification,
   useUndo,
+  useUpdateRoomSubscriptionSettings,
   useUpdateLiveStorage,
   useUnreadInboxCount,
+  useResetRoomSubscriptionSettings,
 } from "./index.ts";
 
 type ElementProps = Record<string, unknown>;
@@ -77,6 +91,20 @@ assert.equal(typeof useRoomThreadsState, "function");
 assert.equal(typeof useInboxNotifications, "function");
 assert.equal(typeof useInboxNotificationsState, "function");
 assert.equal(typeof useUnreadInboxCount, "function");
+assert.equal(typeof useCreateThread, "function");
+assert.equal(typeof useCreateComment, "function");
+assert.equal(typeof useEditComment, "function");
+assert.equal(typeof useEditCommentMetadata, "function");
+assert.equal(typeof useAddReaction, "function");
+assert.equal(typeof useRemoveReaction, "function");
+assert.equal(typeof useAddCommentMention, "function");
+assert.equal(typeof useRemoveCommentMention, "function");
+assert.equal(typeof useTriggerInboxNotification, "function");
+assert.equal(typeof useMarkInboxNotificationAsRead, "function");
+assert.equal(typeof useDeleteInboxNotification, "function");
+assert.equal(typeof useDeleteAllInboxNotifications, "function");
+assert.equal(typeof useUpdateRoomSubscriptionSettings, "function");
+assert.equal(typeof useResetRoomSubscriptionSettings, "function");
 assert.equal(typeof OpenRTCAdminProvider, "function");
 assert.equal(typeof useOpenRTCAdmin, "function");
 assert.equal(typeof RoomProvider, "function");
@@ -97,6 +125,16 @@ assert.equal(typeof roomContext.useThreads, "function");
 assert.equal(typeof roomContext.useThreadsState, "function");
 assert.equal(typeof roomContext.useThread, "function");
 assert.equal(typeof roomContext.useCommentEvents, "function");
+assert.equal(typeof roomContext.useCreateThread, "function");
+assert.equal(typeof roomContext.useCreateComment, "function");
+assert.equal(typeof roomContext.useEditComment, "function");
+assert.equal(typeof roomContext.useEditCommentMetadata, "function");
+assert.equal(typeof roomContext.useAddReaction, "function");
+assert.equal(typeof roomContext.useRemoveReaction, "function");
+assert.equal(typeof roomContext.useAddCommentMention, "function");
+assert.equal(typeof roomContext.useRemoveCommentMention, "function");
+assert.equal(typeof roomContext.useUpdateRoomSubscriptionSettings, "function");
+assert.equal(typeof roomContext.useResetRoomSubscriptionSettings, "function");
 
 const labeledCursor = asElement(
   Cursor({
