@@ -139,6 +139,12 @@ export interface OpenRTCDevTokenOptions {
   fetch?: OpenRTCFetch;
 }
 
+export interface OpenRTCDevConfigOptions {
+  baseURL?: string;
+  configURL?: string;
+  fetch?: OpenRTCFetch;
+}
+
 export interface OpenRTCDevRoomOptions {
   room?: string;
 }
@@ -1038,6 +1044,7 @@ const MIN_LOST_CONNECTION_TIMEOUT_MS = 1000;
 const MAX_LOST_CONNECTION_TIMEOUT_MS = 30000;
 const DEFAULT_OPENRTC_DEV_BASE_URL = "http://127.0.0.1:3000";
 const DEFAULT_OPENRTC_DEV_TOKEN_URL = "/dev/token";
+const DEFAULT_OPENRTC_DEV_CONFIG_URL = "/dev/config";
 
 export class OpenRTCDevError extends Error {
   constructor(
@@ -1060,6 +1067,18 @@ export async function fetchOpenRTCDevToken(options: OpenRTCDevTokenOptions = {})
     throw new OpenRTCDevError(response.status, body, errorMessage(response, body));
   }
   return parseOpenRTCDevTokenResponse(body);
+}
+
+export async function fetchOpenRTCDevConfig(options: OpenRTCDevConfigOptions = {}): Promise<OpenRTCDevClientConfig> {
+  const fetchImpl = resolveFetch(options.fetch);
+  const url = openRTCDevConfigURL(options);
+  const response = await fetchImpl(url);
+  const text = await response.text();
+  const body = text ? parseJSON(text) : undefined;
+  if (!response.ok) {
+    throw new OpenRTCDevError(response.status, body, errorMessage(response, body));
+  }
+  return parseOpenRTCDevClientConfig(body, "OpenRTC dev config response");
 }
 
 export async function createOpenRTCDevClient(options: OpenRTCDevClientOptions = {}): Promise<OpenRTCDevClient> {
@@ -3405,6 +3424,12 @@ function openRTCDevTokenURL(options: OpenRTCDevTokenOptions): string {
   return parsed.toString();
 }
 
+function openRTCDevConfigURL(options: OpenRTCDevConfigOptions): string {
+  const baseURL = options.baseURL ?? DEFAULT_OPENRTC_DEV_BASE_URL;
+  const configURL = options.configURL ?? DEFAULT_OPENRTC_DEV_CONFIG_URL;
+  return new URL(configURL, baseURL.endsWith("/") ? baseURL : `${baseURL}/`).toString();
+}
+
 type OpenRTCDevEndpointKey =
   | "statusURL"
   | "connectionsURL"
@@ -3476,7 +3501,7 @@ function parseOpenRTCDevTokenResponse(value: unknown): OpenRTCDevTokenResponse {
   const tenant = optionalString(value["tenant"]);
   const expiresAt = optionalString(value["expiresAt"]);
   const room = optionalString(value["room"]);
-  const config = parseOpenRTCDevClientConfig(value["config"]);
+  const config = parseOpenRTCDevClientConfig(value["config"], "OpenRTC dev token response config");
   return {
     token,
     kind,
@@ -3489,9 +3514,12 @@ function parseOpenRTCDevTokenResponse(value: unknown): OpenRTCDevTokenResponse {
   };
 }
 
-function parseOpenRTCDevClientConfig(value: unknown): OpenRTCDevClientConfig {
+function parseOpenRTCDevClientConfig(
+  value: unknown,
+  description = "OpenRTC dev token response config",
+): OpenRTCDevClientConfig {
   if (!isRecordObject(value)) {
-    throw new Error("OpenRTC dev token response is missing config");
+    throw new Error(`${description} must be a JSON object`);
   }
   const publicKey = optionalString(value["publicKey"]);
   const tokenURL = optionalString(value["tokenURL"]);
@@ -3521,7 +3549,7 @@ function parseOpenRTCDevClientConfig(value: unknown): OpenRTCDevClientConfig {
     !runtimeURL ||
     !runtimeProxyURL
   ) {
-    throw new Error("OpenRTC dev token response config is incomplete");
+    throw new Error(`${description} is incomplete`);
   }
   return {
     publicKey,

@@ -201,6 +201,38 @@ func TestHandleTokenWithOptionsReturnsIntegrationConfig(t *testing.T) {
 	}
 }
 
+func TestHandleDevConfigReturnsIntegrationConfig(t *testing.T) {
+	opts := options{
+		host:        "127.0.0.1",
+		appPort:     3000,
+		runtimePort: 8080,
+		adminPort:   8090,
+		seedRooms:   []string{"demo:room-1", "demo:canvas-1"},
+	}
+	rec := httptest.NewRecorder()
+
+	handleDevConfig(opts)(rec, httptest.NewRequest(http.MethodGet, "/dev/config", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body devClientConfigSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode config response: %v", err)
+	}
+	if body.PublicKey != localPublicKey ||
+		body.TokenURL != "/dev/token" ||
+		body.WSURL != "ws://127.0.0.1:8080/ws" ||
+		body.AdminProxyURL != "/admin" ||
+		body.StatusURL != "http://127.0.0.1:3000/dev/status" ||
+		body.StorageURL != "http://127.0.0.1:3000/dev/storage?room=demo:room-1" {
+		t.Fatalf("unexpected integration config: %+v", body)
+	}
+	if len(body.SeedRooms) != 2 || body.SeedRooms[0] != "demo:room-1" || body.SeedRooms[1] != "demo:canvas-1" {
+		t.Fatalf("unexpected seed rooms: %#v", body.SeedRooms)
+	}
+}
+
 func TestHandleTokenRejectsUnknownPubkey(t *testing.T) {
 	privateKey = testPrivateKey(t)
 	req := httptest.NewRequest(http.MethodGet, "/dev/token?pubkey=pk_bad", nil)

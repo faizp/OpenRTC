@@ -46,6 +46,7 @@ go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:63
 Then open `http://127.0.0.1:3000`. The dev server exposes:
 
 - `http://127.0.0.1:3000/jwks` for local token verification.
+- `http://127.0.0.1:3000/dev/config` for local client/admin/runtime URLs and debug endpoint discovery without issuing a token.
 - `http://127.0.0.1:3000/dev/token?pubkey=pk_localdev` for anonymous client JWTs plus the local config, debug endpoint URLs, and default room.
 - `http://127.0.0.1:3000/dev/status` for storage backend, Redis protocol health, runtime/admin generation metadata, seeded-room, and endpoint readiness.
 - `ws://127.0.0.1:8080/ws` and `ws://127.0.0.1:8080/yjs/{room}` for runtime traffic.
@@ -62,8 +63,10 @@ For a zero-config local client, let the SDK fetch the dev token response and
 use its embedded config:
 
 ```ts
-import { createOpenRTCDevAdminClient, createOpenRTCDevClient } from "@openrtc/client";
+import { createOpenRTCDevAdminClient, createOpenRTCDevClient, fetchOpenRTCDevConfig } from "@openrtc/client";
 
+const config = await fetchOpenRTCDevConfig();
+console.log("OpenRTC runtime:", config.wsURL);
 const { client, room, tools } = await createOpenRTCDevClient();
 await client.connect();
 client.enterRoom(room);

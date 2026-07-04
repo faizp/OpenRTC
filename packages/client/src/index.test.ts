@@ -17,6 +17,7 @@ import {
   createOpenRTCDevAdminClient,
   createOpenRTCDevClient,
   createOpenRTCDevTools,
+  fetchOpenRTCDevConfig,
   fetchOpenRTCDevToken,
   getCursorPeers,
   getPresenceColor,
@@ -1414,6 +1415,29 @@ const devConfig = {
   crashAdminURL: "http://127.0.0.1:3000/dev/crash/admin",
   seedRooms: ["demo:room-1", "demo:canvas-1"],
 };
+
+const devConfigCalls: string[] = [];
+const fetchedDevConfig = await fetchOpenRTCDevConfig({
+  baseURL: "http://127.0.0.1:3000",
+  fetch: async (input) => {
+    devConfigCalls.push(input);
+    return fakeResponse(200, JSON.stringify(devConfig));
+  },
+});
+assert.equal(new URL(devConfigCalls[0] ?? "").pathname, "/dev/config");
+assert.equal(fetchedDevConfig.wsURL, "ws://127.0.0.1:8080/ws");
+assert.equal(fetchedDevConfig.seedRooms[1], "demo:canvas-1");
+
+const devConfigAliasCalls: string[] = [];
+await fetchOpenRTCDevConfig({
+  baseURL: "http://127.0.0.1:3000",
+  configURL: "/config",
+  fetch: async (input) => {
+    devConfigAliasCalls.push(input);
+    return fakeResponse(200, JSON.stringify(devConfig));
+  },
+});
+assert.equal(new URL(devConfigAliasCalls[0] ?? "").pathname, "/config");
 
 const devTokenCalls: string[] = [];
 const devToken = await fetchOpenRTCDevToken({
