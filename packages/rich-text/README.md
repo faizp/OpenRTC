@@ -126,6 +126,62 @@ Use `createLexicalOpenRTCSession()` and `createBlockNoteOpenRTCSession()` for
 the same owning lifecycle with Lexical and BlockNote. Set
 `destroyProvider: false` if provider cleanup is owned by your framework.
 
+## Hosted Editor Canvas Workflow
+
+Canvas helpers combine the owning session lifecycle with durable comment,
+thread, and room-subscription actions. They still do not import editor
+packages; the app passes its editor instance and optional selection reader.
+
+```ts
+import { OpenRTCAdminClient } from "@openrtc/client";
+import { createTiptapOpenRTCCanvas } from "@openrtc/rich-text";
+
+const admin = new OpenRTCAdminClient({
+  baseUrl: "https://openrtc.example.com",
+  token: () => fetch("/api/openrtc-admin-token").then((res) => res.text()),
+});
+
+const canvas = createTiptapOpenRTCCanvas({
+  provider,
+  client,
+  admin,
+  room,
+  userId: user.id,
+  field: "body",
+  editor,
+  user,
+  enterRoom: { initialPresence: { user } },
+});
+
+await canvas.createThread({
+  text: "Can we tighten this paragraph?",
+  mentions: ["user-2"],
+});
+
+await canvas.addComment("thread-1", {
+  text: "Updated the draft.",
+});
+
+await canvas.markThreadResolved("thread-1");
+await canvas.subscribeRepliesAndMentions();
+
+canvas.currentCommentAnchor();
+canvas.dispose();
+```
+
+`createTiptapOpenRTCCanvas()` reads comment anchors from
+`editor.state.selection`. `createLexicalOpenRTCCanvas()` uses the same
+`readSelection` callback shape as the Lexical presence helper.
+`createBlockNoteOpenRTCCanvas()` stores the nearest block ID from
+`editor.getTextCursorPosition()` when richer offsets are not supplied. Generic
+`createRichTextOpenRTCCanvas()` is available when an app owns editor binding
+and only wants the OpenRTC room/provider lifecycle plus hosted comment actions.
+
+Thread/comment metadata receives an `openrtcRichText.anchor` object by default,
+and the generated comment body has `{ type: "rich-text-comment", text, anchor }`.
+Pass a custom `body`, `metadata`, `threadMetadata`, or explicit `selection`
+when the host editor already has its own serialization format.
+
 ## Tiptap
 
 ```ts

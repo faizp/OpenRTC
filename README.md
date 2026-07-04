@@ -7,7 +7,7 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 - `server/`: Go core backend module. It builds `openrtc`, `openrtc-runtime`, and `openrtc-admin`.
 - `packages/client/`: TypeScript WebSocket client for rooms, events, and presence.
 - `packages/react/`: React hooks for room state, presence, and broadcast events.
-- `packages/rich-text/`: Yjs binding helpers plus presence adapters for Tiptap, Lexical, and BlockNote selection/cursor state.
+- `packages/rich-text/`: Yjs binding helpers, presence adapters, and hosted editor canvas controllers for Tiptap, Lexical, and BlockNote workflows.
 - `packages/yjs/`: Yjs provider for binary update/snapshot sync, state-vector diff sync, optional IndexedDB offline caching, sync diagnostics, and an awareness bridge over OpenRTC presence.
 - `packages/yjs-compactor/`: Trusted Yjs update compactor for Redis-backed document retention.
 - `reference-app/`: production-style reference app (M5).
@@ -265,7 +265,13 @@ are appended to the cache without changing server durability semantics.
 For rich-text editors, `@openrtc/rich-text` exports Tiptap, Lexical, and
 BlockNote integration helpers that wire `OpenRTCClient`, `OpenRTCYjsProvider`,
 Yjs document bindings, editor selection presence, remote-selection filtering,
-and cleanup without adding editor dependencies to the OpenRTC package itself.
+hosted thread/comment/subscription actions, and cleanup without adding editor
+dependencies to the OpenRTC package itself.
+Apps that want one owning controller can use `createTiptapOpenRTCCanvas()`,
+`createLexicalOpenRTCCanvas()`, `createBlockNoteOpenRTCCanvas()`, or generic
+`createRichTextOpenRTCCanvas()` to combine the editor session with
+OpenRTC-admin comment anchors, create/reply, resolve/reopen, and room
+notification subscription methods.
 React apps can import `@openrtc/rich-text/react` for
 `useRemoteTextSelections()` and `useSelectionPresenceController()` so Tiptap,
 Lexical, and BlockNote canvases can render remote selections and flush local

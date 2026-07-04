@@ -6,14 +6,18 @@ import {
   bindLexicalPresence,
   bindTiptapPresence,
   createBlockNoteOpenRTCIntegration,
+  createBlockNoteOpenRTCCanvas,
   createBlockNoteOpenRTCSession,
   createBlockNoteYjsBinding,
   createLexicalOpenRTCIntegration,
+  createLexicalOpenRTCCanvas,
   createLexicalOpenRTCSession,
   createLexicalYjsBinding,
+  createRichTextOpenRTCCanvas,
   createRichTextOpenRTCSession,
   createRichTextYjsBinding,
   createTiptapOpenRTCIntegration,
+  createTiptapOpenRTCCanvas,
   createTiptapOpenRTCSession,
   createTiptapYjsBinding,
   getRemoteTextSelections,
@@ -77,6 +81,107 @@ class FakeClient {
 
   room(_room: string): FakeRoomHandle {
     return this.roomHandle;
+  }
+}
+
+class FakeAdmin {
+  calls: Array<{ method: string; room: string; userId?: string; threadId?: string; input?: unknown }> = [];
+
+  async createThread(
+    room: string,
+    input: { comment: { userId: string; body: unknown; metadata?: unknown }; metadata?: unknown },
+  ) {
+    this.calls.push({ method: "createThread", room, input });
+    return {
+      type: "thread",
+      id: "thread-1",
+      roomId: room,
+      comments: [
+        {
+          type: "comment",
+          id: "comment-1",
+          threadId: "thread-1",
+          roomId: room,
+          userId: input.comment.userId,
+          createdAt: "2026-07-04T00:00:00.000Z",
+          body: input.comment.body,
+          metadata: input.comment.metadata,
+        },
+      ],
+      resolved: false,
+      metadata: input.metadata,
+      createdAt: "2026-07-04T00:00:00.000Z",
+      updatedAt: "2026-07-04T00:00:00.000Z",
+    };
+  }
+
+  async addComment(
+    room: string,
+    threadId: string,
+    input: { userId: string; body: unknown; metadata?: unknown },
+  ) {
+    this.calls.push({ method: "addComment", room, threadId, input });
+    return {
+      type: "thread",
+      id: threadId,
+      roomId: room,
+      comments: [
+        {
+          type: "comment",
+          id: "comment-2",
+          threadId,
+          roomId: room,
+          userId: input.userId,
+          createdAt: "2026-07-04T00:01:00.000Z",
+          body: input.body,
+          metadata: input.metadata,
+        },
+      ],
+      resolved: false,
+      createdAt: "2026-07-04T00:00:00.000Z",
+      updatedAt: "2026-07-04T00:01:00.000Z",
+    };
+  }
+
+  async markThreadResolved(room: string, threadId: string) {
+    this.calls.push({ method: "markThreadResolved", room, threadId });
+    return {
+      type: "thread",
+      id: threadId,
+      roomId: room,
+      comments: [],
+      resolved: true,
+      createdAt: "2026-07-04T00:00:00.000Z",
+      updatedAt: "2026-07-04T00:02:00.000Z",
+    };
+  }
+
+  async markThreadUnresolved(room: string, threadId: string) {
+    this.calls.push({ method: "markThreadUnresolved", room, threadId });
+    return {
+      type: "thread",
+      id: threadId,
+      roomId: room,
+      comments: [],
+      resolved: false,
+      createdAt: "2026-07-04T00:00:00.000Z",
+      updatedAt: "2026-07-04T00:03:00.000Z",
+    };
+  }
+
+  async subscribeRoomThreads(room: string, userId: string) {
+    this.calls.push({ method: "subscribeRoomThreads", room, userId });
+    return { roomId: room, userId, threads: "all" as const, textMentions: "mine" as const };
+  }
+
+  async subscribeRoomRepliesAndMentions(room: string, userId: string) {
+    this.calls.push({ method: "subscribeRoomRepliesAndMentions", room, userId });
+    return { roomId: room, userId, threads: "replies_and_mentions" as const, textMentions: "mine" as const };
+  }
+
+  async muteRoomThreads(room: string, userId: string) {
+    this.calls.push({ method: "muteRoomThreads", room, userId });
+    return { roomId: room, userId, threads: "none" as const, textMentions: "none" as const };
   }
 }
 
@@ -450,3 +555,130 @@ blockNoteSession.dispose();
 assert.equal(blockNoteSessionHandler, undefined);
 assert.equal(blockNoteSessionClient.leaveCount, 1);
 assert.equal(blockNoteSessionCleanupCount, 1);
+
+const canvasDoc = new Y.Doc();
+let canvasDestroyCount = 0;
+const canvasProvider = {
+  doc: canvasDoc,
+  awareness: new OpenRTCAwareness(canvasDoc),
+  destroy() {
+    canvasDestroyCount += 1;
+  },
+};
+const canvasAdmin = new FakeAdmin();
+const canvasClient = new FakeClient();
+const canvas = createRichTextOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: canvasClient as never,
+  admin: canvasAdmin as never,
+  room: "tenant-a:doc-canvas",
+  userId: "user-1",
+  field: "body",
+  readCommentSelection: () => ({ anchor: 10, head: 14, from: 10, to: 14 }),
+});
+const canvasAnchor = canvas.currentCommentAnchor();
+assert.equal(canvasAnchor?.kind, "rich-text-selection");
+assert.equal(canvasAnchor?.editor, "generic");
+assert.equal(canvasAnchor?.field, "body");
+assert.equal(canvasAnchor?.textName, "body:text");
+const createdCanvasThread = await canvas.createThread({ text: "Review this", mentions: ["user-2"] });
+assert.equal(createdCanvasThread.id, "thread-1");
+const createdCanvasComment = createdCanvasThread.comments[0];
+assert.ok(createdCanvasComment);
+assert.equal((createdCanvasComment.body as { type?: string }).type, "rich-text-comment");
+assert.equal(
+  (((createdCanvasComment.metadata as { openrtcRichText?: { anchor?: { anchor?: number } } }).openrtcRichText?.anchor)
+    ?.anchor),
+  10,
+);
+assert.equal(
+  ((createdCanvasThread.metadata as { openrtcRichText?: { anchor?: { field?: string } } }).openrtcRichText?.anchor)
+    ?.field,
+  "body",
+);
+const repliedCanvasThread = await canvas.addComment("thread-1", {
+  text: "Reply",
+  metadata: { status: "open" },
+  selection: { anchor: 20, head: 22, from: 20, to: 22 },
+});
+assert.equal(repliedCanvasThread.comments[0]?.id, "comment-2");
+assert.equal(
+  ((repliedCanvasThread.comments[0]?.metadata as { openrtcRichText?: { anchor?: { from?: number } } })
+    .openrtcRichText?.anchor)?.from,
+  20,
+);
+assert.equal((await canvas.markThreadResolved("thread-1")).resolved, true);
+assert.equal((await canvas.markThreadUnresolved("thread-1")).resolved, false);
+assert.equal((await canvas.subscribeAllThreads()).threads, "all");
+assert.equal((await canvas.subscribeRepliesAndMentions()).threads, "replies_and_mentions");
+assert.equal((await canvas.muteThreadNotifications()).threads, "none");
+assert.deepEqual(
+  canvasAdmin.calls.map((call) => call.method),
+  [
+    "createThread",
+    "addComment",
+    "markThreadResolved",
+    "markThreadUnresolved",
+    "subscribeRoomThreads",
+    "subscribeRoomRepliesAndMentions",
+    "muteRoomThreads",
+  ],
+);
+canvas.dispose();
+canvas.dispose();
+assert.equal(canvasClient.leaveCount, 1);
+assert.equal(canvasDestroyCount, 1);
+
+const tiptapCanvas = createTiptapOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: new FakeClient() as never,
+  admin: new FakeAdmin() as never,
+  room: "tenant-a:tiptap-canvas",
+  userId: "user-1",
+  field: "article",
+  editor: tiptap,
+  destroyProvider: false,
+});
+assert.equal(tiptapCanvas.binding.field, "article");
+assert.equal(tiptapCanvas.currentCommentAnchor()?.editor, "tiptap");
+tiptapCanvas.dispose();
+
+const lexicalCanvas = createLexicalOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: new FakeClient() as never,
+  admin: new FakeAdmin() as never,
+  room: "tenant-a:lexical-canvas",
+  userId: "user-1",
+  id: "lexical-canvas",
+  editor: {
+    registerUpdateListener() {
+      return () => undefined;
+    },
+  },
+  readSelection: () => ({ anchor: 4, head: 6, from: 4, to: 6 }),
+  destroyProvider: false,
+});
+assert.equal(lexicalCanvas.binding.id, "lexical-canvas");
+assert.equal(lexicalCanvas.currentCommentAnchor()?.editor, "lexical");
+lexicalCanvas.dispose();
+
+const blockNoteCanvas = createBlockNoteOpenRTCCanvas({
+  provider: canvasProvider as never,
+  client: new FakeClient() as never,
+  admin: new FakeAdmin() as never,
+  room: "tenant-a:blocknote-canvas",
+  userId: "user-1",
+  fragment: "canvas-blocks",
+  editor: {
+    onSelectionChange() {
+      return () => undefined;
+    },
+    getTextCursorPosition() {
+      return { block: { id: "block-canvas" } };
+    },
+  },
+  destroyProvider: false,
+});
+assert.equal(blockNoteCanvas.binding.fragmentName, "canvas-blocks");
+assert.equal(blockNoteCanvas.currentCommentAnchor()?.blockID, "block-canvas");
+blockNoteCanvas.dispose();

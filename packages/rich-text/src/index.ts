@@ -1,5 +1,10 @@
 import type {
   EnterRoomOptions,
+  OpenRTCAdminClient,
+  OpenRTCAdminCommentInput,
+  OpenRTCAdminCommentReaction,
+  OpenRTCAdminRoomSubscriptionSettings,
+  OpenRTCAdminThread,
   OpenRTCClient,
   OpenRTCOthersEvent,
   OpenRTCRoom,
@@ -42,6 +47,64 @@ export interface RichTextOpenRTCSession extends RichTextYjsBinding {
     options?: RemoteTextSelectionOptions,
   ): () => void;
   dispose(): void;
+}
+
+export type RichTextSelectionSnapshotInput = Omit<TextSelectionPresence, "kind" | "editor" | "updatedAt"> &
+  Record<string, unknown>;
+
+export interface RichTextCommentAnchor {
+  kind: "rich-text-selection";
+  room: string;
+  editor: TextSelectionPresence["editor"];
+  field: string;
+  textName: string;
+  fragmentName: string;
+  anchor: number;
+  head: number;
+  from?: number | undefined;
+  to?: number | undefined;
+  blockID?: string | undefined;
+  updatedAt: number;
+}
+
+export interface RichTextCanvasProductOptions {
+  admin?: OpenRTCAdminClient | undefined;
+  userId: string;
+  readCommentSelection?: (() => RichTextSelectionSnapshotInput | null) | undefined;
+}
+
+export interface RichTextOpenRTCCanvasOptions
+  extends RichTextOpenRTCSessionOptions,
+    RichTextYjsBindingOptions,
+    RichTextCanvasProductOptions {
+  editor?: TextSelectionPresence["editor"] | undefined;
+}
+
+export interface RichTextCanvasCommentInput {
+  text?: string | undefined;
+  body?: unknown;
+  metadata?: unknown;
+  userId?: string | undefined;
+  mentions?: string[] | undefined;
+  reactions?: OpenRTCAdminCommentReaction[] | undefined;
+  selection?: RichTextCommentAnchor | RichTextSelectionSnapshotInput | null | undefined;
+}
+
+export interface RichTextCanvasThreadInput extends RichTextCanvasCommentInput {
+  threadMetadata?: unknown;
+}
+
+export interface RichTextOpenRTCCanvas extends RichTextOpenRTCSession {
+  admin?: OpenRTCAdminClient | undefined;
+  userId: string;
+  currentCommentAnchor(): RichTextCommentAnchor | undefined;
+  createThread(input: RichTextCanvasThreadInput): Promise<OpenRTCAdminThread>;
+  addComment(threadId: string, input: RichTextCanvasCommentInput): Promise<OpenRTCAdminThread>;
+  markThreadResolved(threadId: string): Promise<OpenRTCAdminThread>;
+  markThreadUnresolved(threadId: string): Promise<OpenRTCAdminThread>;
+  subscribeAllThreads(): Promise<OpenRTCAdminRoomSubscriptionSettings>;
+  subscribeRepliesAndMentions(): Promise<OpenRTCAdminRoomSubscriptionSettings>;
+  muteThreadNotifications(): Promise<OpenRTCAdminRoomSubscriptionSettings>;
 }
 
 export interface SelectionPresenceControllerOptions {
@@ -152,6 +215,14 @@ export interface TiptapOpenRTCSession extends RichTextOpenRTCSession {
   unbindPresence?: (() => void) | undefined;
 }
 
+export interface TiptapOpenRTCCanvasOptions extends TiptapOpenRTCSessionOptions, RichTextCanvasProductOptions {}
+
+export interface TiptapOpenRTCCanvas extends RichTextOpenRTCCanvas {
+  binding: TiptapYjsBinding;
+  integration: TiptapOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
 export interface LexicalOpenRTCIntegrationOptions extends LexicalYjsBindingOptions, LexicalPresenceOptions {
   provider: OpenRTCYjsProvider;
   client: OpenRTCClient;
@@ -177,6 +248,14 @@ export interface LexicalOpenRTCSession extends RichTextOpenRTCSession {
   unbindPresence: () => void;
 }
 
+export interface LexicalOpenRTCCanvasOptions extends LexicalOpenRTCSessionOptions, RichTextCanvasProductOptions {}
+
+export interface LexicalOpenRTCCanvas extends RichTextOpenRTCCanvas {
+  binding: LexicalYjsBinding;
+  integration: LexicalOpenRTCIntegration;
+  unbindPresence: () => void;
+}
+
 export interface BlockNoteOpenRTCIntegrationOptions extends BlockNoteYjsBindingOptions, BlockNotePresenceOptions {
   provider: OpenRTCYjsProvider;
   client: OpenRTCClient;
@@ -197,6 +276,14 @@ export interface BlockNoteOpenRTCSessionOptions extends BlockNoteOpenRTCIntegrat
 }
 
 export interface BlockNoteOpenRTCSession extends RichTextOpenRTCSession {
+  binding: BlockNoteYjsBinding;
+  integration: BlockNoteOpenRTCIntegration;
+  unbindPresence?: (() => void) | undefined;
+}
+
+export interface BlockNoteOpenRTCCanvasOptions extends BlockNoteOpenRTCSessionOptions, RichTextCanvasProductOptions {}
+
+export interface BlockNoteOpenRTCCanvas extends RichTextOpenRTCCanvas {
   binding: BlockNoteYjsBinding;
   integration: BlockNoteOpenRTCIntegration;
   unbindPresence?: (() => void) | undefined;
@@ -294,6 +381,11 @@ export function createRichTextOpenRTCSession(
     },
     dispose,
   };
+}
+
+export function createRichTextOpenRTCCanvas(options: RichTextOpenRTCCanvasOptions): RichTextOpenRTCCanvas {
+  const session = createRichTextOpenRTCSession(options, options);
+  return attachRichTextCanvasActions(session, options, options.editor ?? "generic", options.readCommentSelection);
 }
 
 export function isTextSelectionPresence(
@@ -475,6 +567,12 @@ export function createTiptapOpenRTCSession(options: TiptapOpenRTCSessionOptions)
   };
 }
 
+export function createTiptapOpenRTCCanvas(options: TiptapOpenRTCCanvasOptions): TiptapOpenRTCCanvas {
+  const session = createTiptapOpenRTCSession(options);
+  const readSelection = options.readCommentSelection ?? tiptapSelectionReader(options.editor);
+  return attachRichTextCanvasActions(session, options, "tiptap", readSelection) as TiptapOpenRTCCanvas;
+}
+
 export interface LexicalEditorLike {
   registerUpdateListener(listener: () => void): () => void;
 }
@@ -531,6 +629,12 @@ export function createLexicalOpenRTCSession(options: LexicalOpenRTCSessionOption
     unbindPresence: integration.unbindPresence,
     dispose,
   };
+}
+
+export function createLexicalOpenRTCCanvas(options: LexicalOpenRTCCanvasOptions): LexicalOpenRTCCanvas {
+  const session = createLexicalOpenRTCSession(options);
+  const readSelection = options.readCommentSelection ?? options.readSelection;
+  return attachRichTextCanvasActions(session, options, "lexical", readSelection) as LexicalOpenRTCCanvas;
 }
 
 export interface BlockNoteEditorLike {
@@ -608,6 +712,203 @@ export function createBlockNoteOpenRTCSession(options: BlockNoteOpenRTCSessionOp
     integration,
     unbindPresence: integration.unbindPresence,
     dispose,
+  };
+}
+
+export function createBlockNoteOpenRTCCanvas(options: BlockNoteOpenRTCCanvasOptions): BlockNoteOpenRTCCanvas {
+  const session = createBlockNoteOpenRTCSession(options);
+  const readSelection = options.readCommentSelection ?? options.readSelection ?? blockNoteSelectionReader(options.editor);
+  return attachRichTextCanvasActions(session, options, "blocknote", readSelection) as BlockNoteOpenRTCCanvas;
+}
+
+function attachRichTextCanvasActions<TSession extends RichTextOpenRTCSession>(
+  session: TSession,
+  options: RichTextCanvasProductOptions,
+  editor: TextSelectionPresence["editor"],
+  readSelection: (() => RichTextSelectionSnapshotInput | null) | undefined,
+): TSession & RichTextOpenRTCCanvas {
+  const currentCommentAnchor = (): RichTextCommentAnchor | undefined =>
+    createRichTextCommentAnchor(session, editor, readSelection?.());
+
+  const commentInput = (
+    input: RichTextCanvasCommentInput,
+    anchor = normalizeRichTextCommentAnchor(session, editor, input.selection, currentCommentAnchor),
+  ): OpenRTCAdminCommentInput => {
+    const body = input.body ?? richTextCommentBody(input.text, anchor);
+    const metadata = richTextCommentMetadata(input.metadata, anchor);
+    return compactCommentInput({
+      userId: input.userId ?? options.userId,
+      body,
+      metadata,
+      mentions: input.mentions,
+      reactions: input.reactions,
+    });
+  };
+
+  const requireAdmin = (): OpenRTCAdminClient => {
+    if (!options.admin) {
+      throw new Error("Rich text canvas actions require an OpenRTCAdminClient");
+    }
+    return options.admin;
+  };
+
+  return {
+    ...session,
+    admin: options.admin,
+    userId: options.userId,
+    currentCommentAnchor,
+    createThread(input: RichTextCanvasThreadInput): Promise<OpenRTCAdminThread> {
+      const anchor = normalizeRichTextCommentAnchor(session, editor, input.selection, currentCommentAnchor);
+      const comment = commentInput(input, anchor);
+      const threadMetadata =
+        input.threadMetadata === undefined
+          ? richTextCommentMetadata(undefined, anchor)
+          : input.threadMetadata;
+      return requireAdmin().createThread(session.room, {
+        ...(threadMetadata !== undefined ? { metadata: threadMetadata } : {}),
+        comment,
+      });
+    },
+    addComment(threadId: string, input: RichTextCanvasCommentInput): Promise<OpenRTCAdminThread> {
+      return requireAdmin().addComment(session.room, threadId, commentInput(input));
+    },
+    markThreadResolved(threadId: string): Promise<OpenRTCAdminThread> {
+      return requireAdmin().markThreadResolved(session.room, threadId);
+    },
+    markThreadUnresolved(threadId: string): Promise<OpenRTCAdminThread> {
+      return requireAdmin().markThreadUnresolved(session.room, threadId);
+    },
+    subscribeAllThreads(): Promise<OpenRTCAdminRoomSubscriptionSettings> {
+      return requireAdmin().subscribeRoomThreads(session.room, options.userId);
+    },
+    subscribeRepliesAndMentions(): Promise<OpenRTCAdminRoomSubscriptionSettings> {
+      return requireAdmin().subscribeRoomRepliesAndMentions(session.room, options.userId);
+    },
+    muteThreadNotifications(): Promise<OpenRTCAdminRoomSubscriptionSettings> {
+      return requireAdmin().muteRoomThreads(session.room, options.userId);
+    },
+  };
+}
+
+function compactCommentInput(input: {
+  userId: string;
+  body: unknown;
+  metadata: unknown;
+  mentions: string[] | undefined;
+  reactions: OpenRTCAdminCommentReaction[] | undefined;
+}): OpenRTCAdminCommentInput {
+  return {
+    userId: input.userId,
+    body: input.body,
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    ...(input.mentions !== undefined ? { mentions: input.mentions } : {}),
+    ...(input.reactions !== undefined ? { reactions: input.reactions } : {}),
+  };
+}
+
+function richTextCommentBody(text: string | undefined, anchor: RichTextCommentAnchor | undefined): unknown {
+  if (text === undefined) {
+    throw new Error("Rich text canvas comments require text or a custom body");
+  }
+  return {
+    type: "rich-text-comment",
+    text,
+    ...(anchor ? { anchor } : {}),
+  };
+}
+
+function richTextCommentMetadata(
+  metadata: unknown,
+  anchor: RichTextCommentAnchor | undefined,
+): unknown {
+  if (!anchor) {
+    return metadata;
+  }
+  if (metadata === undefined) {
+    return { openrtcRichText: { anchor } };
+  }
+  if (isRecord(metadata) && metadata["openrtcRichText"] === undefined) {
+    return {
+      ...metadata,
+      openrtcRichText: { anchor },
+    };
+  }
+  return metadata;
+}
+
+function normalizeRichTextCommentAnchor(
+  binding: RichTextYjsBinding & { room: string },
+  editor: TextSelectionPresence["editor"],
+  selection: RichTextCommentAnchor | RichTextSelectionSnapshotInput | null | undefined,
+  fallback: () => RichTextCommentAnchor | undefined,
+): RichTextCommentAnchor | undefined {
+  if (selection === null) {
+    return undefined;
+  }
+  if (selection === undefined) {
+    return fallback();
+  }
+  if (isRichTextCommentAnchor(selection)) {
+    return selection;
+  }
+  return createRichTextCommentAnchor(binding, editor, selection);
+}
+
+function createRichTextCommentAnchor(
+  binding: RichTextYjsBinding & { room: string },
+  editor: TextSelectionPresence["editor"],
+  selection: RichTextSelectionSnapshotInput | null | undefined,
+): RichTextCommentAnchor | undefined {
+  if (!selection || !isFiniteNumber(selection.anchor) || !isFiniteNumber(selection.head)) {
+    return undefined;
+  }
+  const from = isFiniteNumber(selection.from) ? selection.from : undefined;
+  const to = isFiniteNumber(selection.to) ? selection.to : undefined;
+  const blockID = typeof selection["blockID"] === "string" ? selection["blockID"] : undefined;
+  return {
+    kind: "rich-text-selection",
+    room: binding.room,
+    editor,
+    field: binding.field,
+    textName: binding.textName,
+    fragmentName: binding.fragmentName,
+    anchor: selection.anchor,
+    head: selection.head,
+    ...(from !== undefined ? { from } : {}),
+    ...(to !== undefined ? { to } : {}),
+    ...(blockID !== undefined ? { blockID } : {}),
+    updatedAt: Date.now(),
+  };
+}
+
+function isRichTextCommentAnchor(value: unknown): value is RichTextCommentAnchor {
+  return isRecord(value) && value["kind"] === "rich-text-selection";
+}
+
+function tiptapSelectionReader(
+  editor: TiptapEditorLike | undefined,
+): (() => RichTextSelectionSnapshotInput | null) | undefined {
+  if (!editor) {
+    return undefined;
+  }
+  return () => ({
+    anchor: editor.state.selection.anchor ?? editor.state.selection.from,
+    head: editor.state.selection.head ?? editor.state.selection.to,
+    from: editor.state.selection.from,
+    to: editor.state.selection.to,
+  });
+}
+
+function blockNoteSelectionReader(
+  editor: BlockNoteEditorLike | undefined,
+): (() => RichTextSelectionSnapshotInput | null) | undefined {
+  if (!editor) {
+    return undefined;
+  }
+  return () => {
+    const cursor = editor.getTextCursorPosition?.();
+    const blockID = cursor?.block?.id ?? cursor?.prevBlock?.id ?? cursor?.nextBlock?.id;
+    return blockID ? { anchor: 0, head: 0, from: 0, to: 0, blockID } : null;
   };
 }
 

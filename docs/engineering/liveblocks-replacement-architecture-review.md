@@ -59,12 +59,15 @@ Implemented:
 - Binary `/yjs/{room}` endpoint with persisted snapshot/update replay and cross-node fan-out.
 - Yjs provider awareness bridge over OpenRTC presence for ephemeral user/cursor state.
 - React/client packages plus Yjs and rich-text editor binding/presence helpers.
+- Dependency-free rich-text editor canvas controllers for host-owned Tiptap,
+  Lexical, BlockNote, and generic editor setup, combining OpenRTC room/Yjs
+  lifecycle with durable anchored comment, thread, and subscription actions.
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
 
 Missing for parity:
-- Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
-  product features beyond the package-level Yjs binding, selection presence,
-  remote-selection, and cleanup helpers.
+- Fully managed text-editor product features beyond host-owned editor canvases,
+  including server-side editing, multiplayer undo/redo, rich suggestion flows,
+  and packaged version-history UI.
 - Managed version history beyond local ACK-backed storage undo/redo and Yjs
   compaction snapshots.
 - Room-affine placement, load-shedding, and Yjs compactor retention alerts
@@ -119,6 +122,11 @@ Recommended target shape:
 - Added executable `@openrtc/rich-text` integration wrappers and remote
   selection helpers for Tiptap, Lexical, and BlockNote-style editor setup and
   cleanup without importing editor packages into OpenRTC.
+- Added dependency-free `@openrtc/rich-text` editor canvas controllers for
+  Tiptap, Lexical, BlockNote, and generic host editors. These combine room/Yjs
+  lifecycle, selection-derived comment anchors, durable create/reply,
+  resolve/reopen, and room subscription actions while leaving editor packages
+  in the host application.
 - Added Redis-backed room metadata CRUD/list admin APIs with `rooms:` scoped authorization.
 - Added Liveblocks-style `defaultAccesses`, `usersAccesses`, and `groupsAccesses` room grants. Runtime and admin room data actions honor existing access-token scopes first, then fall back to room grants for ID-token-style subject/group authorization in cluster mode.
 - Added Redis-backed storage get/set/delete and atomic JSON Patch admin APIs with `storage:` scoped authorization and room-grant fallback.
