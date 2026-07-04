@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/websocket"
 
 	"github.com/openrtc/openrtc/server/internal/cluster"
 	"github.com/openrtc/openrtc/server/internal/config"
@@ -176,6 +177,118 @@ func TestRunProbeReportsHealthyDevStack(t *testing.T) {
 	}
 	if result.Snapshots.AdminRestart == nil || result.Snapshots.AdminRestart.Service != "admin" {
 		t.Fatalf("expected admin restart snapshot, got %+v", result.Snapshots.AdminRestart)
+	}
+}
+
+func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true})
+	defer server.Close()
+	dialedURL := ""
+	previousDial := probeWebSocketDial
+	probeWebSocketDial = func(ctx context.Context, rawURL string) (*websocket.Conn, *http.Response, error) {
+		dialedURL = rawURL
+		wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upgrader := websocket.Upgrader{}
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade realtime probe websocket: %v", err)
+				return
+			}
+			defer ws.Close()
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t": "HELLO",
+				"payload": map[string]interface{}{
+					"conn_id": "probe-conn-1",
+					"server":  map[string]interface{}{"name": "openrtc", "node_id": "dev-runtime"},
+				},
+			}); err != nil {
+				t.Errorf("write hello: %v", err)
+				return
+			}
+			expectProbeWSMessage(t, ws, "JOIN", "dev-probe-join")
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":       "JOINED",
+				"id":      "dev-probe-join",
+				"room":    "demo:room-1",
+				"payload": map[string]interface{}{"members": []string{"probe-conn-1"}, "presence": map[string]interface{}{}},
+			}); err != nil {
+				t.Errorf("write joined: %v", err)
+				return
+			}
+			expectProbeWSMessage(t, ws, "STORAGE_GET", "dev-probe-storage-get")
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":    "STORAGE_SNAPSHOT",
+				"id":   "dev-probe-storage-get",
+				"room": "demo:room-1",
+				"meta": map[string]interface{}{"seq": 1},
+				"payload": map[string]interface{}{
+					"document": map[string]interface{}{
+						"liveblocksType": "LiveObject",
+						"data":           map[string]interface{}{"title": "OpenRTC dev room"},
+					},
+				},
+			}); err != nil {
+				t.Errorf("write storage snapshot: %v", err)
+				return
+			}
+			patch := expectProbeWSMessage(t, ws, "STORAGE_PATCH", "dev-probe-storage-patch")
+			if meta, ok := patch["meta"].(map[string]interface{}); !ok || meta["expected_seq"] != float64(1) {
+				t.Errorf("expected storage patch expected_seq=1, got %#v", patch["meta"])
+			}
+			operations, _ := patch["payload"].([]interface{})
+			if len(operations) != 1 {
+				t.Errorf("expected one storage patch operation, got %#v", patch["payload"])
+			} else if operation, _ := operations[0].(map[string]interface{}); operation["path"] != "/data/__openrtc_probe" {
+				t.Errorf("unexpected storage probe path: %#v", operation)
+			}
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":    "STORAGE_ACK",
+				"id":   "dev-probe-storage-patch",
+				"room": "demo:room-1",
+				"meta": map[string]interface{}{"seq": 2},
+				"payload": map[string]interface{}{
+					"kind":     "patch",
+					"op_id":    "dev-probe-storage-patch",
+					"document": map[string]interface{}{"liveblocksType": "LiveObject", "data": map[string]interface{}{"title": "OpenRTC dev room"}},
+				},
+			}); err != nil {
+				t.Errorf("write storage ack: %v", err)
+				return
+			}
+			_, _ = readProbeWSMessage(ws)
+		}))
+		t.Cleanup(wsServer.Close)
+		return websocket.DefaultDialer.DialContext(ctx, "ws"+wsServer.URL[len("http"):], nil)
+	}
+	t.Cleanup(func() {
+		probeWebSocketDial = previousDial
+	})
+
+	result, err := runProbe(context.Background(), probeOptions{
+		baseURL:           server.URL,
+		room:              "demo:room-1",
+		restart:           probeRestartRuntime,
+		realtime:          true,
+		timeout:           time.Second,
+		limit:             5,
+		expectSeedRoom:    true,
+		expectSeedStorage: true,
+	})
+
+	if err != nil {
+		t.Fatalf("run realtime probe: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected realtime probe to pass, got %+v", result.Checks)
+	}
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,connections,sockets,storage,yjs,events,restart-runtime,realtime" {
+		t.Fatalf("unexpected realtime checks: %v", got)
+	}
+	if !strings.Contains(dialedURL, "token=dev-token") {
+		t.Fatalf("expected realtime probe to dial with dev token, got %q", dialedURL)
+	}
+	if result.Snapshots.Realtime == nil || result.Snapshots.Realtime.ConnectionID != "probe-conn-1" || result.Snapshots.Realtime.SnapshotSequence != 1 || result.Snapshots.Realtime.AckSequence != 2 {
+		t.Fatalf("unexpected realtime snapshot: %+v", result.Snapshots.Realtime)
 	}
 }
 
@@ -1373,6 +1486,18 @@ func probeCheckByName(checks []devProbeCheck, name string) devProbeCheck {
 		}
 	}
 	return devProbeCheck{}
+}
+
+func expectProbeWSMessage(t *testing.T, ws *websocket.Conn, messageType string, id string) map[string]interface{} {
+	t.Helper()
+	message, err := readProbeWSMessage(ws)
+	if err != nil {
+		t.Fatalf("read probe websocket message: %v", err)
+	}
+	if message["t"] != messageType || message["id"] != id {
+		t.Fatalf("expected probe websocket %s/%s, got %#v", messageType, id, message)
+	}
+	return message
 }
 
 func hasAudience(value any, audience string) bool {

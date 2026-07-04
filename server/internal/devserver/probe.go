@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/openrtc/openrtc/server/internal/cluster"
 	runtimeapp "github.com/openrtc/openrtc/server/internal/runtime"
 )
@@ -30,11 +32,17 @@ var probeHTTPClient = func() *http.Client {
 	return &http.Client{}
 }
 
+var probeWebSocketDial = func(ctx context.Context, rawURL string) (*websocket.Conn, *http.Response, error) {
+	var dialer websocket.Dialer
+	return dialer.DialContext(ctx, rawURL, nil)
+}
+
 type probeOptions struct {
 	baseURL           string
 	room              string
 	restart           string
 	jsonOutput        bool
+	realtime          bool
 	timeout           time.Duration
 	afterSequence     uint64
 	limit             int
@@ -64,6 +72,7 @@ type devProbeSnapshots struct {
 	Storage        *devStorageSnapshot                `json:"storage,omitempty"`
 	YJS            *devYJSSnapshot                    `json:"yjs,omitempty"`
 	Events         *devEventsSnapshot                 `json:"events,omitempty"`
+	Realtime       *devRealtimeProbeSnapshot          `json:"realtime,omitempty"`
 	RuntimeRestart *devRestartSnapshot                `json:"runtimeRestart,omitempty"`
 	AdminRestart   *devRestartSnapshot                `json:"adminRestart,omitempty"`
 }
@@ -71,6 +80,16 @@ type devProbeSnapshots struct {
 type devConnectionsSnapshot struct {
 	Room        string               `json:"room"`
 	Connections []cluster.ActiveUser `json:"connections"`
+}
+
+type devRealtimeProbeSnapshot struct {
+	Connected        bool   `json:"connected"`
+	ConnectionID     string `json:"connection_id,omitempty"`
+	Joined           bool   `json:"joined"`
+	StorageFound     bool   `json:"storage_found"`
+	SnapshotSequence uint64 `json:"snapshot_sequence,omitempty"`
+	AckSequence      uint64 `json:"ack_sequence,omitempty"`
+	ProbePath        string `json:"probe_path,omitempty"`
 }
 
 func probeMain(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -121,6 +140,7 @@ func parseProbeOptions(args []string, output io.Writer) (probeOptions, error) {
 	flags.StringVar(&opts.room, "room", "", "room to probe; defaults to the first advertised seed room")
 	flags.StringVar(&opts.restart, "restart", opts.restart, "optional restart drill: none, runtime, admin, or both")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write the full probe report as JSON")
+	flags.BoolVar(&opts.realtime, "realtime", false, "open the runtime WebSocket, join the room, read storage, and perform a sequenced storage patch")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall probe timeout")
 	flags.Uint64Var(&opts.afterSequence, "after-seq", 0, "event-log sequence lower bound")
 	flags.IntVar(&opts.limit, "limit", 20, "event-log limit")
@@ -302,6 +322,27 @@ func runProbe(ctx context.Context, opts probeOptions) (devProbeResult, error) {
 			return probeCheck("restart-admin", snapshot.Service == "admin" && snapshot.ServiceStatus.Running, "Admin restart drill completed", map[string]interface{}{"generation": snapshot.ServiceStatus.Generation})
 		})
 	}
+	if opts.realtime {
+		captureProbeCheck(&result, "realtime", func() devProbeCheck {
+			snapshot, err := runRealtimeProbe(ctx, client, opts.baseURL, config, room)
+			if err != nil {
+				return probeErrorCheck("realtime", err)
+			}
+			result.Snapshots.Realtime = &snapshot
+			return probeCheck(
+				"realtime",
+				snapshot.Connected && snapshot.Joined && snapshot.StorageFound && snapshot.AckSequence > snapshot.SnapshotSequence,
+				probeRealtimeMessage(snapshot),
+				map[string]interface{}{
+					"connectionID":     snapshot.ConnectionID,
+					"storageFound":     snapshot.StorageFound,
+					"snapshotSequence": snapshot.SnapshotSequence,
+					"ackSequence":      snapshot.AckSequence,
+					"probePath":        snapshot.ProbePath,
+				},
+			)
+		})
+	}
 
 	result.OK = true
 	for _, check := range result.Checks {
@@ -376,6 +417,180 @@ func doProbeJSON(client *http.Client, req *http.Request, allowedStatuses map[int
 		return fmt.Errorf("%s %s returned invalid JSON: %w", req.Method, req.URL.String(), err)
 	}
 	return nil
+}
+
+func runRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devRealtimeProbeSnapshot, error) {
+	var tokenResponse devTokenResponse
+	tokenURL := endpointURL(baseURL, config.TokenURL, "/dev/token", map[string]string{
+		"pubkey": localPublicKey,
+		"room":   room,
+	})
+	if err := probeGetJSON(ctx, client, tokenURL, nil, &tokenResponse); err != nil {
+		return devRealtimeProbeSnapshot{}, fmt.Errorf("fetch dev realtime token: %w", err)
+	}
+	if strings.TrimSpace(tokenResponse.Token) == "" {
+		return devRealtimeProbeSnapshot{}, fmt.Errorf("dev realtime token response missing token")
+	}
+
+	wsURL := probeRuntimeWSURL(baseURL, config.WSURL, tokenResponse.Token)
+	ws, _, err := probeWebSocketDial(ctx, wsURL)
+	if err != nil {
+		return devRealtimeProbeSnapshot{}, fmt.Errorf("dial runtime websocket: %w", err)
+	}
+	defer ws.Close()
+
+	deadline, _ := ctx.Deadline()
+	if deadline.IsZero() {
+		deadline = time.Now().Add(defaultProbeTimeout)
+	}
+	_ = ws.SetReadDeadline(deadline)
+	_ = ws.SetWriteDeadline(deadline)
+
+	snapshot := devRealtimeProbeSnapshot{Connected: true}
+	hello, err := readProbeWSMessage(ws)
+	if err != nil {
+		return snapshot, fmt.Errorf("read hello: %w", err)
+	}
+	if asStringFromMap(hello, "t") != "HELLO" {
+		return snapshot, fmt.Errorf("expected HELLO, got %s", asStringFromMap(hello, "t"))
+	}
+	if payload, _ := hello["payload"].(map[string]interface{}); payload != nil {
+		snapshot.ConnectionID = asStringFromMap(payload, "conn_id")
+	}
+
+	if err := writeProbeWSMessage(ws, map[string]interface{}{
+		"t":    "JOIN",
+		"id":   "dev-probe-join",
+		"room": room,
+	}); err != nil {
+		return snapshot, fmt.Errorf("write join: %w", err)
+	}
+	joined, err := readProbeWSMessage(ws)
+	if err != nil {
+		return snapshot, fmt.Errorf("read joined: %w", err)
+	}
+	if asStringFromMap(joined, "t") != "JOINED" {
+		return snapshot, fmt.Errorf("expected JOINED, got %s", asStringFromMap(joined, "t"))
+	}
+	snapshot.Joined = true
+
+	if err := writeProbeWSMessage(ws, map[string]interface{}{
+		"t":    "STORAGE_GET",
+		"id":   "dev-probe-storage-get",
+		"room": room,
+	}); err != nil {
+		return snapshot, fmt.Errorf("write storage get: %w", err)
+	}
+	storageSnapshot, err := readProbeWSMessage(ws)
+	if err != nil {
+		return snapshot, fmt.Errorf("read storage snapshot: %w", err)
+	}
+	if asStringFromMap(storageSnapshot, "t") != "STORAGE_SNAPSHOT" {
+		return snapshot, fmt.Errorf("expected STORAGE_SNAPSHOT, got %s", asStringFromMap(storageSnapshot, "t"))
+	}
+	payload, _ := storageSnapshot["payload"].(map[string]interface{})
+	document := payload["document"]
+	snapshot.StorageFound = document != nil
+	if meta, _ := storageSnapshot["meta"].(map[string]interface{}); meta != nil {
+		snapshot.SnapshotSequence = asUintFromMap(meta, "seq")
+	}
+	snapshot.ProbePath = storageProbePath(document)
+
+	patch := []map[string]interface{}{{
+		"op":    "add",
+		"path":  snapshot.ProbePath,
+		"value": map[string]interface{}{"checked_at": time.Now().UTC().Format(time.RFC3339Nano)},
+	}}
+	meta := map[string]interface{}{"op_id": "dev-probe-storage-patch"}
+	if snapshot.SnapshotSequence > 0 {
+		meta["expected_seq"] = snapshot.SnapshotSequence
+	}
+	if err := writeProbeWSMessage(ws, map[string]interface{}{
+		"t":       "STORAGE_PATCH",
+		"id":      "dev-probe-storage-patch",
+		"room":    room,
+		"payload": patch,
+		"meta":    meta,
+	}); err != nil {
+		return snapshot, fmt.Errorf("write storage patch: %w", err)
+	}
+	ack, err := readProbeWSMessage(ws)
+	if err != nil {
+		return snapshot, fmt.Errorf("read storage ack: %w", err)
+	}
+	if asStringFromMap(ack, "t") != "STORAGE_ACK" {
+		return snapshot, fmt.Errorf("expected STORAGE_ACK, got %s", asStringFromMap(ack, "t"))
+	}
+	if meta, _ := ack["meta"].(map[string]interface{}); meta != nil {
+		snapshot.AckSequence = asUintFromMap(meta, "seq")
+	}
+	if snapshot.AckSequence == 0 && snapshot.SnapshotSequence == 0 {
+		snapshot.AckSequence = 1
+	}
+
+	_ = writeProbeWSMessage(ws, map[string]interface{}{
+		"t":    "LEAVE",
+		"id":   "dev-probe-leave",
+		"room": room,
+	})
+	return snapshot, nil
+}
+
+func probeRuntimeWSURL(baseURL string, rawWSURL string, token string) string {
+	parsed := mustResolveURL(baseURL, rawWSURL)
+	switch parsed.Scheme {
+	case "http":
+		parsed.Scheme = "ws"
+	case "https":
+		parsed.Scheme = "wss"
+	}
+	values := parsed.Query()
+	values.Set("token", token)
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
+}
+
+func readProbeWSMessage(ws *websocket.Conn) (map[string]interface{}, error) {
+	var message map[string]interface{}
+	if err := ws.ReadJSON(&message); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
+func writeProbeWSMessage(ws *websocket.Conn, message map[string]interface{}) error {
+	return ws.WriteJSON(message)
+}
+
+func storageProbePath(document interface{}) string {
+	root, _ := document.(map[string]interface{})
+	if root["liveblocksType"] == "LiveObject" {
+		if _, ok := root["data"].(map[string]interface{}); ok {
+			return "/data/__openrtc_probe"
+		}
+	}
+	return "/__openrtc_probe"
+}
+
+func asStringFromMap(values map[string]interface{}, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func asUintFromMap(values map[string]interface{}, key string) uint64 {
+	switch value := values[key].(type) {
+	case float64:
+		if value > 0 {
+			return uint64(value)
+		}
+	case uint64:
+		return value
+	case int:
+		if value > 0 {
+			return uint64(value)
+		}
+	}
+	return 0
 }
 
 func resolveProbeURL(baseURL string, path string, query map[string]string) string {
@@ -457,6 +672,13 @@ func probeStorageMessage(expectSeedStorage bool) string {
 		return "Seeded room storage is available"
 	}
 	return "Dev storage inspection endpoint is reachable"
+}
+
+func probeRealtimeMessage(snapshot devRealtimeProbeSnapshot) string {
+	if snapshot.Connected && snapshot.Joined && snapshot.StorageFound && snapshot.AckSequence > snapshot.SnapshotSequence {
+		return "Runtime WebSocket join, storage snapshot, and sequenced storage patch completed"
+	}
+	return "Runtime WebSocket realtime probe did not complete"
 }
 
 func containsString(values []string, needle string) bool {

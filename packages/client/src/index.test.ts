@@ -296,6 +296,16 @@ class FakeWebSocket implements OpenRTCWebSocket {
   }
 }
 
+function latestSentMessage(socket: FakeWebSocket, type: string): Record<string, unknown> {
+  for (let index = socket.sent.length - 1; index >= 0; index -= 1) {
+    const message = JSON.parse(socket.sent[index] ?? "{}") as Record<string, unknown>;
+    if (message.t === type) {
+      return message;
+    }
+  }
+  throw new Error(`Expected sent ${type} message`);
+}
+
 class FakeDocument {
   hidden = false;
   visibilityState = "visible";
@@ -2002,13 +2012,70 @@ assert.equal(degradedProbe.ok, false);
 assert.equal(degradedProbe.checks.find((check) => check.name === "status")?.ok, false);
 assert.equal(degradedProbe.checks.find((check) => check.name === "storage")?.ok, false);
 assert.equal(degradedProbe.checks.find((check) => check.name === "events")?.ok, true);
-const devClientConnected = devClient.client.connect();
-await Promise.resolve();
+const realtimeProbePromise = devClient.tools.probe({ realtime: true });
+await waitFor(() => FakeWebSocket.instances.length > socketCountBeforeDevClient, "expected realtime probe socket");
 const devSocket = FakeWebSocket.instances[socketCountBeforeDevClient];
 assert.ok(devSocket);
 assert.equal(devSocket.url, "ws://127.0.0.1:8080/ws?token=dev-token-2");
 devSocket.open();
-await devClientConnected;
+devSocket.receive({
+  t: "HELLO",
+  payload: { conn_id: "dev-probe-conn", server: { name: "openrtc", node_id: "openrtc-dev-runtime" } },
+});
+await waitFor(() => devSocket.sent.length >= 1, "expected realtime probe join");
+const realtimeJoin = latestSentMessage(devSocket, "JOIN");
+assert.equal(realtimeJoin.t, "JOIN");
+assert.equal(realtimeJoin.room, "demo:canvas-1");
+devSocket.receive({
+  t: "JOINED",
+  id: realtimeJoin.id,
+  room: "demo:canvas-1",
+  payload: { members: ["dev-probe-conn"], presence: {} },
+});
+await waitFor(() => devSocket.sent.some((item) => (JSON.parse(item) as Record<string, unknown>).t === "STORAGE_GET"), "expected realtime storage get");
+const realtimeStorageGet = latestSentMessage(devSocket, "STORAGE_GET");
+assert.equal(realtimeStorageGet.t, "STORAGE_GET");
+devSocket.receive({
+  t: "STORAGE_SNAPSHOT",
+  id: realtimeStorageGet.id,
+  room: "demo:canvas-1",
+  meta: { seq: 1 },
+  payload: {
+    document: {
+      liveblocksType: "LiveObject",
+      data: { title: "OpenRTC dev room" },
+    },
+  },
+});
+await waitFor(() => devSocket.sent.some((item) => (JSON.parse(item) as Record<string, unknown>).t === "STORAGE_PATCH"), "expected realtime storage patch");
+const realtimePatch = latestSentMessage(devSocket, "STORAGE_PATCH");
+assert.equal(realtimePatch.t, "STORAGE_PATCH");
+assert.deepEqual(realtimePatch.meta, { op_id: "dev-probe-storage-patch", expected_seq: 1 });
+const realtimePatchPayload = realtimePatch.payload as Array<{ op: string; path: string; value?: { checked_at?: string } }>;
+assert.equal(realtimePatchPayload[0]?.op, "add");
+assert.equal(realtimePatchPayload[0]?.path, "/data/__openrtc_probe");
+assert.equal(typeof realtimePatchPayload[0]?.value?.checked_at, "string");
+devSocket.receive({
+  t: "STORAGE_ACK",
+  id: realtimePatch.id,
+  room: "demo:canvas-1",
+  meta: { seq: 2 },
+  payload: {
+    kind: "patch",
+    op_id: "dev-probe-storage-patch",
+    document: {
+      liveblocksType: "LiveObject",
+      data: { title: "OpenRTC dev room", __openrtc_probe: { checked_at: "2026-07-04T00:00:00.000Z" } },
+    },
+  },
+});
+const realtimeProbe = await realtimeProbePromise;
+assert.equal(realtimeProbe.ok, true);
+assert.deepEqual(realtimeProbe.checks.map((check) => [check.name, check.ok]).at(-1), ["realtime", true]);
+assert.equal(realtimeProbe.snapshots.realtime?.connection_id, "dev-probe-conn");
+assert.equal(realtimeProbe.snapshots.realtime?.snapshot_sequence, 1);
+assert.equal(realtimeProbe.snapshots.realtime?.ack_sequence, 2);
+assert.equal(realtimeProbe.snapshots.realtime?.probe_path, "/data/__openrtc_probe");
 devClient.client.close();
 
 const devAdmin = await createOpenRTCDevAdminClient({

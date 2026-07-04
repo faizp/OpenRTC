@@ -43,7 +43,7 @@ go run ./server/cmd/openrtc dev
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 
 # In another terminal, run a typed smoke probe against the live dev stack.
-go run ./server/cmd/openrtc dev probe --restart runtime
+go run ./server/cmd/openrtc dev probe --restart runtime --realtime
 go run ./server/cmd/openrtc dev probe --json
 
 # Fetch a local client/admin token for terminal scripts or CI.
@@ -66,7 +66,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
-- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills and JSON output.
+- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills, JSON output, and `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch.
 - `openrtc dev token` fetches local client/admin JWTs from a terminal, defaulting to a token-only stdout value for command substitution, with `--json` for the full response and `--env` for shell-safe `OPENRTC_DEV_*` assignments.
 - `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, sockets, storage, Yjs metadata, event logs, restart drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs.
 
@@ -81,7 +81,7 @@ console.log("OpenRTC runtime:", config.wsURL);
 const { client, room, tools } = await createOpenRTCDevClient();
 await client.connect();
 client.enterRoom(room);
-const probe = await tools.probe({ restart: "runtime" });
+const probe = await tools.probe({ restart: "runtime", realtime: true });
 if (!probe.ok) {
   console.table(probe.checks);
   throw new Error("OpenRTC dev probe failed");

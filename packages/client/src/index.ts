@@ -158,6 +158,7 @@ export interface OpenRTCDevToolsOptions {
   baseURL?: string | undefined;
   fetch?: OpenRTCFetch | undefined;
   room?: string | undefined;
+  client?: OpenRTCClient | undefined;
 }
 
 export interface OpenRTCDevDependencyStatus {
@@ -306,6 +307,16 @@ export interface OpenRTCDevEventsSnapshot {
   events: OpenRTCDevPublishedEvent[];
 }
 
+export interface OpenRTCDevRealtimeProbeSnapshot {
+  connected: boolean;
+  connection_id?: string;
+  joined: boolean;
+  storage_found: boolean;
+  snapshot_sequence?: number;
+  ack_sequence?: number;
+  probe_path?: string;
+}
+
 export interface OpenRTCDevRestartSnapshot {
   status: string;
   service: string;
@@ -335,6 +346,7 @@ export type OpenRTCDevProbeCheckName =
   | "storage"
   | "yjs"
   | "events"
+  | "realtime"
   | "restart-runtime"
   | "restart-admin";
 
@@ -344,6 +356,8 @@ export interface OpenRTCDevProbeOptions extends OpenRTCDevEventsOptions {
   restart?: OpenRTCDevProbeRestart;
   expectSeedRoom?: boolean;
   expectSeedStorage?: boolean;
+  realtime?: boolean;
+  client?: OpenRTCClient;
 }
 
 export interface OpenRTCDevProbeCheck {
@@ -360,6 +374,7 @@ export interface OpenRTCDevProbeSnapshots {
   storage?: OpenRTCDevStorageSnapshot;
   yjs?: OpenRTCDevYJSSnapshot;
   events?: OpenRTCDevEventsSnapshot;
+  realtime?: OpenRTCDevRealtimeProbeSnapshot;
   runtimeRestart?: OpenRTCDevRestartSnapshot;
   adminRestart?: OpenRTCDevRestartSnapshot;
 }
@@ -1213,6 +1228,7 @@ export async function createOpenRTCDevClient(options: OpenRTCDevClientOptions = 
     baseURL: options.baseURL,
     fetch: options.fetch,
     room,
+    client,
   });
   return { client, room, auth, config: auth.config, tools };
 }
@@ -1310,7 +1326,13 @@ export function createOpenRTCDevTools(
   };
   return {
     ...tools,
-    probe: (probeOptions = {}) => runOpenRTCDevProbe(tools, probeOptions),
+    probe: (probeOptions = {}) => {
+      const client = probeOptions.client ?? options.client;
+      return runOpenRTCDevProbe(tools, {
+        ...probeOptions,
+        ...(client ? { client } : {}),
+      });
+    },
   };
 }
 
@@ -1477,12 +1499,78 @@ export async function runOpenRTCDevProbe(
     });
   }
 
+  if (options.realtime) {
+    await captureOpenRTCDevProbeCheck(checks, "realtime", async () => {
+      if (!options.client) {
+        return openRTCDevProbeCheck(
+          "realtime",
+          false,
+          "Runtime WebSocket realtime probe requires an OpenRTCClient",
+        );
+      }
+      const realtime = await runOpenRTCDevRealtimeProbe(options.client, room);
+      snapshots.realtime = realtime;
+      return openRTCDevProbeCheck(
+        "realtime",
+        realtime.connected &&
+          realtime.joined &&
+          realtime.storage_found &&
+          (realtime.ack_sequence ?? 0) > (realtime.snapshot_sequence ?? 0),
+        realtime.connected &&
+          realtime.joined &&
+          realtime.storage_found &&
+          (realtime.ack_sequence ?? 0) > (realtime.snapshot_sequence ?? 0)
+          ? "Runtime WebSocket join, storage snapshot, and sequenced storage patch completed"
+          : "Runtime WebSocket realtime probe did not complete",
+        realtime,
+      );
+    });
+  }
+
   return {
     ok: checks.every((check) => check.ok),
     room,
     checks,
     snapshots,
   };
+}
+
+async function runOpenRTCDevRealtimeProbe(
+  client: OpenRTCClient,
+  room: string,
+): Promise<OpenRTCDevRealtimeProbeSnapshot> {
+  await client.connect();
+  const entry = client.enterRoom(room);
+  try {
+    const storage = await entry.room.getStorage();
+    const snapshotSequence = entry.room.getStorageSequence();
+    const probePath = storageProbePath(storage);
+    await entry.room.patchStorage(
+      [
+        {
+          op: "add",
+          path: probePath,
+          value: { checked_at: new Date().toISOString() },
+        },
+      ],
+      {
+        opId: "dev-probe-storage-patch",
+        ...(snapshotSequence !== undefined ? { expectedSequence: snapshotSequence } : {}),
+      },
+    );
+    const ackSequence = entry.room.getStorageSequence();
+    return {
+      connected: client.status === "open",
+      ...(client.connId ? { connection_id: client.connId } : {}),
+      joined: true,
+      storage_found: storage !== undefined,
+      ...(snapshotSequence !== undefined ? { snapshot_sequence: snapshotSequence } : {}),
+      ...(ackSequence !== undefined ? { ack_sequence: ackSequence } : {}),
+      probe_path: probePath,
+    };
+  } finally {
+    entry.leave();
+  }
 }
 
 export class OpenRTCClient {
@@ -4106,6 +4194,13 @@ function asPresenceState(value: unknown): PresenceState {
 
 function asStorageMutationKind(value: unknown): OpenRTCStorageMutationKind | undefined {
   return value === "set" || value === "patch" ? value : undefined;
+}
+
+function storageProbePath(document: unknown): string {
+  if (isRecordObject(document) && document["liveblocksType"] === "LiveObject" && isRecordObject(document["data"])) {
+    return "/data/__openrtc_probe";
+  }
+  return "/__openrtc_probe";
 }
 
 function asOpenRTCCommentEvent(event: OpenRTCEvent): OpenRTCCommentEvent | undefined {
