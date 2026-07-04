@@ -52,6 +52,38 @@ Keep the OpenRTC room handle and the Yjs provider for the lifetime of the editor
 On unmount, call the editor-specific unbind function, `provider.destroy()`, and
 `leave()`.
 
+If you want the package to own binding plus presence cleanup, use the
+editor-specific integration helpers. They are thin wrappers around the lower
+level functions below and still keep editor imports in your app:
+
+```ts
+import { createTiptapOpenRTCIntegration } from "@openrtc/rich-text";
+
+const integration = createTiptapOpenRTCIntegration({
+  provider,
+  client,
+  room,
+  editor,
+  field: "body",
+  user,
+  extraState: () => ({ user }),
+  cleanup: () => {
+    provider.destroy();
+    leave();
+  },
+});
+
+// Pass these into Tiptap extensions:
+integration.binding.collaboration;
+integration.binding.collaborationCursor;
+
+// Cleanup:
+integration.dispose();
+```
+
+Lexical and BlockNote use the same pattern through
+`createLexicalOpenRTCIntegration()` and `createBlockNoteOpenRTCIntegration()`.
+
 ## Tiptap
 
 ```ts
@@ -177,11 +209,18 @@ selection fields. If your BlockNote setup exposes richer offsets, pass
 Selection presence is normal OpenRTC presence. Render it from a room handle:
 
 ```ts
-const unsubscribe = roomHandle.subscribe("others", (others) => {
-  const selections = others
-    .map((peer) => peer.state)
-    .filter((state) => state.kind === "text-selection");
+import { getRemoteTextSelections, subscribeRemoteTextSelections } from "@openrtc/rich-text";
 
+const unsubscribe = roomHandle.subscribe("others", (others) => {
+  const selections = getRemoteTextSelections(others, {
+    maxAgeMs: 30_000,
+  });
+
+  renderRemoteSelections(selections);
+});
+
+// Or subscribe directly to filtered selections:
+const unsubscribeSelections = subscribeRemoteTextSelections(roomHandle, (selections) => {
   renderRemoteSelections(selections);
 });
 ```
@@ -189,3 +228,6 @@ const unsubscribe = roomHandle.subscribe("others", (others) => {
 Yjs awareness is still available through `provider.awareness` for editor plugins
 that expect provider-style awareness. OpenRTC presence remains the source for
 app-level user metadata and diagnostics.
+
+The exported `isTextSelectionPresence()` guard is useful when an app already has
+its own presence subscription and wants to branch on editor selections inline.

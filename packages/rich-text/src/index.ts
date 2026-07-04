@@ -1,4 +1,4 @@
-import type { OpenRTCClient, PresenceState } from "@openrtc/client";
+import type { OpenRTCClient, OpenRTCOthersEvent, PresencePeer, PresenceState } from "@openrtc/client";
 import type { OpenRTCAwareness, OpenRTCYjsProvider } from "@openrtc/yjs";
 import type * as Y from "yjs";
 
@@ -28,6 +28,22 @@ export interface SelectionPresenceControllerOptions {
 export interface SelectionPresenceController {
   flush(): void;
   dispose(): void;
+}
+
+export interface RemoteTextSelection {
+  connId: string;
+  peer: PresencePeer;
+  selection: TextSelectionPresence;
+}
+
+export interface RemoteTextSelectionOptions {
+  editor?: TextSelectionPresence["editor"] | undefined;
+  maxAgeMs?: number | undefined;
+  now?: number | undefined;
+}
+
+export interface RemoteTextSelectionRoomHandle {
+  subscribe(type: "others", callback: (others: PresencePeer[], event: OpenRTCOthersEvent) => void): () => void;
 }
 
 export interface RichTextYjsBindingOptions {
@@ -81,6 +97,48 @@ export interface BlockNoteYjsBinding extends RichTextYjsBinding {
 
 export interface BlockNoteYjsBindingOptions extends RichTextYjsBindingOptions {
   user?: PresenceState | undefined;
+}
+
+export interface TiptapOpenRTCIntegrationOptions extends TiptapYjsBindingOptions, TiptapPresenceOptions {
+  provider: OpenRTCYjsProvider;
+  client: OpenRTCClient;
+  room: string;
+  editor?: TiptapEditorLike | undefined;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface TiptapOpenRTCIntegration {
+  binding: TiptapYjsBinding;
+  unbindPresence?: (() => void) | undefined;
+  dispose(): void;
+}
+
+export interface LexicalOpenRTCIntegrationOptions extends LexicalYjsBindingOptions, LexicalPresenceOptions {
+  provider: OpenRTCYjsProvider;
+  client: OpenRTCClient;
+  room: string;
+  editor: LexicalEditorLike;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface LexicalOpenRTCIntegration {
+  binding: LexicalYjsBinding;
+  unbindPresence: () => void;
+  dispose(): void;
+}
+
+export interface BlockNoteOpenRTCIntegrationOptions extends BlockNoteYjsBindingOptions, BlockNotePresenceOptions {
+  provider: OpenRTCYjsProvider;
+  client: OpenRTCClient;
+  room: string;
+  editor?: BlockNoteEditorLike | undefined;
+  cleanup?: (() => void) | undefined;
+}
+
+export interface BlockNoteOpenRTCIntegration {
+  binding: BlockNoteYjsBinding;
+  unbindPresence?: (() => void) | undefined;
+  dispose(): void;
 }
 
 export function createRichTextYjsBinding(
@@ -146,6 +204,61 @@ export function createBlockNoteYjsBinding(
       user: options.user,
     },
   };
+}
+
+export function isTextSelectionPresence(
+  state: unknown,
+  editor?: TextSelectionPresence["editor"],
+): state is TextSelectionPresence {
+  if (!isRecord(state)) {
+    return false;
+  }
+  if (state["kind"] !== "text-selection") {
+    return false;
+  }
+  if (!isEditorValue(state["editor"])) {
+    return false;
+  }
+  if (editor && state["editor"] !== editor) {
+    return false;
+  }
+  if (!isFiniteNumber(state["anchor"]) || !isFiniteNumber(state["head"]) || !isFiniteNumber(state["updatedAt"])) {
+    return false;
+  }
+  if (state["from"] !== undefined && !isFiniteNumber(state["from"])) {
+    return false;
+  }
+  if (state["to"] !== undefined && !isFiniteNumber(state["to"])) {
+    return false;
+  }
+  return true;
+}
+
+export function getRemoteTextSelections(
+  others: readonly PresencePeer[],
+  options: RemoteTextSelectionOptions = {},
+): RemoteTextSelection[] {
+  const now = options.now ?? Date.now();
+  return others.flatMap((peer) => {
+    const selection = peer.state;
+    if (!isTextSelectionPresence(selection, options.editor)) {
+      return [];
+    }
+    if (options.maxAgeMs !== undefined && now - selection.updatedAt > options.maxAgeMs) {
+      return [];
+    }
+    return [{ connId: peer.connId, peer, selection }];
+  });
+}
+
+export function subscribeRemoteTextSelections(
+  roomHandle: RemoteTextSelectionRoomHandle,
+  callback: (selections: RemoteTextSelection[], event: OpenRTCOthersEvent) => void,
+  options: RemoteTextSelectionOptions = {},
+): () => void {
+  return roomHandle.subscribe("others", (others, event) => {
+    callback(getRemoteTextSelections(others, options), event);
+  });
 }
 
 export function createSelectionPresenceController(
@@ -244,6 +357,21 @@ export function bindTiptapPresence(
   };
 }
 
+export function createTiptapOpenRTCIntegration(
+  options: TiptapOpenRTCIntegrationOptions,
+): TiptapOpenRTCIntegration {
+  const binding = createTiptapYjsBinding(options.provider, options);
+  const unbindPresence = options.editor
+    ? bindTiptapPresence(options.editor, options.client, options.room, options)
+    : undefined;
+  const dispose = createDisposable(unbindPresence, options.cleanup);
+  return {
+    binding,
+    unbindPresence,
+    dispose,
+  };
+}
+
 export interface LexicalEditorLike {
   registerUpdateListener(listener: () => void): () => void;
 }
@@ -273,6 +401,19 @@ export function bindLexicalPresence(
   return () => {
     unregister();
     controller.dispose();
+  };
+}
+
+export function createLexicalOpenRTCIntegration(
+  options: LexicalOpenRTCIntegrationOptions,
+): LexicalOpenRTCIntegration {
+  const binding = createLexicalYjsBinding(options.provider, options);
+  const unbindPresence = bindLexicalPresence(options.editor, options.client, options.room, options);
+  const dispose = createDisposable(unbindPresence, options.cleanup);
+  return {
+    binding,
+    unbindPresence,
+    dispose,
   };
 }
 
@@ -324,4 +465,44 @@ export function bindBlockNotePresence(
     editor.off?.("selectionChange", handler);
     controller.dispose();
   };
+}
+
+export function createBlockNoteOpenRTCIntegration(
+  options: BlockNoteOpenRTCIntegrationOptions,
+): BlockNoteOpenRTCIntegration {
+  const binding = createBlockNoteYjsBinding(options.provider, options);
+  const unbindPresence = options.editor
+    ? bindBlockNotePresence(options.editor, options.client, options.room, options)
+    : undefined;
+  const dispose = createDisposable(unbindPresence, options.cleanup);
+  return {
+    binding,
+    unbindPresence,
+    dispose,
+  };
+}
+
+function createDisposable(...callbacks: Array<(() => void) | undefined>): () => void {
+  let disposed = false;
+  return () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    for (const callback of callbacks) {
+      callback?.();
+    }
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isEditorValue(value: unknown): value is TextSelectionPresence["editor"] {
+  return value === "generic" || value === "tiptap" || value === "lexical" || value === "blocknote";
 }

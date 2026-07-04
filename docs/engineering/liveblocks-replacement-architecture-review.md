@@ -57,7 +57,9 @@ Missing for parity:
 - Advanced room search/filtering beyond prefix/cursor listing.
 - Realtime client APIs for Liveblocks-style typed storage mutation/subscription beyond server-side typed-envelope validation.
 - Mentions, comment reactions/metadata updates, and webhooks.
-- First-class Tiptap/BlockNote/Lexical examples, docs, and published packages beyond low-level Yjs binding helpers.
+- Hosted Tiptap/BlockNote/Lexical editor canvases and advanced text-editor
+  product features beyond the package-level Yjs binding, selection presence,
+  remote-selection, and cleanup helpers.
 - Room-affine placement, load-shedding, and Yjs compactor retention alerts
   tuned against production traffic.
 - Full resumable session protocol and delivery acks for non-Yjs events. Redis
@@ -107,6 +109,9 @@ Recommended target shape:
 - Added `@openrtc/yjs-compactor`, a trusted TypeScript compactor that uses Yjs merge logic to compute checkpoint snapshots and trim sequenced Redis update logs.
 - Added `@openrtc/rich-text` Yjs binding helpers for Tiptap, Lexical, and
   BlockNote-style editor integrations alongside selection presence adapters.
+- Added executable `@openrtc/rich-text` integration wrappers and remote
+  selection helpers for Tiptap, Lexical, and BlockNote-style editor setup and
+  cleanup without importing editor packages into OpenRTC.
 - Added Redis-backed room metadata CRUD/list admin APIs with `rooms:` scoped authorization.
 - Added Liveblocks-style `defaultAccesses`, `usersAccesses`, and `groupsAccesses` room grants. Runtime room actions still honor existing access-token scopes first, then fall back to room grants for ID-token-style subject/group authorization in cluster mode.
 - Added Redis-backed storage get/set/delete and atomic JSON Patch admin APIs with `storage:` scoped authorization.
