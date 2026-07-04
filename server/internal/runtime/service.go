@@ -605,6 +605,10 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 			},
 		})
 	}
+	joinMeta, err := s.joinMetaWithDurableEventAck(conn, message.Room, message.JoinMeta)
+	if err != nil {
+		return err
+	}
 
 	joinResult, err := s.roomEngine().JoinWithLimits(conn.id, message.Room, roomengine.JoinLimits{
 		RoomsPerConnection: s.cfg.Limits.RoomsPerConnection,
@@ -636,7 +640,7 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 		return err
 	}
 
-	joinPlan := roomengine.NewJoinPlan(joinResult, joinPlanOptions(conn.id, message.JoinMeta))
+	joinPlan := roomengine.NewJoinPlan(joinResult, joinPlanOptions(conn.id, joinMeta))
 
 	if !joinPlan.AlreadyJoined() {
 		s.mu.Lock()
@@ -762,12 +766,60 @@ func (s *Service) handleEventAck(conn *clientConn, message protocol.Message) err
 	if !s.roomEngine().AcknowledgeEvent(conn.id, message.Room, sequence) {
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "event ack requires joined room"))
 	}
+	if err := s.persistRoomEventAck(conn, message.Room, sequence); err != nil {
+		return err
+	}
 	return conn.enqueue(outboundMessage{
 		T:    "EVENT_ACKED",
 		ID:   message.ID,
 		Room: message.Room,
 		Meta: map[string]any{"seq": sequence},
 	})
+}
+
+func (s *Service) joinMetaWithDurableEventAck(conn *clientConn, room string, joinMeta *protocol.JoinMeta) (*protocol.JoinMeta, error) {
+	durableSequence, err := s.durableRoomEventAck(conn, room)
+	if err != nil {
+		return nil, err
+	}
+	if durableSequence == 0 {
+		return joinMeta, nil
+	}
+	afterSequence := uint64(0)
+	if joinMeta != nil {
+		afterSequence = joinMeta.AfterSequence
+	}
+	if durableSequence <= afterSequence {
+		return joinMeta, nil
+	}
+	if joinMeta == nil {
+		return &protocol.JoinMeta{AfterSequence: durableSequence}, nil
+	}
+	merged := *joinMeta
+	merged.AfterSequence = durableSequence
+	return &merged, nil
+}
+
+func (s *Service) durableRoomEventAck(conn *clientConn, room string) (uint64, error) {
+	if s.store == nil || conn == nil || conn.claims == nil || conn.claims.Subject == "" {
+		return 0, nil
+	}
+	store, ok := s.store.(cluster.EventAckStore)
+	if !ok {
+		return 0, nil
+	}
+	return store.GetRoomEventAck(s.ctx, room, conn.claims.Subject)
+}
+
+func (s *Service) persistRoomEventAck(conn *clientConn, room string, sequence uint64) error {
+	if s.store == nil || conn == nil || conn.claims == nil || conn.claims.Subject == "" {
+		return nil
+	}
+	store, ok := s.store.(cluster.EventAckStore)
+	if !ok {
+		return nil
+	}
+	return store.SetRoomEventAck(s.ctx, room, conn.claims.Subject, sequence)
 }
 
 func (s *Service) handlePresence(conn *clientConn, message protocol.Message) error {

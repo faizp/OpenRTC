@@ -1105,6 +1105,65 @@ func TestRuntimeJoinReplaysPublishedEventsAfterSequence(t *testing.T) {
 	}
 }
 
+func TestRuntimeJoinUsesDurableEventAckCursor(t *testing.T) {
+	testCases := []struct {
+		name            string
+		durableSequence uint64
+		joinMeta        *protocol.JoinMeta
+	}{
+		{name: "durable cursor resumes without client cursor", durableSequence: 2},
+		{name: "client cursor wins when newer", durableSequence: 1, joinMeta: &protocol.JoinMeta{AfterSequence: 2}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			service := newRuntimeUnitService(t)
+			defer service.Close()
+
+			store := &fakeRuntimeStore{
+				publishedEvents: []cluster.PublishedEvent{
+					{Room: "tenant-a:room-1", Event: "one", Payload: json.RawMessage(`{"n":1}`), Sequence: 1, OriginNode: "node-b"},
+					{Room: "tenant-a:room-1", Event: "two", Payload: json.RawMessage(`{"n":2}`), Sequence: 2, OriginNode: "node-b"},
+					{Room: "tenant-a:room-1", Event: "three", Payload: json.RawMessage(`{"n":3}`), Sequence: 3, OriginNode: "node-b"},
+				},
+			}
+			if err := store.SetRoomEventAck(context.Background(), "tenant-a:room-1", "user-1", tc.durableSequence); err != nil {
+				t.Fatalf("seed durable event ack: %v", err)
+			}
+			service.store = store
+			conn := runtimeTestConn(service, "conn-durable-catchup", &auth.Claims{
+				RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"},
+				Tenant:           "tenant-a",
+				Join:             []string{"tenant-a:*"},
+			}, 4)
+
+			if err := service.handleJoin(conn, protocol.Message{
+				ID:       "join-durable-catchup",
+				Room:     "tenant-a:room-1",
+				JoinMeta: tc.joinMeta,
+			}); err != nil {
+				t.Fatalf("join catchup: %v", err)
+			}
+			if got := readRuntimeOutbound(t, conn); got.T != "JOINED" || got.ID != "join-durable-catchup" {
+				t.Fatalf("expected joined before catch-up events, got %+v", got)
+			}
+			got := readRuntimeOutbound(t, conn)
+			if got.T != "EVENT" || got.Event != "three" || got.Room != "tenant-a:room-1" {
+				t.Fatalf("expected replay to start after sequence 2, got %+v", got)
+			}
+			meta, ok := got.Meta.(map[string]any)
+			if !ok || meta["seq"] != uint64(3) {
+				t.Fatalf("unexpected replay event meta: %#v", got.Meta)
+			}
+			select {
+			case got := <-conn.send:
+				t.Fatalf("expected no older replay events, got %+v", got)
+			default:
+			}
+		})
+	}
+}
+
 func TestRuntimeStoreErrorBranches(t *testing.T) {
 	expected := errors.New("store failed")
 	claims := &auth.Claims{
@@ -1164,6 +1223,26 @@ func TestRuntimeStoreErrorBranches(t *testing.T) {
 		select {
 		case got := <-conn.send:
 			t.Fatalf("expected no partial join response after catchup failure, got %+v", got)
+		default:
+		}
+	})
+
+	t.Run("join durable event ack cursor", func(t *testing.T) {
+		service := newRuntimeUnitService(t)
+		defer service.Close()
+		store := &fakeRuntimeStore{getRoomEventAckErr: expected}
+		service.store = store
+		conn := runtimeTestConn(service, "conn-join-durable-ack", &auth.Claims{
+			RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"},
+			Tenant:           "tenant-a",
+			Join:             []string{"tenant-a:*"},
+		}, 2)
+		if err := service.handleJoin(conn, protocol.Message{ID: "join", Room: "tenant-a:room-1"}); !errors.Is(err, expected) {
+			t.Fatalf("expected durable event ack cursor error, got %v", err)
+		}
+		select {
+		case got := <-conn.send:
+			t.Fatalf("expected no partial join response after durable cursor failure, got %+v", got)
 		default:
 		}
 	})
@@ -1421,7 +1500,9 @@ func TestRuntimeHandleEventAck(t *testing.T) {
 	service := newRuntimeUnitService(t)
 	defer service.Close()
 
-	conn := runtimeTestConn(service, "conn-ack", &auth.Claims{Tenant: "tenant-a"}, 2)
+	store := &fakeRuntimeStore{}
+	service.store = store
+	conn := runtimeTestConn(service, "conn-ack", &auth.Claims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"}, Tenant: "tenant-a"}, 2)
 	if err := service.handleEventAck(conn, protocol.Message{
 		ID:           "ack-missing",
 		Room:         "tenant-a:room-1",
@@ -1451,6 +1532,23 @@ func TestRuntimeHandleEventAck(t *testing.T) {
 	}
 	if sequence := service.roomEngine().EventAckSequence(conn.id, "tenant-a:room-1"); sequence != 7 {
 		t.Fatalf("expected event ack sequence to be recorded, got %d", sequence)
+	}
+	if sequence := store.roomEventAcks["tenant-a:room-1"]["user-1"]; sequence != 7 {
+		t.Fatalf("expected durable event ack sequence to be recorded, got %d", sequence)
+	}
+
+	if err := service.handleEventAck(conn, protocol.Message{
+		ID:           "ack-old",
+		Room:         "tenant-a:room-1",
+		EventAckMeta: &protocol.EventAckMeta{Sequence: 3},
+	}); err != nil {
+		t.Fatalf("handle old event ack: %v", err)
+	}
+	if got := readRuntimeOutbound(t, conn); got.T != "EVENT_ACKED" || got.ID != "ack-old" {
+		t.Fatalf("unexpected old event ack response: %+v", got)
+	}
+	if sequence := store.roomEventAcks["tenant-a:room-1"]["user-1"]; sequence != 7 {
+		t.Fatalf("expected durable event ack sequence to stay monotonic, got %d", sequence)
 	}
 
 	if err := service.handleEventAck(conn, protocol.Message{ID: "ack-empty", Room: "tenant-a:room-1"}); err != nil {
@@ -2881,6 +2979,9 @@ type fakeRuntimeStore struct {
 	publishedEvents        []cluster.PublishedEvent
 	nextPublishedSequence  uint64
 	listPublishedEventsErr error
+	roomEventAcks          map[string]map[string]uint64
+	getRoomEventAckErr     error
+	setRoomEventAckErr     error
 	publishPresenceErr     error
 	publishedPresence      []cluster.PresenceEvent
 	joinedRooms            []roomengine.MembershipMutation
@@ -2948,6 +3049,34 @@ func (s *fakeRuntimeStore) ListPublishedEvents(_ context.Context, room string, a
 		}
 	}
 	return cluster.PublishedEventList{Events: events}, nil
+}
+
+func (s *fakeRuntimeStore) GetRoomEventAck(_ context.Context, room string, subject string) (uint64, error) {
+	if s.getRoomEventAckErr != nil {
+		return 0, s.getRoomEventAckErr
+	}
+	if s.roomEventAcks == nil {
+		return 0, nil
+	}
+	return s.roomEventAcks[room][subject], nil
+}
+
+func (s *fakeRuntimeStore) SetRoomEventAck(_ context.Context, room string, subject string, sequence uint64) error {
+	if s.setRoomEventAckErr != nil {
+		return s.setRoomEventAckErr
+	}
+	if s.roomEventAcks == nil {
+		s.roomEventAcks = make(map[string]map[string]uint64)
+	}
+	roomAcks := s.roomEventAcks[room]
+	if roomAcks == nil {
+		roomAcks = make(map[string]uint64)
+		s.roomEventAcks[room] = roomAcks
+	}
+	if sequence > roomAcks[subject] {
+		roomAcks[subject] = sequence
+	}
+	return nil
 }
 
 func (s *fakeRuntimeStore) Subscribe(context.Context, func(cluster.PublishedEvent)) error {

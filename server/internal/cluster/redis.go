@@ -343,6 +343,11 @@ type Store interface {
 	Close() error
 }
 
+type EventAckStore interface {
+	GetRoomEventAck(ctx context.Context, room string, subject string) (uint64, error)
+	SetRoomEventAck(ctx context.Context, room string, subject string, sequence uint64) error
+}
+
 type StorageWriteOptions struct {
 	MaxBytes            int
 	OpID                string
@@ -458,6 +463,59 @@ func (s *RedisStore) ListPublishedEvents(ctx context.Context, room string, after
 		events = append(events, event)
 	}
 	return PublishedEventList{Events: events}, nil
+}
+
+func (s *RedisStore) GetRoomEventAck(ctx context.Context, room string, subject string) (uint64, error) {
+	if room == "" || subject == "" {
+		return 0, nil
+	}
+	raw, err := s.client.HGet(ctx, roomEventAckKey(room), subject).Result()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	sequence, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return sequence, nil
+}
+
+func (s *RedisStore) SetRoomEventAck(ctx context.Context, room string, subject string, sequence uint64) error {
+	if room == "" || subject == "" || sequence == 0 {
+		return nil
+	}
+	key := roomEventAckKey(room)
+	next := strconv.FormatUint(sequence, 10)
+	for attempts := 0; attempts < 8; attempts++ {
+		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+			raw, err := tx.HGet(ctx, key, subject).Result()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				return err
+			}
+			if raw != "" {
+				current, err := strconv.ParseUint(raw, 10, 64)
+				if err != nil {
+					return err
+				}
+				if current >= sequence {
+					return nil
+				}
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.HSet(ctx, key, subject, next)
+				return nil
+			})
+			return err
+		}, key)
+		if errors.Is(err, redis.TxFailedErr) {
+			continue
+		}
+		return err
+	}
+	return redis.TxFailedErr
 }
 
 func (s *RedisStore) Subscribe(ctx context.Context, handler func(PublishedEvent)) error {
@@ -2927,6 +2985,10 @@ func roomEventLogKey(room string) string {
 
 func roomEventSequenceKey(room string) string {
 	return fmt.Sprintf("room:%s:events:seq", room)
+}
+
+func roomEventAckKey(room string) string {
+	return fmt.Sprintf("room:%s:events:acks", room)
 }
 
 func roomThreadsKey(room string) string {

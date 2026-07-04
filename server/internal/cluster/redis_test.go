@@ -196,6 +196,43 @@ func TestRedisPubSubFanoutFiltersMalformedEvents(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRoomEventAckCursor(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if got, err := store.GetRoomEventAck(ctx, "tenant-a:room-1", "user-1"); err != nil || got != 0 {
+		t.Fatalf("expected missing event ack cursor to be zero, got %d, %v", got, err)
+	}
+	if err := store.SetRoomEventAck(ctx, "tenant-a:room-1", "user-1", 7); err != nil {
+		t.Fatalf("set event ack cursor: %v", err)
+	}
+	if err := store.SetRoomEventAck(ctx, "tenant-a:room-1", "user-1", 3); err != nil {
+		t.Fatalf("set stale event ack cursor: %v", err)
+	}
+	if got, err := store.GetRoomEventAck(ctx, "tenant-a:room-1", "user-1"); err != nil || got != 7 {
+		t.Fatalf("expected stale event ack cursor to be ignored, got %d, %v", got, err)
+	}
+	if err := store.SetRoomEventAck(ctx, "tenant-a:room-1", "user-1", 9); err != nil {
+		t.Fatalf("advance event ack cursor: %v", err)
+	}
+	if got, err := store.GetRoomEventAck(ctx, "tenant-a:room-1", "user-1"); err != nil || got != 9 {
+		t.Fatalf("expected advanced event ack cursor, got %d, %v", got, err)
+	}
+	if got, err := store.GetRoomEventAck(ctx, "tenant-a:room-1", "user-2"); err != nil || got != 0 {
+		t.Fatalf("expected separate subject cursor to be zero, got %d, %v", got, err)
+	}
+}
+
 func TestRedisPubSubSubscribeErrorsWhenRedisUnavailable(t *testing.T) {
 	redisServer, err := miniredis.Run()
 	if err != nil {
