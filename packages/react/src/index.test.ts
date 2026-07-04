@@ -9,8 +9,11 @@ import {
   useMutation,
   useNotificationEvents,
   useNotificationListener,
+  useInboxNotifications,
   useMutateLiveStorage,
   usePatchStorage,
+  useRoomThread,
+  useRoomThreads,
   useRoomCommentEvents,
   useSetLiveStorage,
   useSetStorage,
@@ -22,6 +25,7 @@ import {
   useStorageSelector,
   useStorageStatus,
   useUpdateLiveStorage,
+  useUnreadInboxCount,
 } from "./index.ts";
 
 type ElementProps = Record<string, unknown>;
@@ -53,6 +57,10 @@ assert.equal(typeof useCommentListener, "function");
 assert.equal(typeof useRoomCommentEvents, "function");
 assert.equal(typeof useNotificationListener, "function");
 assert.equal(typeof useNotificationEvents, "function");
+assert.equal(typeof useRoomThreads, "function");
+assert.equal(typeof useRoomThread, "function");
+assert.equal(typeof useInboxNotifications, "function");
+assert.equal(typeof useUnreadInboxCount, "function");
 assert.equal(typeof RoomProvider, "function");
 assert.equal(typeof useCurrentRoom, "function");
 
@@ -62,6 +70,9 @@ assert.equal(typeof roomContext.useRoom, "function");
 assert.equal(typeof roomContext.useOthers, "function");
 assert.equal(typeof roomContext.useStorage, "function");
 assert.equal(typeof roomContext.useMutation, "function");
+assert.equal(typeof roomContext.useThreads, "function");
+assert.equal(typeof roomContext.useThread, "function");
+assert.equal(typeof roomContext.useCommentEvents, "function");
 
 const labeledCursor = asElement(
   Cursor({

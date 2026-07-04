@@ -506,6 +506,12 @@ export interface OpenRTCNotificationDelta {
   notification?: OpenRTCAdminInboxNotification;
 }
 
+export interface OpenRTCInboxMaterializationOptions {
+  userId?: string;
+  unreadOnly?: boolean;
+  limit?: number | null;
+}
+
 export interface OpenRTCError {
   code: string;
   message: string;
@@ -1025,6 +1031,98 @@ export function removeCommentReaction(
   const emoji = reaction.emoji.trim();
   const userId = reaction.userId.trim();
   return normalizeCommentReactions(reactions).filter((item) => item.emoji !== emoji || item.userId !== userId);
+}
+
+export function sortCommentThreads(threads: readonly OpenRTCAdminThread[]): OpenRTCAdminThread[] {
+  return threads.map(cloneAdminThread).sort(compareAdminThreads);
+}
+
+export function upsertCommentThread(
+  threads: readonly OpenRTCAdminThread[],
+  thread: OpenRTCAdminThread,
+): OpenRTCAdminThread[] {
+  const clonedThread = cloneAdminThread(thread);
+  let inserted = false;
+  const next = threads.map((candidate) => {
+    if (candidate.id !== clonedThread.id) {
+      return cloneAdminThread(candidate);
+    }
+    inserted = true;
+    return clonedThread;
+  });
+  if (!inserted) {
+    next.push(clonedThread);
+  }
+  return next.sort(compareAdminThreads);
+}
+
+export function applyCommentEventToThreads(
+  threads: readonly OpenRTCAdminThread[],
+  event: OpenRTCCommentEvent,
+): OpenRTCAdminThread[] {
+  return upsertCommentThread(threads, event.thread);
+}
+
+export function applyCommentEventsToThreads(
+  threads: readonly OpenRTCAdminThread[],
+  events: readonly OpenRTCCommentEvent[],
+): OpenRTCAdminThread[] {
+  return events.reduce<OpenRTCAdminThread[]>((current, event) => applyCommentEventToThreads(current, event), sortCommentThreads(threads));
+}
+
+export function sortInboxNotifications(
+  notifications: readonly OpenRTCAdminInboxNotification[],
+  options: OpenRTCInboxMaterializationOptions = {},
+): OpenRTCAdminInboxNotification[] {
+  return limitInboxNotifications(
+    notifications
+      .map(cloneInboxNotification)
+      .filter((notification) => inboxNotificationMatches(notification, options))
+      .sort(compareInboxNotifications),
+    options.limit,
+  );
+}
+
+export function applyNotificationDeltaToInbox(
+  notifications: readonly OpenRTCAdminInboxNotification[],
+  delta: OpenRTCNotificationDelta,
+  options: OpenRTCInboxMaterializationOptions = {},
+): OpenRTCAdminInboxNotification[] {
+  let next = notifications.map(cloneInboxNotification);
+  if (delta.type === "deleted-all") {
+    next = next.filter((notification) => notification.userId !== delta.userId);
+    return sortInboxNotifications(next, options);
+  }
+  if (delta.type === "deleted") {
+    next = next.filter((notification) => notification.id !== delta.notificationId);
+    return sortInboxNotifications(next, options);
+  }
+  if (delta.notification) {
+    const notification = cloneInboxNotification(delta.notification);
+    let inserted = false;
+    next = next.map((candidate) => {
+      if (candidate.id !== notification.id) {
+        return candidate;
+      }
+      inserted = true;
+      return notification;
+    });
+    if (!inserted) {
+      next.push(notification);
+    }
+  }
+  return sortInboxNotifications(next, options);
+}
+
+export function applyNotificationDeltasToInbox(
+  notifications: readonly OpenRTCAdminInboxNotification[],
+  deltas: readonly OpenRTCNotificationDelta[],
+  options: OpenRTCInboxMaterializationOptions = {},
+): OpenRTCAdminInboxNotification[] {
+  return deltas.reduce<OpenRTCAdminInboxNotification[]>(
+    (current, delta) => applyNotificationDeltaToInbox(current, delta, options),
+    sortInboxNotifications(notifications, options),
+  );
 }
 
 export interface OpenRTCAdminRoomInput {
@@ -4620,6 +4718,81 @@ function storageProbePath(document: unknown): string {
     return "/data/__openrtc_probe";
   }
   return "/__openrtc_probe";
+}
+
+function cloneAdminThread(thread: OpenRTCAdminThread): OpenRTCAdminThread {
+  return {
+    ...thread,
+    comments: thread.comments.map(cloneAdminComment),
+    ...(thread.metadata !== undefined ? { metadata: cloneStorageDocument(thread.metadata) } : {}),
+  };
+}
+
+function cloneAdminComment(comment: OpenRTCAdminComment): OpenRTCAdminComment {
+  return {
+    ...comment,
+    ...(comment.body !== undefined ? { body: cloneStorageDocument(comment.body) } : {}),
+    ...(comment.metadata !== undefined ? { metadata: cloneStorageDocument(comment.metadata) } : {}),
+    ...(comment.mentions ? { mentions: [...comment.mentions] } : {}),
+    ...(comment.reactions ? { reactions: comment.reactions.map((reaction) => ({ ...reaction })) } : {}),
+  };
+}
+
+function compareAdminThreads(a: OpenRTCAdminThread, b: OpenRTCAdminThread): number {
+  return compareTimestampAsc(a.createdAt, b.createdAt) || a.id.localeCompare(b.id);
+}
+
+function cloneInboxNotification(notification: OpenRTCAdminInboxNotification): OpenRTCAdminInboxNotification {
+  return {
+    ...notification,
+    ...(notification.activityData !== undefined ? { activityData: cloneStorageDocument(notification.activityData) } : {}),
+  };
+}
+
+function inboxNotificationMatches(
+  notification: OpenRTCAdminInboxNotification,
+  options: OpenRTCInboxMaterializationOptions,
+): boolean {
+  if (options.userId !== undefined && notification.userId !== options.userId) {
+    return false;
+  }
+  if (options.unreadOnly && notification.readAt) {
+    return false;
+  }
+  return true;
+}
+
+function compareInboxNotifications(
+  a: OpenRTCAdminInboxNotification,
+  b: OpenRTCAdminInboxNotification,
+): number {
+  return compareTimestampDesc(a.notifiedAt, b.notifiedAt) || a.id.localeCompare(b.id);
+}
+
+function limitInboxNotifications(
+  notifications: OpenRTCAdminInboxNotification[],
+  limit: number | null | undefined,
+): OpenRTCAdminInboxNotification[] {
+  if (limit === null || limit === undefined) {
+    return notifications;
+  }
+  if (!Number.isFinite(limit)) {
+    return notifications;
+  }
+  return notifications.slice(0, Math.max(0, Math.floor(limit)));
+}
+
+function compareTimestampAsc(a: string, b: string): number {
+  const aTime = Date.parse(a);
+  const bTime = Date.parse(b);
+  if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+    return aTime - bTime;
+  }
+  return a.localeCompare(b);
+}
+
+function compareTimestampDesc(a: string, b: string): number {
+  return compareTimestampAsc(b, a);
 }
 
 function asOpenRTCCommentEvent(event: OpenRTCEvent): OpenRTCCommentEvent | undefined {

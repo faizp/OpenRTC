@@ -218,6 +218,12 @@ sequence handling. `liveObjectDelete`, `liveMapPatch`, `liveMapDelete`,
 `liveListMove` remain available when callers want raw nested typed-node JSON
 Patch operations for `room.patchStorage`. Collaborative text
 remains owned by the Yjs provider.
+For product-surface state, `@openrtc/client` exports
+`applyCommentEventToThreads` and `applyNotificationDeltaToInbox` reducers so
+apps can seed from REST thread/inbox lists and apply realtime deltas
+immutably. `@openrtc/react` exposes `useRoomThreads`, `useRoomThread`,
+`useInboxNotifications`, and `useUnreadInboxCount` for the same materialized
+comment and notification state in React.
 The provider requests state-vector diffs after opening, relays transient diff
 responses through the runtime without persisting them, and exposes
 `getSyncState()` plus `sync-status` events with state-vector and snapshot hashes

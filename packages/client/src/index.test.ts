@@ -13,6 +13,10 @@ import {
   accessMatrixRoomAccesses,
   accessMatrixScope,
   accessMatrixScopes,
+  applyCommentEventToThreads,
+  applyCommentEventsToThreads,
+  applyNotificationDeltaToInbox,
+  applyNotificationDeltasToInbox,
   addCommentMention,
   addCommentReaction,
   createLiveStorageMutation,
@@ -50,6 +54,10 @@ import {
   roomQuery,
   roomQueryExists,
   runOpenRTCDevProbe,
+  sortCommentThreads,
+  sortInboxNotifications,
+  type OpenRTCAdminInboxNotification,
+  type OpenRTCAdminThread,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
   type OpenRTCError,
@@ -244,6 +252,148 @@ assert.deepEqual(
     { emoji: " +1 ", userId: "user-2" },
   ),
   [{ emoji: "eyes", userId: "user-3" }],
+);
+
+const baseThread: OpenRTCAdminThread = {
+  type: "thread",
+  id: "thread-2",
+  roomId: "tenant-a:room-1",
+  comments: [
+    {
+      type: "comment",
+      threadId: "thread-2",
+      roomId: "tenant-a:room-1",
+      id: "comment-2",
+      userId: "user-2",
+      createdAt: "2026-07-04T00:02:00.000Z",
+      body: { text: "second" },
+    },
+  ],
+  resolved: false,
+  createdAt: "2026-07-04T00:02:00.000Z",
+  updatedAt: "2026-07-04T00:02:00.000Z",
+};
+const earlierThread: OpenRTCAdminThread = {
+  type: "thread",
+  id: "thread-1",
+  roomId: "tenant-a:room-1",
+  comments: [
+    {
+      type: "comment",
+      threadId: "thread-1",
+      roomId: "tenant-a:room-1",
+      id: "comment-1",
+      userId: "user-1",
+      createdAt: "2026-07-04T00:01:00.000Z",
+      body: { text: "first" },
+    },
+  ],
+  resolved: false,
+  metadata: { status: "open" },
+  createdAt: "2026-07-04T00:01:00.000Z",
+  updatedAt: "2026-07-04T00:01:00.000Z",
+};
+const updatedEarlierThread: OpenRTCAdminThread = {
+  ...earlierThread,
+  comments: [
+    {
+      ...earlierThread.comments[0]!,
+      body: { text: "first edited" },
+      editedAt: "2026-07-04T00:03:00.000Z",
+      reactions: [{ emoji: "+1", userId: "user-2" }],
+    },
+  ],
+  updatedAt: "2026-07-04T00:03:00.000Z",
+};
+const threadCreatedEvent: OpenRTCCommentEvent = {
+  room: "tenant-a:room-1",
+  event: OPENRTC_COMMENT_EVENTS.threadCreated,
+  type: "thread-created",
+  roomId: "tenant-a:room-1",
+  threadId: "thread-1",
+  commentId: "comment-1",
+  thread: earlierThread,
+  comment: earlierThread.comments[0]!,
+};
+const commentUpdatedEvent: OpenRTCCommentEvent = {
+  room: "tenant-a:room-1",
+  event: OPENRTC_COMMENT_EVENTS.commentUpdated,
+  type: "comment-updated",
+  roomId: "tenant-a:room-1",
+  threadId: "thread-1",
+  commentId: "comment-1",
+  thread: updatedEarlierThread,
+  comment: updatedEarlierThread.comments[0]!,
+};
+assert.deepEqual(sortCommentThreads([baseThread, earlierThread]).map((thread) => thread.id), ["thread-1", "thread-2"]);
+const materializedThreads = applyCommentEventsToThreads([baseThread], [threadCreatedEvent, commentUpdatedEvent]);
+assert.deepEqual(materializedThreads.map((thread) => thread.id), ["thread-1", "thread-2"]);
+assert.deepEqual(materializedThreads[0]?.comments[0]?.body, { text: "first edited" });
+assert.deepEqual(applyCommentEventToThreads(materializedThreads, commentUpdatedEvent), materializedThreads);
+updatedEarlierThread.comments[0]!.reactions![0]!.emoji = "mutated";
+assert.deepEqual(materializedThreads[0]?.comments[0]?.reactions, [{ emoji: "+1", userId: "user-2" }]);
+
+const olderNotification: OpenRTCAdminInboxNotification = {
+  id: "in-older",
+  userId: "user-1",
+  kind: "thread",
+  roomId: "tenant-a:room-1",
+  notifiedAt: "2026-07-04T00:01:00.000Z",
+  activityData: { threadId: "thread-1" },
+};
+const newerNotification: OpenRTCAdminInboxNotification = {
+  id: "in-newer",
+  userId: "user-1",
+  kind: "thread",
+  roomId: "tenant-a:room-1",
+  notifiedAt: "2026-07-04T00:02:00.000Z",
+  activityData: { threadId: "thread-2" },
+};
+const otherUserNotification: OpenRTCAdminInboxNotification = {
+  id: "in-other",
+  userId: "user-2",
+  kind: "thread",
+  roomId: "tenant-a:room-1",
+  notifiedAt: "2026-07-04T00:03:00.000Z",
+};
+assert.deepEqual(
+  sortInboxNotifications([olderNotification, newerNotification, otherUserNotification], { userId: "user-1" }).map(
+    (notification) => notification.id,
+  ),
+  ["in-newer", "in-older"],
+);
+assert.deepEqual(
+  applyNotificationDeltaToInbox(
+    [olderNotification],
+    {
+      event: OPENRTC_NOTIFICATION_EVENTS.inboxCreated,
+      type: "created",
+      userId: "user-1",
+      notificationId: "in-newer",
+      notification: newerNotification,
+    },
+    { userId: "user-1", limit: 1 },
+  ).map((notification) => notification.id),
+  ["in-newer"],
+);
+const readDelta: OpenRTCNotificationDelta = {
+  event: OPENRTC_NOTIFICATION_EVENTS.inboxRead,
+  type: "read",
+  userId: "user-1",
+  notificationId: "in-newer",
+  notification: { ...newerNotification, readAt: "2026-07-04T00:03:00.000Z" },
+};
+assert.deepEqual(applyNotificationDeltaToInbox([newerNotification], readDelta, { userId: "user-1", unreadOnly: true }), []);
+assert.deepEqual(
+  applyNotificationDeltasToInbox(
+    [olderNotification, newerNotification],
+    [
+      { event: OPENRTC_NOTIFICATION_EVENTS.inboxDeleted, type: "deleted", userId: "user-1", notificationId: "in-older" },
+      { event: OPENRTC_NOTIFICATION_EVENTS.inboxDeletedAll, type: "deleted-all", userId: "user-1" },
+    ],
+    { userId: "user-1" },
+  ),
+  [],
 );
 
 class FakeWebSocket implements OpenRTCWebSocket {
