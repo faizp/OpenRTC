@@ -249,6 +249,7 @@ export interface OpenRTCDevSocketSnapshot {
 
 export interface OpenRTCDevStorageDocumentSnapshot {
   found: boolean;
+  sequence?: number;
   document?: unknown;
 }
 
@@ -2566,7 +2567,10 @@ export class OpenRTCClient {
       if (requestId) {
         this.pendingStorageGets.delete(requestId);
       }
-      this.applyAuthoritativeStorageMessage(room, document, { source: "snapshot" });
+      this.applyAuthoritativeStorageMessage(room, document, {
+        source: "snapshot",
+        ...(sequence !== undefined ? { sequence } : {}),
+      });
       this.resolveStorageGetWaiters(room, document);
       return;
     }

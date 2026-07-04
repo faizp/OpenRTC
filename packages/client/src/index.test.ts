@@ -1100,6 +1100,21 @@ assert.deepEqual(storageStatusUpdates.at(-1), {
 });
 assert.deepEqual(room.getStorageSnapshot(), { title: "Still Local", version: 33 });
 
+roomSocket.receive({
+  t: "STORAGE_SNAPSHOT",
+  room: "tenant-a:room-api",
+  meta: { seq: 3 },
+  payload: { document: { title: "Snapshot", version: 34 } },
+});
+assert.equal(room.getStorageSequence(), 3);
+assert.deepEqual(room.getStorageSnapshot(), { title: "Snapshot", version: 34 });
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: { title: "Snapshot", version: 34 },
+  source: "snapshot",
+  sequence: 3,
+});
+
 offOthers();
 offMyPresence();
 offEvents();

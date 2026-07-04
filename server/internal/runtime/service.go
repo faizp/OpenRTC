@@ -162,6 +162,7 @@ type DevStorageSnapshot struct {
 	Room        string          `json:"room"`
 	Found       bool            `json:"found"`
 	StoreBacked bool            `json:"store_backed"`
+	Sequence    uint64          `json:"sequence,omitempty"`
 	Document    json.RawMessage `json:"document,omitempty"`
 }
 
@@ -228,11 +229,12 @@ func (s *Service) DevStorageSnapshot(room string) DevStorageSnapshot {
 		Room:        room,
 		StoreBacked: s.store != nil,
 	}
-	document, err := s.roomEngine().GetStorage(room)
+	document, sequence, err := s.roomEngine().GetStorageWithSequence(room)
 	if err != nil {
 		return snapshot
 	}
 	snapshot.Found = true
+	snapshot.Sequence = sequence
 	snapshot.Document = document
 	return snapshot
 }
@@ -737,18 +739,22 @@ func (s *Service) handleStorageGet(conn *clientConn, message protocol.Message) e
 		return conn.enqueue(runtimeErrorMessage(message.ID, openrtcerr.CodeRoomForbidden, "room storage is not permitted"))
 	}
 
-	document, err := s.getStorage(message.Room)
+	document, sequence, err := s.getStorageSnapshot(message.Room)
 	if err != nil {
 		return conn.enqueue(storageErrorMessage(message.ID, err))
 	}
-	return conn.enqueue(outboundMessage{
+	outbound := outboundMessage{
 		T:    "STORAGE_SNAPSHOT",
 		ID:   message.ID,
 		Room: message.Room,
 		Payload: map[string]any{
 			"document": document,
 		},
-	})
+	}
+	if sequence > 0 {
+		outbound.Meta = map[string]any{"seq": sequence}
+	}
+	return conn.enqueue(outbound)
 }
 
 func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) error {
@@ -1149,10 +1155,19 @@ func joinPlanOptions(connID string, joinMeta *protocol.JoinMeta) roomengine.Join
 }
 
 func (s *Service) getStorage(room string) (json.RawMessage, error) {
+	document, _, err := s.getStorageSnapshot(room)
+	return document, err
+}
+
+func (s *Service) getStorageSnapshot(room string) (json.RawMessage, uint64, error) {
 	if s.store != nil {
-		return s.store.GetStorage(s.ctx, room)
+		if sequenced, ok := s.store.(cluster.SequencedStorageReader); ok {
+			return sequenced.GetStorageWithSequence(s.ctx, room)
+		}
+		document, err := s.store.GetStorage(s.ctx, room)
+		return document, 0, err
 	}
-	return s.roomEngine().GetStorage(room)
+	return s.roomEngine().GetStorageWithSequence(room)
 }
 
 func (s *Service) setStorageMutationPlan(room string, document json.RawMessage, mutationOptions roomengine.StorageMutationOptions, eventOptions roomengine.StorageEventOptions) (roomengine.StorageMutationPlan, error) {

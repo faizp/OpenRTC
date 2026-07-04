@@ -767,7 +767,7 @@ func TestHandleSocketsReportsRuntimeSnapshot(t *testing.T) {
 
 func TestHandleStorageReportsDurableAndRuntimeSnapshots(t *testing.T) {
 	service := &runtimeapp.Service{}
-	handler := handleStorage(&fakeDevStorageStore{document: json.RawMessage(`{"title":"Durable"}`)}, func() *runtimeapp.Service {
+	handler := handleStorage(&fakeDevStorageStore{document: json.RawMessage(`{"title":"Durable"}`), sequence: 4}, func() *runtimeapp.Service {
 		return service
 	})
 
@@ -782,7 +782,7 @@ func TestHandleStorageReportsDurableAndRuntimeSnapshots(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode storage response: %v", err)
 	}
-	if body.Room != "tenant-a:room-1" || !body.Durable.Found || string(body.Durable.Document) != `{"title":"Durable"}` {
+	if body.Room != "tenant-a:room-1" || !body.Durable.Found || body.Durable.Sequence != 4 || string(body.Durable.Document) != `{"title":"Durable"}` {
 		t.Fatalf("unexpected durable storage snapshot: %+v", body)
 	}
 	if body.Runtime == nil || body.Runtime.Room != "tenant-a:room-1" || body.Runtime.Found {
@@ -1103,6 +1103,7 @@ func clearDevStorageEnv(t *testing.T) {
 
 type fakeDevStorageStore struct {
 	document    json.RawMessage
+	sequence    uint64
 	err         error
 	yjsDocument cluster.YJSDocument
 	yjsErr      error
@@ -1111,13 +1112,18 @@ type fakeDevStorageStore struct {
 }
 
 func (s *fakeDevStorageStore) GetStorage(context.Context, string) (json.RawMessage, error) {
+	document, _, err := s.GetStorageWithSequence(context.Background(), "")
+	return document, err
+}
+
+func (s *fakeDevStorageStore) GetStorageWithSequence(context.Context, string) (json.RawMessage, uint64, error) {
 	if s.err != nil {
-		return nil, s.err
+		return nil, 0, s.err
 	}
 	if s.document == nil {
-		return nil, cluster.ErrStorageNotFound
+		return nil, 0, cluster.ErrStorageNotFound
 	}
-	return append(json.RawMessage(nil), s.document...), nil
+	return append(json.RawMessage(nil), s.document...), s.sequence, nil
 }
 
 func (s *fakeDevStorageStore) LoadYJSDocument(context.Context, string) (cluster.YJSDocument, error) {

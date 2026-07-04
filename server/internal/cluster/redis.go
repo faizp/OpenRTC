@@ -323,6 +323,10 @@ type StorageWriteOptions struct {
 	ExpectedSequenceSet bool
 }
 
+type SequencedStorageReader interface {
+	GetStorageWithSequence(ctx context.Context, room string) (json.RawMessage, uint64, error)
+}
+
 type SequencedStorageWriter interface {
 	SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error)
 	ApplyStoragePatchWithOptions(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (json.RawMessage, uint64, error)
@@ -1163,14 +1167,37 @@ func (s *RedisStore) ListRoomSubscriptionSettings(ctx context.Context, userID st
 }
 
 func (s *RedisStore) GetStorage(ctx context.Context, room string) (json.RawMessage, error) {
-	raw, err := s.client.Get(ctx, roomStorageKey(room)).Result()
+	document, _, err := s.GetStorageWithSequence(ctx, room)
+	return document, err
+}
+
+func (s *RedisStore) GetStorageWithSequence(ctx context.Context, room string) (json.RawMessage, uint64, error) {
+	pipe := s.client.Pipeline()
+	documentCmd := pipe.Get(ctx, roomStorageKey(room))
+	sequenceCmd := pipe.Get(ctx, roomStorageSequenceKey(room))
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, 0, err
+	}
+	raw, err := documentCmd.Result()
 	if err == redis.Nil {
-		return nil, ErrStorageNotFound
+		return nil, 0, ErrStorageNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return json.RawMessage(raw), nil
+	sequence := uint64(0)
+	sequenceRaw, err := sequenceCmd.Result()
+	if err != nil && err != redis.Nil {
+		return nil, 0, err
+	}
+	if err == nil {
+		parsed, err := parseStorageSequence(sequenceRaw)
+		if err != nil {
+			return nil, 0, err
+		}
+		sequence = parsed
+	}
+	return json.RawMessage(raw), sequence, nil
 }
 
 func (s *RedisStore) SetStorage(ctx context.Context, room string, document json.RawMessage) (json.RawMessage, error) {
@@ -1302,6 +1329,10 @@ func redisStorageSequence(ctx context.Context, tx *redis.Tx, key string) (uint64
 	if err != nil {
 		return 0, err
 	}
+	return parseStorageSequence(raw)
+}
+
+func parseStorageSequence(raw string) (uint64, error) {
 	sequence, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%w: invalid storage sequence", ErrStoragePatch)

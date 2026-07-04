@@ -1293,6 +1293,13 @@ func TestEngineStorageSetGetAndPatch(t *testing.T) {
 	if string(loaded) != `{"liveblocksType":"LiveObject","data":{"title":"Draft","items":{"liveblocksType":"LiveList","data":["a"]}}}` {
 		t.Fatalf("storage should be defensively copied, got %s", loaded)
 	}
+	snapshot, sequence, err := engine.GetStorageWithSequence("room-a")
+	if err != nil {
+		t.Fatalf("get storage with sequence: %v", err)
+	}
+	if string(snapshot) != string(loaded) || sequence != 1 {
+		t.Fatalf("unexpected sequenced storage snapshot: document=%s sequence=%d", snapshot, sequence)
+	}
 
 	patched, err := engine.ApplyStoragePatch("room-a", []cluster.JSONPatchOperation{
 		{Op: "replace", Path: "/data/title", Value: json.RawMessage(`"Published"`)},
@@ -1303,6 +1310,13 @@ func TestEngineStorageSetGetAndPatch(t *testing.T) {
 	}
 	if string(patched) != `{"data":{"items":{"data":["a","b"],"liveblocksType":"LiveList"},"title":"Published"},"liveblocksType":"LiveObject"}` {
 		t.Fatalf("unexpected patched storage: %s", patched)
+	}
+	snapshot, sequence, err = engine.GetStorageWithSequence("room-a")
+	if err != nil {
+		t.Fatalf("get patched storage with sequence: %v", err)
+	}
+	if string(snapshot) != string(patched) || sequence != 2 {
+		t.Fatalf("unexpected patched sequenced storage snapshot: document=%s sequence=%d", snapshot, sequence)
 	}
 
 	if _, err := engine.ApplyStoragePatch("missing", []cluster.JSONPatchOperation{

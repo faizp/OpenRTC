@@ -1288,14 +1288,19 @@ func (e *Engine) StoreYJSPersistence(plan YJSPersistencePlan) cluster.YJSEvent {
 }
 
 func (e *Engine) GetStorage(room string) (json.RawMessage, error) {
+	document, _, err := e.GetStorageWithSequence(room)
+	return document, err
+}
+
+func (e *Engine) GetStorageWithSequence(room string) (json.RawMessage, uint64, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	document := e.storage[room]
 	if document == nil {
-		return nil, cluster.ErrStorageNotFound
+		return nil, 0, cluster.ErrStorageNotFound
 	}
-	return append(json.RawMessage(nil), document...), nil
+	return append(json.RawMessage(nil), document...), e.storageSeq[room], nil
 }
 
 func (e *Engine) SetStorage(room string, document json.RawMessage, maxBytes int) (json.RawMessage, error) {

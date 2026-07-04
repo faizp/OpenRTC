@@ -62,7 +62,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:8090` for the admin API.
 - `http://127.0.0.1:3000/dev/connections?room=demo:room-1` for active-user inspection.
 - `http://127.0.0.1:3000/dev/sockets` for local runtime WebSocket/Yjs socket inspection.
-- `http://127.0.0.1:3000/dev/storage?room=demo:room-1` for durable and runtime-observed room storage inspection.
+- `http://127.0.0.1:3000/dev/storage?room=demo:room-1` for durable and runtime-observed room storage inspection, including storage sequence metadata when available.
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
@@ -192,8 +192,9 @@ mutations on top. `room.getStoragePendingMutations()` plus client
 `storage-status` events and room `storage-status` subscription updates expose
 pending mutation count, op IDs, and the latest authoritative storage sequence
 when the runtime provides one. Sequenced storage ACK/UPDATE messages are exposed
-as `event.sequence` and `room.getStorageSequence()`, and stale sequenced updates
-are ignored so late fan-out cannot roll local storage backward. Pass
+as `event.sequence` and `room.getStorageSequence()`, and `getStorage()` applies
+snapshot sequence metadata before resolving. Stale sequenced updates are ignored
+so late fan-out cannot roll local storage backward. Pass
 `expectedSequence` to `setStorage`, `patchStorage`, or typed storage helpers to
 reject stale writes with `STORAGE_CONFLICT` instead of applying them on a newer
 base document. Storage mutations

@@ -1816,6 +1816,13 @@ func TestRedisStorageLifecycleAndPatch(t *testing.T) {
 	if string(stored) != `{"layers":["base"],"meta":{"title":"Draft"}}` {
 		t.Fatalf("unexpected stored storage: %s", stored)
 	}
+	snapshot, sequence, err := store.GetStorageWithSequence(ctx, "tenant-a:doc-1")
+	if err != nil {
+		t.Fatalf("get storage with sequence: %v", err)
+	}
+	if string(snapshot) != string(stored) || sequence != 1 {
+		t.Fatalf("unexpected sequenced storage snapshot: document=%s sequence=%d", snapshot, sequence)
+	}
 
 	if _, _, err := store.SetStorageWithOptions(ctx, "tenant-a:doc-1", json.RawMessage(`{"layers":["stale"],"meta":{"title":"Stale"}}`), StorageWriteOptions{
 		ExpectedSequence:    0,
@@ -1843,6 +1850,13 @@ func TestRedisStorageLifecycleAndPatch(t *testing.T) {
 	}
 	if string(patched) != `{"layers":["base","foreground"],"meta":{"slug":"Published","title":"Published"}}` {
 		t.Fatalf("unexpected patched storage: %s", patched)
+	}
+	snapshot, sequence, err = store.GetStorageWithSequence(ctx, "tenant-a:doc-1")
+	if err != nil {
+		t.Fatalf("get patched storage with sequence: %v", err)
+	}
+	if string(snapshot) != string(patched) || sequence != 2 {
+		t.Fatalf("unexpected patched sequenced storage snapshot: document=%s sequence=%d", snapshot, sequence)
 	}
 
 	if _, _, err := store.ApplyStoragePatchWithOptions(ctx, "tenant-a:doc-1", []JSONPatchOperation{

@@ -115,6 +115,7 @@ type devYJSSnapshot struct {
 
 type devStorageDocumentSnapshot struct {
 	Found    bool            `json:"found"`
+	Sequence uint64          `json:"sequence,omitempty"`
 	Document json.RawMessage `json:"document,omitempty"`
 }
 
@@ -927,7 +928,7 @@ func handleStorage(store storageGetter, currentRuntimeService func() *runtimeapp
 		}
 
 		snapshot := devStorageSnapshot{Room: room}
-		document, err := store.GetStorage(r.Context(), room)
+		document, sequence, err := devStorageDocument(r.Context(), store, room)
 		if err != nil {
 			if !errors.Is(err, cluster.ErrStorageNotFound) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -936,6 +937,7 @@ func handleStorage(store storageGetter, currentRuntimeService func() *runtimeapp
 		} else {
 			snapshot.Durable = devStorageDocumentSnapshot{
 				Found:    true,
+				Sequence: sequence,
 				Document: document,
 			}
 		}
@@ -948,6 +950,14 @@ func handleStorage(store storageGetter, currentRuntimeService func() *runtimeapp
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(snapshot)
 	}
+}
+
+func devStorageDocument(ctx context.Context, store storageGetter, room string) (json.RawMessage, uint64, error) {
+	if sequenced, ok := store.(cluster.SequencedStorageReader); ok {
+		return sequenced.GetStorageWithSequence(ctx, room)
+	}
+	document, err := store.GetStorage(ctx, room)
+	return document, 0, err
 }
 
 func handleYJSDocument(store yjsDocumentLoader, currentRuntimeService func() *runtimeapp.Service) http.HandlerFunc {

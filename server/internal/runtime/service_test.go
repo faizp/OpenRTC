@@ -1521,6 +1521,9 @@ func TestRuntimeDevStorageSnapshot(t *testing.T) {
 	if snapshot.NodeID != "node-a" || snapshot.Room != "tenant-a:room-1" || !snapshot.Found || !snapshot.StoreBacked {
 		t.Fatalf("unexpected storage snapshot metadata: %+v", snapshot)
 	}
+	if snapshot.Sequence != 1 {
+		t.Fatalf("unexpected storage snapshot sequence: %+v", snapshot)
+	}
 	if string(snapshot.Document) != `{"title":"Draft"}` {
 		t.Fatalf("unexpected storage snapshot document: %s", snapshot.Document)
 	}
@@ -1829,6 +1832,9 @@ func TestRuntimeStorageRealtimeBranches(t *testing.T) {
 	if snapshot.T != "STORAGE_SNAPSHOT" || snapshot.ID != "storage-get" {
 		t.Fatalf("unexpected storage snapshot: %+v", snapshot)
 	}
+	if meta, ok := snapshot.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected sequenced storage snapshot metadata, got %#v", snapshot.Meta)
+	}
 
 	if err := service.handleStoragePatch(sender, protocol.Message{
 		ID:      "storage-patch",
@@ -1952,6 +1958,18 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	}
 	if string(stored) != `{"title":"Published"}` {
 		t.Fatalf("unexpected room engine storage after store-backed patch: %s", stored)
+	}
+
+	if err := service.handleStorageGet(sender, protocol.Message{
+		ID:   "storage-get-store",
+		Room: "tenant-a:room-1",
+	}); err != nil {
+		t.Fatalf("store backed storage get: %v", err)
+	}
+	if got := readRuntimeOutbound(t, sender); got.T != "STORAGE_SNAPSHOT" || got.ID != "storage-get-store" {
+		t.Fatalf("unexpected store backed storage snapshot: %+v", got)
+	} else if meta, ok := got.Meta.(map[string]any); !ok || meta["seq"] != uint64(1) {
+		t.Fatalf("expected sequenced store backed storage snapshot metadata, got %#v", got.Meta)
 	}
 
 	if err := service.handleStoragePatch(sender, protocol.Message{
@@ -2903,13 +2921,18 @@ func (s *fakeRuntimeStore) ListRoomSubscriptionSettings(context.Context, string,
 }
 
 func (s *fakeRuntimeStore) GetStorage(context.Context, string) (json.RawMessage, error) {
+	document, _, err := s.GetStorageWithSequence(context.Background(), "")
+	return document, err
+}
+
+func (s *fakeRuntimeStore) GetStorageWithSequence(context.Context, string) (json.RawMessage, uint64, error) {
 	if s.getStorageErr != nil {
-		return nil, s.getStorageErr
+		return nil, 0, s.getStorageErr
 	}
 	if s.storage == nil {
-		return nil, cluster.ErrStorageNotFound
+		return nil, 0, cluster.ErrStorageNotFound
 	}
-	return append(json.RawMessage(nil), s.storage...), nil
+	return append(json.RawMessage(nil), s.storage...), s.storageSequence, nil
 }
 
 func (s *fakeRuntimeStore) SetStorage(_ context.Context, _ string, document json.RawMessage) (json.RawMessage, error) {
