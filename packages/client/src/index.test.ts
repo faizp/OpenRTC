@@ -9,6 +9,7 @@ import {
   OPENRTC_NOTIFICATION_EVENTS,
   OPENRTC_ROOM_PERMISSIONS,
   accessMatrixPermissions,
+  accessMatrixPolicy,
   accessMatrixRoomAccesses,
   accessMatrixScope,
   accessMatrixScopes,
@@ -110,6 +111,78 @@ assert.deepEqual(accessMatrixRoomAccesses({
   usersAccesses: {
     "user-denied": [],
     "user-storage": [OPENRTC_ROOM_PERMISSIONS.storageWrite],
+  },
+  groupsAccesses: {
+    editors: [
+      OPENRTC_ROOM_PERMISSIONS.roomWrite,
+      OPENRTC_ROOM_PERMISSIONS.storageWrite,
+      OPENRTC_ROOM_PERMISSIONS.commentsWrite,
+    ],
+  },
+});
+const editorAccessPolicy = accessMatrixPolicy({
+  subject: {
+    room: "write",
+    storage: "write",
+    comments: "write",
+  },
+  roomPattern: "tenant-a:*",
+  roomAccesses: {
+    default: {
+      room: "read",
+      storage: "read",
+    },
+    users: {
+      "blocked-user": {
+        room: "none",
+        storage: "none",
+        comments: "none",
+      },
+    },
+    groups: {
+      editors: {
+        room: "write",
+        storage: "write",
+        comments: "write",
+      },
+    },
+  },
+});
+assert.deepEqual(editorAccessPolicy.subjectPermissions, [
+  OPENRTC_ROOM_PERMISSIONS.roomWrite,
+  OPENRTC_ROOM_PERMISSIONS.storageWrite,
+  OPENRTC_ROOM_PERMISSIONS.commentsWrite,
+]);
+assert.deepEqual(editorAccessPolicy.subjectScopes, [
+  "room:write:tenant-a:*",
+  "storage:write:tenant-a:*",
+  "comments:write:tenant-a:*",
+]);
+assert.equal(editorAccessPolicy.subjectScope, "room:write:tenant-a:* storage:write:tenant-a:* comments:write:tenant-a:*");
+assert.deepEqual(editorAccessPolicy.tokenClaims, {
+  scope: "room:write:tenant-a:* storage:write:tenant-a:* comments:write:tenant-a:*",
+});
+assert.deepEqual(editorAccessPolicy.devClientTokenOptions, { access: "grants" });
+assert.deepEqual(editorAccessPolicy.roomInput({ id: "tenant-a:canvas-1", metadata: { type: "whiteboard" } }), {
+  id: "tenant-a:canvas-1",
+  metadata: { type: "whiteboard" },
+  defaultAccesses: [OPENRTC_ROOM_PERMISSIONS.roomRead, OPENRTC_ROOM_PERMISSIONS.storageRead],
+  usersAccesses: {
+    "blocked-user": [],
+  },
+  groupsAccesses: {
+    editors: [
+      OPENRTC_ROOM_PERMISSIONS.roomWrite,
+      OPENRTC_ROOM_PERMISSIONS.storageWrite,
+      OPENRTC_ROOM_PERMISSIONS.commentsWrite,
+    ],
+  },
+});
+assert.deepEqual(editorAccessPolicy.roomUpdate({ metadata: { archived: false } }), {
+  metadata: { archived: false },
+  defaultAccesses: [OPENRTC_ROOM_PERMISSIONS.roomRead, OPENRTC_ROOM_PERMISSIONS.storageRead],
+  usersAccesses: {
+    "blocked-user": [],
   },
   groupsAccesses: {
     editors: [

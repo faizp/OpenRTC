@@ -516,6 +516,23 @@ export interface OpenRTCRoomAccesses {
   groupsAccesses?: Record<string, OpenRTCRoomPermission[]>;
 }
 
+export interface OpenRTCAccessPolicyOptions {
+  subject: OpenRTCPermissionMatrix;
+  roomPattern: string;
+  roomAccesses?: OpenRTCRoomAccessMatrix;
+}
+
+export interface OpenRTCAccessPolicy {
+  subjectPermissions: OpenRTCRoomPermission[];
+  subjectScopes: OpenRTCRoomPermissionScope[];
+  subjectScope: string;
+  tokenClaims: { scope: string };
+  roomAccesses: OpenRTCRoomAccesses;
+  devClientTokenOptions: Pick<OpenRTCDevTokenOptions, "access">;
+  roomInput(input: Pick<OpenRTCAdminRoomInput, "id" | "metadata">): OpenRTCAdminRoomInput;
+  roomUpdate(input?: Pick<OpenRTCAdminRoomUpdate, "metadata">): OpenRTCAdminRoomUpdate;
+}
+
 export type OpenRTCRoomQueryScalar = string | number | boolean | null;
 
 export interface OpenRTCRoomQueryExists {
@@ -725,6 +742,33 @@ export function accessMatrixRoomAccesses(matrix: OpenRTCRoomAccessMatrix): OpenR
     accesses.groupsAccesses = groupsAccesses;
   }
   return accesses;
+}
+
+export function accessMatrixPolicy(options: OpenRTCAccessPolicyOptions): OpenRTCAccessPolicy {
+  const subjectPermissions = accessMatrixPermissions(options.subject);
+  const subjectScopes = accessMatrixScopes(options.subject, options.roomPattern);
+  const subjectScope = subjectScopes.join(" ");
+  const roomAccesses = options.roomAccesses ? accessMatrixRoomAccesses(options.roomAccesses) : {};
+  return {
+    subjectPermissions,
+    subjectScopes,
+    subjectScope,
+    tokenClaims: { scope: subjectScope },
+    roomAccesses,
+    devClientTokenOptions: { access: "grants" },
+    roomInput(input) {
+      return {
+        ...input,
+        ...roomAccesses,
+      };
+    },
+    roomUpdate(input = {}) {
+      return {
+        ...input,
+        ...roomAccesses,
+      };
+    },
+  };
 }
 
 function addMatrixPermission(

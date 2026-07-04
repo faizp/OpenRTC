@@ -305,8 +305,7 @@ integrators can verify multi-client realtime behavior before embedding OpenRTC.
 ```ts
 import {
   OpenRTCAdminClient,
-  accessMatrixRoomAccesses,
-  accessMatrixScope,
+  accessMatrixPolicy,
   addCommentMention,
   addCommentReaction,
   roomQuery,
@@ -317,10 +316,14 @@ const admin = new OpenRTCAdminClient({
   token: process.env.OPENRTC_ADMIN_TOKEN!,
 });
 
-await admin.createRoom({
-  id: "tenant-a:canvas-1",
-  metadata: { type: "whiteboard", archived: false },
-  ...accessMatrixRoomAccesses({
+const canvasPolicy = accessMatrixPolicy({
+  subject: {
+    room: "write",
+    storage: "write",
+    comments: "write",
+  },
+  roomPattern: "tenant-a:*",
+  roomAccesses: {
     default: {
       room: "read",
       storage: "read",
@@ -336,14 +339,19 @@ await admin.createRoom({
         comments: "write",
       },
     },
-  }),
+  },
 });
 
-const editorTokenScope = accessMatrixScope({
-  room: "write",
-  storage: "write",
-  comments: "write",
-}, "tenant-a:*");
+await admin.createRoom(canvasPolicy.roomInput({
+  id: "tenant-a:canvas-1",
+  metadata: { type: "whiteboard", archived: false },
+}));
+
+const editorTokenClaims = {
+  sub: "user-1",
+  groupIds: ["editors"],
+  ...canvasPolicy.tokenClaims,
+};
 
 const editableWhiteboards = await admin.listRooms({
   prefix: "tenant-a:",
