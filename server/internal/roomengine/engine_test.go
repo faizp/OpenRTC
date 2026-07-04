@@ -1547,6 +1547,49 @@ func TestEngineStorageMutationPlans(t *testing.T) {
 	if string(loaded) != `{"liveblocksType":"LiveObject","data":{"title":"Remote"}}` {
 		t.Fatalf("remote plan should record compacted storage, got %s", loaded)
 	}
+
+	deletePlan, err := engine.DeleteStorageMutationPlan("room-a", StorageMutationOptions{
+		OriginConnID: "conn-sender",
+	}, StorageEventOptions{
+		OriginNode:          "node-a",
+		ExcludeSenderConnID: "conn-sender",
+	})
+	if err != nil {
+		t.Fatalf("delete storage mutation plan: %v", err)
+	}
+	if deletePlan.Mutation.Kind != StorageMutationDelete || deletePlan.Mutation.Sequence != 7 || len(deletePlan.Mutation.Document) != 0 {
+		t.Fatalf("unexpected delete plan mutation: %+v", deletePlan.Mutation)
+	}
+	if deletePlan.Event.Sequence != 7 || deletePlan.Fanout.Sequence != 7 || !reflect.DeepEqual(deletePlan.Fanout.TargetConnIDs, []string{"conn-peer"}) {
+		t.Fatalf("unexpected delete plan event/fanout: event=%+v fanout=%+v", deletePlan.Event, deletePlan.Fanout)
+	}
+	if _, err := engine.GetStorage("room-a"); !errors.Is(err, cluster.ErrStorageNotFound) {
+		t.Fatalf("expected storage not found after delete plan, got %v", err)
+	}
+	if _, err := engine.SetStorageMutationPlan("room-a", json.RawMessage(`{"liveblocksType":"LiveObject","data":{"title":"Stale"}}`), StorageMutationOptions{
+		ExpectedSequence:    6,
+		ExpectedSequenceSet: true,
+	}, StorageEventOptions{}); !errors.Is(err, cluster.ErrStorageConflict) {
+		t.Fatalf("expected stale recreate conflict after delete, got %v", err)
+	}
+
+	remoteDeleteEvent, err := NewStorageEvent("room-a", StorageMutation{
+		Kind:     StorageMutationDelete,
+		Sequence: 9,
+	}, StorageEventOptions{
+		OriginNode: "node-b",
+		Sequence:   9,
+	})
+	if err != nil {
+		t.Fatalf("new remote delete storage event: %v", err)
+	}
+	remoteDeletePlan, err := engine.RecordStorageEvent(remoteDeleteEvent, 0)
+	if err != nil {
+		t.Fatalf("record remote delete storage event: %v", err)
+	}
+	if remoteDeletePlan.Mutation.Kind != StorageMutationDelete || remoteDeletePlan.Fanout.Sequence != 9 || remoteDeletePlan.Event.Sequence != 9 {
+		t.Fatalf("unexpected remote delete plan: %+v event=%+v fanout=%+v", remoteDeletePlan.Mutation, remoteDeletePlan.Event, remoteDeletePlan.Fanout)
+	}
 }
 
 func TestNewStorageEvent(t *testing.T) {
@@ -1620,6 +1663,22 @@ func TestNewStorageEvent(t *testing.T) {
 	}
 	if string(decodedPlanMutation.Document) != `{"liveblocksType":"LiveObject","data":{"title":"Published"}}` || string(decodedPlanMutation.Operations[0].Value) != `"Published"` {
 		t.Fatalf("unexpected storage mutation event plan payload: %+v", decodedPlanMutation)
+	}
+	deletePlan, err := NewStorageMutationEventPlan("room-a", StorageMutationDelete, json.RawMessage(`{"ignored":true}`), planOperations, StorageMutationOptions{
+		Sequence: 11,
+	}, StorageEventOptions{
+		OriginNode: "admin:node-a",
+		Sequence:   11,
+	})
+	if err != nil {
+		t.Fatalf("new storage delete event plan: %v", err)
+	}
+	var decodedDeleteMutation StorageMutation
+	if err := json.Unmarshal(deletePlan.Event.Payload, &decodedDeleteMutation); err != nil {
+		t.Fatalf("decode storage delete event plan payload: %v", err)
+	}
+	if decodedDeleteMutation.Kind != StorageMutationDelete || decodedDeleteMutation.Sequence != 11 || len(decodedDeleteMutation.Document) != 0 || len(decodedDeleteMutation.Operations) != 0 {
+		t.Fatalf("unexpected storage delete event plan payload: %+v", decodedDeleteMutation)
 	}
 	if _, err := NewStorageMutationEventPlan("room-a", "unknown", json.RawMessage(`{}`), nil, StorageMutationOptions{}, StorageEventOptions{}); !errors.Is(err, ErrStorageMutationKind) {
 		t.Fatalf("unknown storage mutation kind error = %v", err)

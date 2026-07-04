@@ -323,6 +323,11 @@ type StorageWriteOptions struct {
 	ExpectedSequenceSet bool
 }
 
+type StorageDeleteOptions struct {
+	ExpectedSequence    uint64
+	ExpectedSequenceSet bool
+}
+
 type SequencedStorageReader interface {
 	GetStorageWithSequence(ctx context.Context, room string) (json.RawMessage, uint64, error)
 }
@@ -330,6 +335,10 @@ type SequencedStorageReader interface {
 type SequencedStorageWriter interface {
 	SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error)
 	ApplyStoragePatchWithOptions(ctx context.Context, room string, operations []JSONPatchOperation, options StorageWriteOptions) (json.RawMessage, uint64, error)
+}
+
+type SequencedStorageDeleter interface {
+	DeleteStorageWithOptions(ctx context.Context, room string, options StorageDeleteOptions) (uint64, error)
 }
 
 type RedisStore struct {
@@ -1216,14 +1225,45 @@ func (s *RedisStore) SetStorage(ctx context.Context, room string, document json.
 }
 
 func (s *RedisStore) DeleteStorage(ctx context.Context, room string) error {
-	deleted, err := s.client.Del(ctx, roomStorageKey(room), roomStorageSequenceKey(room)).Result()
+	_, err := s.DeleteStorageWithOptions(ctx, room, StorageDeleteOptions{})
+	return err
+}
+
+func (s *RedisStore) DeleteStorageWithOptions(ctx context.Context, room string, options StorageDeleteOptions) (uint64, error) {
+	key := roomStorageKey(room)
+	sequenceKey := roomStorageSequenceKey(room)
+	var sequence uint64
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		exists, err := tx.Exists(ctx, key).Result()
+		if err != nil {
+			return err
+		}
+		if exists == 0 {
+			return ErrStorageNotFound
+		}
+		currentSequence, err := redisStorageSequence(ctx, tx, sequenceKey)
+		if err != nil {
+			return err
+		}
+		if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+			return fmt.Errorf("%w: expected %d, got %d", ErrStorageConflict, options.ExpectedSequence, currentSequence)
+		}
+		var increment *redis.IntCmd
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key)
+			increment = pipe.Incr(ctx, sequenceKey)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		sequence = uint64(increment.Val())
+		return nil
+	}, key, sequenceKey)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if deleted == 0 {
-		return ErrStorageNotFound
-	}
-	return nil
+	return sequence, nil
 }
 
 func (s *RedisStore) SetStorageWithOptions(ctx context.Context, room string, document json.RawMessage, options StorageWriteOptions) (json.RawMessage, uint64, error) {

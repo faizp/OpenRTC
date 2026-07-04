@@ -17,8 +17,9 @@ var (
 )
 
 const (
-	StorageMutationSet   = "set"
-	StorageMutationPatch = "patch"
+	StorageMutationSet    = "set"
+	StorageMutationPatch  = "patch"
+	StorageMutationDelete = "delete"
 
 	MembershipMutationJoin  = "join"
 	MembershipMutationLeave = "leave"
@@ -274,7 +275,7 @@ type StorageMutation struct {
 	OriginConnID string                       `json:"origin_conn_id,omitempty"`
 	Sequence     uint64                       `json:"seq,omitempty"`
 	Operations   []cluster.JSONPatchOperation `json:"operations,omitempty"`
-	Document     json.RawMessage              `json:"document"`
+	Document     json.RawMessage              `json:"document,omitempty"`
 }
 
 type StorageFanout struct {
@@ -1413,11 +1414,65 @@ func (e *Engine) ApplyStoragePatchMutationPlan(room string, operations []cluster
 	return e.StorageMutationPlan(room, mutation, eventOptions)
 }
 
+func (e *Engine) DeleteStorageWithOptions(room string, options StorageMutationOptions) (uint64, error) {
+	return e.deleteStorageWithOptions(room, options, true)
+}
+
+func (e *Engine) deleteStorageWithOptions(room string, options StorageMutationOptions, requireExisting bool) (uint64, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	current := e.storage[room]
+	if requireExisting && current == nil {
+		return 0, cluster.ErrStorageNotFound
+	}
+	currentSequence := e.storageSeq[room]
+	if options.ExpectedSequenceSet && currentSequence != options.ExpectedSequence {
+		return 0, cluster.ErrStorageConflict
+	}
+	if options.Sequence > 0 && options.Sequence <= currentSequence {
+		return 0, cluster.ErrStorageConflict
+	}
+	sequence := options.Sequence
+	if sequence == 0 {
+		sequence = currentSequence + 1
+	}
+	delete(e.storage, room)
+	e.storageSeq[room] = sequence
+	return sequence, nil
+}
+
+func (e *Engine) DeleteStorageMutation(room string, options StorageMutationOptions) (StorageMutation, error) {
+	sequence, err := e.DeleteStorageWithOptions(room, options)
+	if err != nil {
+		return StorageMutation{}, err
+	}
+	options.Sequence = sequence
+	return newStorageMutation(StorageMutationDelete, nil, nil, options), nil
+}
+
+func (e *Engine) DeleteStorageMutationPlan(room string, mutationOptions StorageMutationOptions, eventOptions StorageEventOptions) (StorageMutationPlan, error) {
+	mutation, err := e.DeleteStorageMutation(room, mutationOptions)
+	if err != nil {
+		return StorageMutationPlan{}, err
+	}
+	eventOptions.Sequence = mutation.Sequence
+	return e.StorageMutationPlan(room, mutation, eventOptions)
+}
+
 func (e *Engine) RecordStorageMutation(room string, kind string, document json.RawMessage, operations []cluster.JSONPatchOperation, options StorageMutationOptions) (StorageMutation, error) {
 	if !validStorageMutationKind(kind) {
 		return StorageMutation{}, ErrStorageMutationKind
 	}
 	options.ExpectedSequenceSet = false
+	if kind == StorageMutationDelete {
+		sequence, err := e.deleteStorageWithOptions(room, options, false)
+		if err != nil {
+			return StorageMutation{}, err
+		}
+		options.Sequence = sequence
+		return NewStorageMutation(StorageMutationDelete, nil, nil, options)
+	}
 	stored, sequence, err := e.SetStorageWithOptions(room, document, options)
 	if err != nil {
 		return StorageMutation{}, err
@@ -1465,8 +1520,11 @@ func NewStorageMutation(kind string, document json.RawMessage, operations []clus
 	if !validStorageMutationKind(kind) {
 		return StorageMutation{}, ErrStorageMutationKind
 	}
-	if kind == StorageMutationSet {
+	if kind == StorageMutationSet || kind == StorageMutationDelete {
 		operations = nil
+	}
+	if kind == StorageMutationDelete {
+		document = nil
 	}
 	return newStorageMutation(kind, document, operations, options), nil
 }
@@ -1529,7 +1587,7 @@ func (e *Engine) removeRoomMemberLocked(connID string, room string) {
 }
 
 func validStorageMutationKind(kind string) bool {
-	return kind == StorageMutationSet || kind == StorageMutationPatch
+	return kind == StorageMutationSet || kind == StorageMutationPatch || kind == StorageMutationDelete
 }
 
 func validClientYJSEventKind(kind cluster.YJSEventKind) bool {

@@ -2065,6 +2065,36 @@ func TestRuntimeStorageStoreBackedBranches(t *testing.T) {
 	if string(stored) != `{"title":"Remote"}` {
 		t.Fatalf("unexpected room engine storage after remote mutation: %s", stored)
 	}
+
+	remoteDeletePayload, err := json.Marshal(roomengine.StorageMutation{
+		Kind:     roomengine.StorageMutationDelete,
+		Sequence: 43,
+	})
+	if err != nil {
+		t.Fatalf("marshal remote storage delete mutation: %v", err)
+	}
+	service.handleClusterEvent(cluster.PublishedEvent{
+		Room:                "tenant-a:room-1",
+		Event:               storageClusterEvent,
+		Payload:             remoteDeletePayload,
+		ExcludeSenderConnID: sender.id,
+		OriginNode:          "node-b",
+		Sequence:            43,
+	})
+	if got := readRuntimeOutbound(t, clusterReceiver); got.T != "STORAGE_UPDATE" {
+		t.Fatalf("expected storage delete update from cluster event, got %+v", got)
+	} else {
+		if meta, ok := got.Meta.(map[string]any); !ok || meta["seq"] != uint64(43) {
+			t.Fatalf("expected sequenced cluster storage delete metadata, got %#v", got.Meta)
+		}
+		update, ok := got.Payload.(roomengine.StorageMutation)
+		if !ok || update.Kind != roomengine.StorageMutationDelete || len(update.Document) != 0 {
+			t.Fatalf("unexpected storage delete update payload: %#v", got.Payload)
+		}
+	}
+	if _, err := service.roomEngine().GetStorage("tenant-a:room-1"); !errors.Is(err, cluster.ErrStorageNotFound) {
+		t.Fatalf("expected remote storage delete to clear room engine storage, got %v", err)
+	}
 }
 
 func TestRuntimeNotificationDeltaTargetsSubjectConnections(t *testing.T) {

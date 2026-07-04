@@ -1888,8 +1888,43 @@ func TestRedisStorageLifecycleAndPatch(t *testing.T) {
 		t.Fatalf("expected oversized patch failure, got %v", err)
 	}
 
+	if _, err := store.DeleteStorageWithOptions(ctx, "tenant-a:doc-1", StorageDeleteOptions{
+		ExpectedSequence:    1,
+		ExpectedSequenceSet: true,
+	}); !errors.Is(err, ErrStorageConflict) {
+		t.Fatalf("expected stale storage delete conflict, got %v", err)
+	}
+	deleteSequence, err := store.DeleteStorageWithOptions(ctx, "tenant-a:doc-1", StorageDeleteOptions{
+		ExpectedSequence:    2,
+		ExpectedSequenceSet: true,
+	})
+	if err != nil {
+		t.Fatalf("delete storage with sequence: %v", err)
+	}
+	if deleteSequence != 3 {
+		t.Fatalf("expected delete storage sequence 3, got %d", deleteSequence)
+	}
+	if _, err := store.GetStorage(ctx, "tenant-a:doc-1"); !errors.Is(err, ErrStorageNotFound) {
+		t.Fatalf("expected storage not found after delete, got %v", err)
+	}
+	if _, _, err := store.SetStorageWithOptions(ctx, "tenant-a:doc-1", json.RawMessage(`{"meta":{"title":"Stale recreate"}}`), StorageWriteOptions{
+		ExpectedSequence:    2,
+		ExpectedSequenceSet: true,
+	}); !errors.Is(err, ErrStorageConflict) {
+		t.Fatalf("expected stale recreate conflict after delete, got %v", err)
+	}
+	recreated, sequence, err := store.SetStorageWithOptions(ctx, "tenant-a:doc-1", json.RawMessage(`{"meta":{"title":"Recreated"}}`), StorageWriteOptions{
+		ExpectedSequence:    3,
+		ExpectedSequenceSet: true,
+	})
+	if err != nil {
+		t.Fatalf("recreate storage after delete: %v", err)
+	}
+	if string(recreated) != `{"meta":{"title":"Recreated"}}` || sequence != 4 {
+		t.Fatalf("unexpected recreated storage: document=%s sequence=%d", recreated, sequence)
+	}
 	if err := store.DeleteStorage(ctx, "tenant-a:doc-1"); err != nil {
-		t.Fatalf("delete storage: %v", err)
+		t.Fatalf("delete recreated storage: %v", err)
 	}
 	if err := store.DeleteStorage(ctx, "tenant-a:doc-1"); !errors.Is(err, ErrStorageNotFound) {
 		t.Fatalf("expected missing storage delete failure, got %v", err)

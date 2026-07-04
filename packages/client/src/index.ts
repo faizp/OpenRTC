@@ -654,7 +654,7 @@ export type OpenRTCLiveMap<TData extends Record<string, unknown> = Record<string
 export type OpenRTCLiveStorageNodeValue = OpenRTCLiveObject | OpenRTCLiveList | OpenRTCLiveMap;
 
 export type OpenRTCStorageStatus = "not-loaded" | "loading" | "synchronizing" | "synchronized" | "error";
-export type OpenRTCStorageMutationKind = "set" | "patch";
+export type OpenRTCStorageMutationKind = "set" | "patch" | "delete";
 export type OpenRTCStorageEventSource = "snapshot" | "optimistic" | "ack" | "remote" | "repair" | "rollback";
 
 export interface OpenRTCStorageMutationOptions {
@@ -2890,8 +2890,9 @@ export class OpenRTCClient {
       }
       this.storageSequenceByRoom.set(room, options.sequence);
     }
-    this.applyStorageMessage(room, document, options);
-    this.reapplyPendingStorageMutations(room, document);
+    const appliedDocument = storageEventDocument(document, options);
+    this.applyStorageMessage(room, appliedDocument, options);
+    this.reapplyPendingStorageMutations(room, appliedDocument);
     return true;
   }
 
@@ -2900,7 +2901,11 @@ export class OpenRTCClient {
     document: unknown,
     options: Omit<OpenRTCStorageEvent, "room" | "document">,
   ): void {
-    this.storageByRoom.set(room, document);
+    if (options.kind === "delete" && document === undefined) {
+      this.storageByRoom.delete(room);
+    } else {
+      this.storageByRoom.set(room, document);
+    }
     if (options.source === "rollback") {
       this.setStorageStatus(room, "error");
     } else if (options.source !== "optimistic") {
@@ -4379,7 +4384,14 @@ function asPresenceState(value: unknown): PresenceState {
 }
 
 function asStorageMutationKind(value: unknown): OpenRTCStorageMutationKind | undefined {
-  return value === "set" || value === "patch" ? value : undefined;
+  return value === "set" || value === "patch" || value === "delete" ? value : undefined;
+}
+
+function storageEventDocument(
+  document: unknown,
+  options: Omit<OpenRTCStorageEvent, "room" | "document">,
+): unknown {
+  return options.kind === "delete" && (document === null || document === undefined) ? undefined : document;
 }
 
 function storageProbePath(document: unknown): string {

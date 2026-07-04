@@ -2630,6 +2630,16 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	if deleteStorageResp.Code != http.StatusNoContent {
 		t.Fatalf("expected delete storage 204, got %d", deleteStorageResp.Code)
 	}
+	if len(store.publishedEvents) != 3 || store.publishedEvents[2].Event != cluster.EventStorageUpdate || store.publishedEvents[2].Room != "tenant-a:room-1" || store.publishedEvents[2].Sequence != 3 {
+		t.Fatalf("expected storage delete publish event, got %#v", store.publishedEvents)
+	}
+	var deleteMutation roomengine.StorageMutation
+	if err := json.Unmarshal(store.publishedEvents[2].Payload, &deleteMutation); err != nil {
+		t.Fatalf("decode storage delete publish payload: %v", err)
+	}
+	if deleteMutation.Kind != roomengine.StorageMutationDelete || len(deleteMutation.Document) != 0 || len(deleteMutation.Operations) != 0 {
+		t.Fatalf("unexpected storage delete publish payload: %+v", deleteMutation)
+	}
 
 	readOnlyVerifier, readOnlyToken, readOnlyCleanup := newAdminTestVerifier(t, map[string]any{
 		"tenant": "tenant-a",

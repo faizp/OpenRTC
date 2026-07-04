@@ -235,9 +235,9 @@
         "payload": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "document"],
+          "required": ["kind"],
           "properties": {
-            "kind": { "enum": ["set", "patch"] },
+            "kind": { "enum": ["set", "patch", "delete"] },
             "op_id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "origin_conn_id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "seq": { "type": "integer", "minimum": 1 },

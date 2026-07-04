@@ -1143,6 +1143,26 @@ assert.deepEqual(storageEvents.at(-1), {
   sequence: 3,
 });
 
+roomSocket.receive({
+  t: "STORAGE_UPDATE",
+  room: "tenant-a:room-api",
+  meta: { seq: 4 },
+  payload: {
+    kind: "delete",
+    origin_conn_id: "admin:node-a",
+  },
+});
+assert.equal(room.getStorageSequence(), 4);
+assert.equal(room.getStorageSnapshot(), undefined);
+assert.deepEqual(storageEvents.at(-1), {
+  room: "tenant-a:room-api",
+  document: undefined,
+  source: "remote",
+  kind: "delete",
+  sequence: 4,
+  originConnId: "admin:node-a",
+});
+
 offOthers();
 offMyPresence();
 offEvents();
