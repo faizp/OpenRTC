@@ -2129,12 +2129,37 @@ devSocket.receive({
     },
   },
 });
+await waitFor(
+  () =>
+    devSocket.sent.filter((item) => (JSON.parse(item) as Record<string, unknown>).t === "STORAGE_PATCH").length >= 2,
+  "expected realtime storage patch retry",
+);
+const realtimeRetryPatch = latestSentMessage(devSocket, "STORAGE_PATCH");
+assert.equal(realtimeRetryPatch.t, "STORAGE_PATCH");
+assert.deepEqual(realtimeRetryPatch.meta, { op_id: "dev-probe-storage-patch", expected_seq: 1 });
+assert.deepEqual(realtimeRetryPatch.payload, realtimePatch.payload);
+devSocket.receive({
+  t: "STORAGE_ACK",
+  id: realtimeRetryPatch.id,
+  room: "demo:canvas-1",
+  meta: { seq: 2 },
+  payload: {
+    kind: "patch",
+    op_id: "dev-probe-storage-patch",
+    document: {
+      liveblocksType: "LiveObject",
+      data: { title: "OpenRTC dev room", __openrtc_probe: { checked_at: "2026-07-04T00:00:00.000Z" } },
+    },
+  },
+});
 const realtimeProbe = await realtimeProbePromise;
 assert.equal(realtimeProbe.ok, true);
 assert.deepEqual(realtimeProbe.checks.map((check) => [check.name, check.ok]).at(-1), ["realtime", true]);
 assert.equal(realtimeProbe.snapshots.realtime?.connection_id, "dev-probe-conn");
 assert.equal(realtimeProbe.snapshots.realtime?.snapshot_sequence, 1);
 assert.equal(realtimeProbe.snapshots.realtime?.ack_sequence, 2);
+assert.equal(realtimeProbe.snapshots.realtime?.retry_ack_sequence, 2);
+assert.equal(realtimeProbe.snapshots.realtime?.idempotent_retry_acked, true);
 assert.equal(realtimeProbe.snapshots.realtime?.probe_path, "/data/__openrtc_probe");
 
 devClient.client.close();

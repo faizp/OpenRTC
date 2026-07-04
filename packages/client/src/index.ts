@@ -314,6 +314,8 @@ export interface OpenRTCDevRealtimeProbeSnapshot {
   storage_found: boolean;
   snapshot_sequence?: number;
   ack_sequence?: number;
+  retry_ack_sequence?: number;
+  idempotent_retry_acked: boolean;
   probe_path?: string;
 }
 
@@ -1604,12 +1606,14 @@ export async function runOpenRTCDevProbe(
         realtime.connected &&
           realtime.joined &&
           realtime.storage_found &&
-          (realtime.ack_sequence ?? 0) > (realtime.snapshot_sequence ?? 0),
+          (realtime.ack_sequence ?? 0) > (realtime.snapshot_sequence ?? 0) &&
+          realtime.idempotent_retry_acked,
         realtime.connected &&
           realtime.joined &&
           realtime.storage_found &&
-          (realtime.ack_sequence ?? 0) > (realtime.snapshot_sequence ?? 0)
-          ? "Runtime WebSocket join, storage snapshot, and sequenced storage patch completed"
+          (realtime.ack_sequence ?? 0) > (realtime.snapshot_sequence ?? 0) &&
+          realtime.idempotent_retry_acked
+          ? "Runtime WebSocket join, storage snapshot, sequenced storage patch, and idempotent retry completed"
           : "Runtime WebSocket realtime probe did not complete",
         realtime,
       );
@@ -1634,20 +1638,21 @@ async function runOpenRTCDevRealtimeProbe(
     const storage = await entry.room.getStorage();
     const snapshotSequence = entry.room.getStorageSequence();
     const probePath = storageProbePath(storage);
-    await entry.room.patchStorage(
-      [
-        {
-          op: "add",
-          path: probePath,
-          value: { checked_at: new Date().toISOString() },
-        },
-      ],
+    const operations: JSONPatchOperation[] = [
       {
-        opId: "dev-probe-storage-patch",
-        ...(snapshotSequence !== undefined ? { expectedSequence: snapshotSequence } : {}),
+        op: "add",
+        path: probePath,
+        value: { checked_at: new Date().toISOString() },
       },
-    );
+    ];
+    const mutationOptions: OpenRTCStorageMutationOptions = {
+      opId: "dev-probe-storage-patch",
+      ...(snapshotSequence !== undefined ? { expectedSequence: snapshotSequence } : {}),
+    };
+    await entry.room.patchStorage(operations, mutationOptions);
     const ackSequence = entry.room.getStorageSequence();
+    await entry.room.patchStorage(operations, mutationOptions);
+    const retryAckSequence = entry.room.getStorageSequence();
     return {
       connected: client.status === "open",
       ...(client.connId ? { connection_id: client.connId } : {}),
@@ -1655,6 +1660,8 @@ async function runOpenRTCDevRealtimeProbe(
       storage_found: storage !== undefined,
       ...(snapshotSequence !== undefined ? { snapshot_sequence: snapshotSequence } : {}),
       ...(ackSequence !== undefined ? { ack_sequence: ackSequence } : {}),
+      ...(retryAckSequence !== undefined ? { retry_ack_sequence: retryAckSequence } : {}),
+      idempotent_retry_acked: ackSequence !== undefined && retryAckSequence === ackSequence,
       probe_path: probePath,
     };
   } finally {

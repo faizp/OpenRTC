@@ -260,6 +260,24 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 				t.Errorf("write storage ack: %v", err)
 				return
 			}
+			retry := expectProbeWSMessage(t, ws, "STORAGE_PATCH", "dev-probe-storage-patch-retry")
+			if meta, ok := retry["meta"].(map[string]interface{}); !ok || meta["op_id"] != "dev-probe-storage-patch" || meta["expected_seq"] != float64(1) {
+				t.Errorf("expected retry storage patch to reuse op_id and expected_seq=1, got %#v", retry["meta"])
+			}
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":    "STORAGE_ACK",
+				"id":   "dev-probe-storage-patch-retry",
+				"room": "demo:room-1",
+				"meta": map[string]interface{}{"seq": 2},
+				"payload": map[string]interface{}{
+					"kind":     "patch",
+					"op_id":    "dev-probe-storage-patch",
+					"document": map[string]interface{}{"liveblocksType": "LiveObject", "data": map[string]interface{}{"title": "OpenRTC dev room"}},
+				},
+			}); err != nil {
+				t.Errorf("write storage retry ack: %v", err)
+				return
+			}
 			_, _ = readProbeWSMessage(ws)
 		}))
 		t.Cleanup(wsServer.Close)
@@ -292,7 +310,12 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	if !strings.Contains(dialedURL, "token=dev-token") {
 		t.Fatalf("expected realtime probe to dial with dev token, got %q", dialedURL)
 	}
-	if result.Snapshots.Realtime == nil || result.Snapshots.Realtime.ConnectionID != "probe-conn-1" || result.Snapshots.Realtime.SnapshotSequence != 1 || result.Snapshots.Realtime.AckSequence != 2 {
+	if result.Snapshots.Realtime == nil ||
+		result.Snapshots.Realtime.ConnectionID != "probe-conn-1" ||
+		result.Snapshots.Realtime.SnapshotSequence != 1 ||
+		result.Snapshots.Realtime.AckSequence != 2 ||
+		result.Snapshots.Realtime.RetryAckSequence != 2 ||
+		!result.Snapshots.Realtime.IdempotentRetryAcked {
 		t.Fatalf("unexpected realtime snapshot: %+v", result.Snapshots.Realtime)
 	}
 }

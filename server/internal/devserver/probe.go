@@ -90,13 +90,15 @@ type devConnectionsSnapshot struct {
 }
 
 type devRealtimeProbeSnapshot struct {
-	Connected        bool   `json:"connected"`
-	ConnectionID     string `json:"connection_id,omitempty"`
-	Joined           bool   `json:"joined"`
-	StorageFound     bool   `json:"storage_found"`
-	SnapshotSequence uint64 `json:"snapshot_sequence,omitempty"`
-	AckSequence      uint64 `json:"ack_sequence,omitempty"`
-	ProbePath        string `json:"probe_path,omitempty"`
+	Connected            bool   `json:"connected"`
+	ConnectionID         string `json:"connection_id,omitempty"`
+	Joined               bool   `json:"joined"`
+	StorageFound         bool   `json:"storage_found"`
+	SnapshotSequence     uint64 `json:"snapshot_sequence,omitempty"`
+	AckSequence          uint64 `json:"ack_sequence,omitempty"`
+	RetryAckSequence     uint64 `json:"retry_ack_sequence,omitempty"`
+	IdempotentRetryAcked bool   `json:"idempotent_retry_acked"`
+	ProbePath            string `json:"probe_path,omitempty"`
 }
 
 type devYJSRealtimeProbeSnapshot struct {
@@ -175,7 +177,7 @@ func parseProbeOptions(args []string, output io.Writer) (probeOptions, error) {
 	flags.StringVar(&opts.room, "room", "", "room to probe; defaults to the first advertised seed room")
 	flags.StringVar(&opts.restart, "restart", opts.restart, "optional restart drill: none, runtime, admin, or both")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write the full probe report as JSON")
-	flags.BoolVar(&opts.realtime, "realtime", false, "open the runtime WebSocket, join the room, read storage, and perform a sequenced storage patch")
+	flags.BoolVar(&opts.realtime, "realtime", false, "open the runtime WebSocket, join the room, read storage, perform a sequenced storage patch, and retry the same op_id")
 	flags.BoolVar(&opts.yjsRealtime, "yjs-realtime", false, "open the Yjs WebSocket, send a valid update frame, and verify dev Yjs inspection sees it")
 	flags.BoolVar(&opts.reconnect, "reconnect", false, "open a runtime WebSocket, restart the dev runtime, verify the old socket closes, reconnect, and rejoin the room")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall probe timeout")
@@ -391,14 +393,16 @@ func runProbe(ctx context.Context, opts probeOptions) (devProbeResult, error) {
 			result.Snapshots.Realtime = &snapshot
 			return probeCheck(
 				"realtime",
-				snapshot.Connected && snapshot.Joined && snapshot.StorageFound && snapshot.AckSequence > snapshot.SnapshotSequence,
+				realtimeProbeOK(snapshot),
 				probeRealtimeMessage(snapshot),
 				map[string]interface{}{
-					"connectionID":     snapshot.ConnectionID,
-					"storageFound":     snapshot.StorageFound,
-					"snapshotSequence": snapshot.SnapshotSequence,
-					"ackSequence":      snapshot.AckSequence,
-					"probePath":        snapshot.ProbePath,
+					"connectionID":         snapshot.ConnectionID,
+					"storageFound":         snapshot.StorageFound,
+					"snapshotSequence":     snapshot.SnapshotSequence,
+					"ackSequence":          snapshot.AckSequence,
+					"retryAckSequence":     snapshot.RetryAckSequence,
+					"idempotentRetryAcked": snapshot.IdempotentRetryAcked,
+					"probePath":            snapshot.ProbePath,
 				},
 			)
 		})
@@ -600,6 +604,31 @@ func runRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, 
 	if snapshot.AckSequence == 0 && snapshot.SnapshotSequence == 0 {
 		snapshot.AckSequence = 1
 	}
+
+	retryMessage := map[string]interface{}{
+		"t":       "STORAGE_PATCH",
+		"id":      "dev-probe-storage-patch-retry",
+		"room":    room,
+		"payload": patch,
+		"meta":    meta,
+	}
+	if err := writeProbeWSMessage(ws, retryMessage); err != nil {
+		return snapshot, fmt.Errorf("write storage patch retry: %w", err)
+	}
+	retryAck, err := readProbeWSMessage(ws)
+	if err != nil {
+		return snapshot, fmt.Errorf("read storage retry ack: %w", err)
+	}
+	if asStringFromMap(retryAck, "t") != "STORAGE_ACK" {
+		return snapshot, fmt.Errorf("expected retry STORAGE_ACK, got %s", asStringFromMap(retryAck, "t"))
+	}
+	if meta, _ := retryAck["meta"].(map[string]interface{}); meta != nil {
+		snapshot.RetryAckSequence = asUintFromMap(meta, "seq")
+	}
+	if snapshot.RetryAckSequence == 0 {
+		snapshot.RetryAckSequence = snapshot.AckSequence
+	}
+	snapshot.IdempotentRetryAcked = snapshot.AckSequence > 0 && snapshot.RetryAckSequence == snapshot.AckSequence
 
 	_ = writeProbeWSMessage(ws, map[string]interface{}{
 		"t":    "LEAVE",
@@ -1020,10 +1049,18 @@ func probeStorageMessage(expectSeedStorage bool) string {
 }
 
 func probeRealtimeMessage(snapshot devRealtimeProbeSnapshot) string {
-	if snapshot.Connected && snapshot.Joined && snapshot.StorageFound && snapshot.AckSequence > snapshot.SnapshotSequence {
-		return "Runtime WebSocket join, storage snapshot, and sequenced storage patch completed"
+	if realtimeProbeOK(snapshot) {
+		return "Runtime WebSocket join, storage snapshot, sequenced storage patch, and idempotent retry completed"
 	}
 	return "Runtime WebSocket realtime probe did not complete"
+}
+
+func realtimeProbeOK(snapshot devRealtimeProbeSnapshot) bool {
+	return snapshot.Connected &&
+		snapshot.Joined &&
+		snapshot.StorageFound &&
+		snapshot.AckSequence > snapshot.SnapshotSequence &&
+		snapshot.IdempotentRetryAcked
 }
 
 func probeYJSRealtimeMessage(snapshot devYJSRealtimeProbeSnapshot) string {

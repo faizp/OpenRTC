@@ -66,7 +66,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/yjs?room=demo:room-1` for durable and runtime-observed Yjs snapshot/update metadata.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
-- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills, JSON output, `--reconnect` for a runtime crash/reconnect/rejoin drill, `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch, and `--yjs-realtime` for a live Yjs WebSocket update check.
+- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills, JSON output, `--reconnect` for a runtime crash/reconnect/rejoin drill, `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch and duplicate `op_id` retry, and `--yjs-realtime` for a live Yjs WebSocket update check.
 - `openrtc dev token` fetches local client/admin JWTs from a terminal, defaulting to a token-only stdout value for command substitution, with `--json` for the full response and `--env` for shell-safe `OPENRTC_DEV_*` assignments.
 - `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, sockets, storage, Yjs metadata, event logs, restart/reconnect drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs.
 
