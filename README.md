@@ -249,8 +249,12 @@ The React package exposes the same lifecycle through `useEnterRoom`,
 `useLostConnectionListener`, `useRoomReconnect`, `useStorage`,
 `useStorageSelector`, `useStorageStatus`, `useStorageSequence`, `useSetStorage`, `usePatchStorage`,
 `useStoragePendingMutations`, `useSetLiveStorage`, `useUpdateLiveStorage`,
-`useMutateLiveStorage`, `useStorageMutation`, and `useStorageListener`. It also exports
-Liveblocks-style `Cursors`, `Cursor`, and `AvatarStack` components for apps that
+`useMutateLiveStorage`, `useStorageMutation`, `useMutation`, and
+`useStorageListener`. It also exports `RoomProvider`, `useCurrentRoom`, and
+`createRoomContext()` for Liveblocks-style room-bound hooks where components call
+`useOthers()`, `useStorage()`, and `useMutation()` without passing a room ID
+through every hook. It also exports Liveblocks-style `Cursors`, `Cursor`, and
+`AvatarStack` components for apps that
 want cursor tracking/rendering and collaborator stacks without building the UI
 from scratch. Cursor hooks and components return typed cursor peers with
 resolved `user`, `color`, and `mode` fields, and accept a `presenceKey` for apps
@@ -302,6 +306,50 @@ export function CanvasPresence() {
       </button>
       <Canvas onPing={() => broadcastWithAck({ type: "canvas.ping", at: Date.now() })} />
     </Cursors>
+  );
+}
+```
+
+For a room-context integration style, create bound hooks once and use them below
+the provider:
+
+```tsx
+import { createRoomContext } from "@openrtc/react";
+
+const {
+  RoomProvider,
+  useMutation,
+  useOthers,
+  useStorage,
+} = createRoomContext();
+
+export function CanvasRoom() {
+  return (
+    <RoomProvider
+      id="tenant-a:canvas-1"
+      initialPresence={{ cursor: null, user: { id: "user-1", name: "Ada" } }}
+    >
+      <CanvasToolbar />
+    </RoomProvider>
+  );
+}
+
+function CanvasToolbar() {
+  const others = useOthers();
+  const storage = useStorage<{ title?: string }>();
+  const rename = useMutation<{ title?: string }, [title: string], Promise<void>>(
+    async ({ updateMyPresence, setStorage, broadcastEvent }, title) => {
+      updateMyPresence({ editingTitle: title });
+      await setStorage({ title }, { opId: `rename:${title}` });
+      broadcastEvent({ type: "canvas.renamed", title });
+    },
+    [],
+  );
+
+  return (
+    <button type="button" onClick={() => rename("Review")}>
+      {storage?.title ?? "Untitled"} ({others.length})
+    </button>
   );
 }
 ```

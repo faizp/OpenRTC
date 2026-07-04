@@ -9,6 +9,7 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type Context,
   type DependencyList,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -49,6 +50,7 @@ import {
 } from "@openrtc/client";
 
 const OpenRTCContext = createContext<OpenRTCClient | null>(null);
+const OpenRTCRoomContext = createContext<OpenRTCRoom | null>(null);
 
 export type RoomPresenceSelector<T> = (presence: OpenRTCRoomPresence) => T;
 export type OtherSelector<T> = (other: PresencePeer) => T;
@@ -57,6 +59,13 @@ export type SelfSelector<T> = (self: PresencePeer) => T;
 export type MyPresenceSelector<T> = (presence: PresenceState) => T;
 export type StorageSelector<TDocument, TSelected> = (document: TDocument | undefined) => TSelected;
 export type StorageSelectorEquality<TSelected> = (previous: TSelected, next: TSelected) => boolean;
+
+export interface OpenRTCRoomProviderProps extends EnterRoomOptions {
+  id: string;
+  children: ReactNode;
+}
+
+export type RoomProviderProps = OpenRTCRoomProviderProps;
 
 export interface StorageSelectorOptions<TSelected> extends JoinOptions {
   isEqual?: StorageSelectorEquality<TSelected>;
@@ -78,6 +87,100 @@ export interface StorageMutationContext<TDocument = unknown> {
     mutation: OpenRTCLiveStorageMutationInput,
     options?: OpenRTCStorageMutationOptions,
   ): Promise<TDocument>;
+}
+
+export interface OpenRTCMutationContext<TDocument = unknown> extends StorageMutationContext<TDocument> {
+  room: OpenRTCRoom;
+  self: PresencePeer | undefined;
+  others: PresencePeer[];
+  myPresence: PresenceState;
+  setMyPresence(state: PresenceState): void;
+  updateMyPresence(patch: PresenceState): void;
+  broadcastEvent(event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions): string;
+  broadcastEventWithAck(
+    event: RoomBroadcastInput,
+    payload?: unknown,
+    options?: BroadcastOptions,
+  ): Promise<OpenRTCEvent>;
+}
+
+export interface OpenRTCRoomContextHooks {
+  RoomProvider(props: OpenRTCRoomProviderProps): ReactNode;
+  useRoom(): OpenRTCRoom;
+  useStatus(): ConnectionStatus;
+  useOthers(options?: JoinOptions): PresencePeer[];
+  useOthersMapped<T>(selector: OtherSelector<T>, options?: JoinOptions): T[];
+  useOthersConnectionIds(options?: JoinOptions): string[];
+  useOther<T = PresencePeer>(
+    connId: string,
+    selectorOrOptions?: OtherSelector<T> | JoinOptions,
+    options?: JoinOptions,
+  ): PresencePeer | T | undefined;
+  usePresence(options?: JoinOptions): OpenRTCRoomPresence;
+  useSelf<T = PresencePeer>(
+    selectorOrOptions?: SelfSelector<T> | JoinOptions,
+    options?: JoinOptions,
+  ): PresencePeer | T | undefined;
+  useMyPresence(options?: JoinOptions): [PresenceState, (patch: PresenceState) => void];
+  useMyPresenceSelector<T>(selector: MyPresenceSelector<T>, options?: JoinOptions): T;
+  useUpdateMyPresence(): (state: PresenceState) => void;
+  usePatchMyPresence(): (patch: PresenceState) => void;
+  useBroadcastEvent(): (event: RoomBroadcastInput, payload?: unknown, options?: BroadcastOptions) => string;
+  useBroadcastEventWithAck(): (
+    event: RoomBroadcastInput,
+    payload?: unknown,
+    options?: BroadcastOptions,
+  ) => Promise<OpenRTCEvent>;
+  useStorage<TDocument = unknown>(options?: JoinOptions): TDocument | undefined;
+  useStorageSelector<TDocument, TSelected>(
+    selector: StorageSelector<TDocument, TSelected>,
+    options?: StorageSelectorOptions<TSelected>,
+  ): TSelected;
+  useStorageStatus(): OpenRTCStorageStatus;
+  useStorageSequence(): number | undefined;
+  useStoragePendingMutations(): OpenRTCStoragePendingMutation[];
+  useSetStorage<TDocument = unknown>(): (
+    document: TDocument,
+    options?: OpenRTCStorageMutationOptions,
+  ) => Promise<TDocument>;
+  usePatchStorage<TDocument = unknown>(): (
+    operations: JSONPatchOperation[],
+    options?: OpenRTCStorageMutationOptions,
+  ) => Promise<TDocument>;
+  useSetLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(): (
+    data: TData | OpenRTCLiveObject<TData>,
+    options?: OpenRTCStorageMutationOptions,
+  ) => Promise<OpenRTCLiveObject<TData>>;
+  useUpdateLiveStorage<TData extends Record<string, unknown> = Record<string, unknown>>(): (
+    patch: Partial<TData>,
+    options?: OpenRTCStorageMutationOptions,
+  ) => Promise<OpenRTCLiveObject<TData>>;
+  useMutateLiveStorage<TDocument = OpenRTCLiveObject>(): (
+    mutation: OpenRTCLiveStorageMutationInput,
+    options?: OpenRTCStorageMutationOptions,
+  ) => Promise<TDocument>;
+  useStorageMutation<TDocument = unknown, Args extends unknown[] = [], TResult = void>(
+    mutation: (context: StorageMutationContext<TDocument>, ...args: Args) => TResult,
+    deps?: DependencyList,
+  ): (...args: Args) => TResult;
+  useMutation<TDocument = unknown, Args extends unknown[] = [], TResult = void>(
+    mutation: (context: OpenRTCMutationContext<TDocument>, ...args: Args) => TResult,
+    deps?: DependencyList,
+  ): (...args: Args) => TResult;
+  useStorageListener<TDocument = unknown>(callback: (event: OpenRTCStorageEvent<TDocument>) => void): void;
+  useEventListener(callback: (event: OpenRTCEvent) => void): void;
+  useCommentListener(callback: (event: OpenRTCCommentEvent) => void): void;
+  useLostConnectionListener(callback: (event: OpenRTCLostConnectionEvent) => void): void;
+  useRoomReconnect(): () => Promise<void>;
+  useSetCursor(): (cursor: OpenRTCCursor | null, options?: OpenRTCCursorOptions) => void;
+  useCursor(options?: CursorOptions): [
+    OpenRTCCursor | null,
+    (cursor: OpenRTCCursor | null, options?: OpenRTCCursorOptions) => void,
+  ];
+  useSelfCursor(options?: CursorOptions): OpenRTCCursor | null;
+  useCursors(options?: CursorOptions): OpenRTCCursorPeer[];
+  useOtherCursors(options?: CursorOptions): OpenRTCCursorPeer[];
+  useCursorsMapped<T>(selector: CursorSelector<T>, options?: CursorOptions): T[];
 }
 
 export interface CursorOptions extends JoinOptions {
@@ -150,6 +253,121 @@ export function useOpenRTC(): OpenRTCClient {
   return client;
 }
 
+export function RoomProvider(props: OpenRTCRoomProviderProps): ReactNode {
+  return renderRoomProvider(OpenRTCRoomContext, props);
+}
+
+export function useCurrentRoom(): OpenRTCRoom {
+  return useRoomFromContext(OpenRTCRoomContext, "useCurrentRoom");
+}
+
+export function createRoomContext(): OpenRTCRoomContextHooks {
+  return createRoomContextHooks(createContext<OpenRTCRoom | null>(null));
+}
+
+function createRoomContextHooks(context: Context<OpenRTCRoom | null>): OpenRTCRoomContextHooks {
+  function useBoundOther(connId: string, options?: JoinOptions): PresencePeer | undefined;
+  function useBoundOther<T>(connId: string, selector: OtherSelector<T>, options?: JoinOptions): T | undefined;
+  function useBoundOther<T>(
+    connId: string,
+    selectorOrOptions?: OtherSelector<T> | JoinOptions,
+    options: JoinOptions = {},
+  ): PresencePeer | T | undefined {
+    const room = useRoomFromContext(context, "useOther").id;
+    if (typeof selectorOrOptions === "function") {
+      return useOther(room, connId, selectorOrOptions, options);
+    }
+    return useOther(room, connId, selectorOrOptions);
+  }
+
+  function useBoundSelf(options?: JoinOptions): PresencePeer | undefined;
+  function useBoundSelf<T>(selector: SelfSelector<T>, options?: JoinOptions): T | undefined;
+  function useBoundSelf<T>(
+    selectorOrOptions?: SelfSelector<T> | JoinOptions,
+    options: JoinOptions = {},
+  ): PresencePeer | T | undefined {
+    const room = useRoomFromContext(context, "useSelf").id;
+    if (typeof selectorOrOptions === "function") {
+      return useSelf(room, selectorOrOptions, options);
+    }
+    return useSelf(room, selectorOrOptions);
+  }
+
+  return {
+    RoomProvider: (props) => renderRoomProvider(context, props),
+    useRoom: () => useRoomFromContext(context, "useRoom"),
+    useStatus: () => useRoomStatus(useRoomFromContext(context, "useStatus").id),
+    useOthers: (options = {}) => useOthers(useRoomFromContext(context, "useOthers").id, options),
+    useOthersMapped: (selector, options = {}) =>
+      useOthersMapped(useRoomFromContext(context, "useOthersMapped").id, selector, options),
+    useOthersConnectionIds: (options = {}) =>
+      useOthersConnectionIds(useRoomFromContext(context, "useOthersConnectionIds").id, options),
+    useOther: useBoundOther,
+    usePresence: (options = {}) => usePresence(useRoomFromContext(context, "usePresence").id, options),
+    useSelf: useBoundSelf,
+    useMyPresence: (options = {}) => useMyPresence(useRoomFromContext(context, "useMyPresence").id, options),
+    useMyPresenceSelector: (selector, options = {}) =>
+      useMyPresenceSelector(useRoomFromContext(context, "useMyPresenceSelector").id, selector, options),
+    useUpdateMyPresence: () => useUpdateMyPresence(useRoomFromContext(context, "useUpdateMyPresence").id),
+    usePatchMyPresence: () => usePatchMyPresence(useRoomFromContext(context, "usePatchMyPresence").id),
+    useBroadcastEvent: () => useBroadcastEvent(useRoomFromContext(context, "useBroadcastEvent").id),
+    useBroadcastEventWithAck: () =>
+      useBroadcastEventWithAck(useRoomFromContext(context, "useBroadcastEventWithAck").id),
+    useStorage: (options = {}) => useStorage(useRoomFromContext(context, "useStorage").id, options),
+    useStorageSelector: (selector, options = {}) =>
+      useStorageSelector(useRoomFromContext(context, "useStorageSelector").id, selector, options),
+    useStorageStatus: () => useStorageStatus(useRoomFromContext(context, "useStorageStatus").id),
+    useStorageSequence: () => useStorageSequence(useRoomFromContext(context, "useStorageSequence").id),
+    useStoragePendingMutations: () =>
+      useStoragePendingMutations(useRoomFromContext(context, "useStoragePendingMutations").id),
+    useSetStorage: () => useSetStorage(useRoomFromContext(context, "useSetStorage").id),
+    usePatchStorage: () => usePatchStorage(useRoomFromContext(context, "usePatchStorage").id),
+    useSetLiveStorage: () => useSetLiveStorage(useRoomFromContext(context, "useSetLiveStorage").id),
+    useUpdateLiveStorage: () => useUpdateLiveStorage(useRoomFromContext(context, "useUpdateLiveStorage").id),
+    useMutateLiveStorage: () => useMutateLiveStorage(useRoomFromContext(context, "useMutateLiveStorage").id),
+    useStorageMutation: (mutation, deps = []) =>
+      useStorageMutation(useRoomFromContext(context, "useStorageMutation").id, mutation, deps),
+    useMutation: (mutation, deps = []) => useMutation(useRoomFromContext(context, "useMutation").id, mutation, deps),
+    useStorageListener: (callback) =>
+      useStorageListener(useRoomFromContext(context, "useStorageListener").id, callback),
+    useEventListener: (callback) => useEventListener(useRoomFromContext(context, "useEventListener").id, callback),
+    useCommentListener: (callback) =>
+      useCommentListener(useRoomFromContext(context, "useCommentListener").id, callback),
+    useLostConnectionListener: (callback) =>
+      useLostConnectionListener(useRoomFromContext(context, "useLostConnectionListener").id, callback),
+    useRoomReconnect: () => useRoomReconnect(useRoomFromContext(context, "useRoomReconnect").id),
+    useSetCursor: () => useSetCursor(useRoomFromContext(context, "useSetCursor").id),
+    useCursor: (options = {}) => useCursor(useRoomFromContext(context, "useCursor").id, options),
+    useSelfCursor: (options = {}) => useSelfCursor(useRoomFromContext(context, "useSelfCursor").id, options),
+    useCursors: (options = {}) => useCursors(useRoomFromContext(context, "useCursors").id, options),
+    useOtherCursors: (options = {}) => useOtherCursors(useRoomFromContext(context, "useOtherCursors").id, options),
+    useCursorsMapped: (selector, options = {}) =>
+      useCursorsMapped(useRoomFromContext(context, "useCursorsMapped").id, selector, options),
+  };
+}
+
+function renderRoomProvider(context: Context<OpenRTCRoom | null>, props: OpenRTCRoomProviderProps): ReactNode {
+  const room = useEnterRoom(props.id, compactEnterRoomOptions(props));
+  return createElement(context.Provider, { value: room }, props.children);
+}
+
+function useRoomFromContext(context: Context<OpenRTCRoom | null>, hookName: string): OpenRTCRoom {
+  const room = useContext(context);
+  if (!room) {
+    throw new Error(`${hookName} must be used inside RoomProvider`);
+  }
+  return room;
+}
+
+function compactEnterRoomOptions(options: EnterRoomOptions = {}): EnterRoomOptions {
+  return {
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(options.cursor !== undefined ? { cursor: options.cursor } : {}),
+    ...(options.afterSequence !== undefined ? { afterSequence: options.afterSequence } : {}),
+    ...(options.initialPresence !== undefined ? { initialPresence: options.initialPresence } : {}),
+  };
+}
+
 export function useConnectionStatus(): ConnectionStatus {
   const client = useOpenRTC();
   const [status, setStatus] = useState<ConnectionStatus>(client.status);
@@ -171,18 +389,16 @@ export function useRoomHandle(room: string): OpenRTCRoom {
 export function useEnterRoom(room: string, options: EnterRoomOptions = {}): OpenRTCRoom {
   const client = useOpenRTC();
   const roomHandle = useRoomHandle(room);
-  const limit = options.limit;
-  const cursor = options.cursor;
   const initialPresence = useInitialPresence(room, options.initialPresence);
+  const enterOptions = compactEnterRoomOptions({
+    ...options,
+    ...(initialPresence !== undefined ? { initialPresence } : {}),
+  });
 
   useEffect(() => {
-    const entered = client.enterRoom(room, {
-      ...(limit !== undefined ? { limit } : {}),
-      ...(cursor !== undefined ? { cursor } : {}),
-      ...(initialPresence !== undefined ? { initialPresence } : {}),
-    });
+    const entered = client.enterRoom(room, enterOptions);
     return entered.leave;
-  }, [client, room, limit, cursor, initialPresence]);
+  }, [client, room, enterOptions.limit, enterOptions.cursor, enterOptions.afterSequence, enterOptions.initialPresence]);
 
   return roomHandle;
 }
@@ -190,14 +406,10 @@ export function useEnterRoom(room: string, options: EnterRoomOptions = {}): Open
 export function useRoom(room: string, options: JoinOptions = {}): OpenRTCRoomState {
   const client = useOpenRTC();
   const [state, setState] = useState<OpenRTCRoomState>(() => client.getRoomState(room));
-  const limit = options.limit;
-  const cursor = options.cursor;
+  const enterOptions = compactEnterRoomOptions(options);
 
   useEffect(() => {
-    const entered = client.enterRoom(room, {
-      ...(limit !== undefined ? { limit } : {}),
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    const entered = client.enterRoom(room, enterOptions);
     setState(client.getRoomState(room));
 
     const syncRoom = (next: OpenRTCRoomState): void => {
@@ -218,7 +430,7 @@ export function useRoom(room: string, options: JoinOptions = {}): OpenRTCRoomSta
       offPresence();
       entered.leave();
     };
-  }, [client, room, limit, cursor]);
+  }, [client, room, enterOptions.limit, enterOptions.cursor, enterOptions.afterSequence]);
 
   return state;
 }
@@ -308,14 +520,10 @@ export function useOther<T>(
 export function usePresence(room: string, options: JoinOptions = {}): OpenRTCRoomPresence {
   const client = useOpenRTC();
   const [state, setState] = useState<OpenRTCRoomPresence>(() => client.getPresence(room));
-  const limit = options.limit;
-  const cursor = options.cursor;
+  const enterOptions = compactEnterRoomOptions(options);
 
   useEffect(() => {
-    const entered = client.enterRoom(room, {
-      ...(limit !== undefined ? { limit } : {}),
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    const entered = client.enterRoom(room, enterOptions);
     setState(client.getPresence(room));
 
     const syncRoom = (next: OpenRTCRoomState): void => {
@@ -336,7 +544,7 @@ export function usePresence(room: string, options: JoinOptions = {}): OpenRTCRoo
       offPresence();
       entered.leave();
     };
-  }, [client, room, limit, cursor]);
+  }, [client, room, enterOptions.limit, enterOptions.cursor, enterOptions.afterSequence]);
 
   return state;
 }
@@ -395,15 +603,11 @@ export function useStorage<TDocument = unknown>(room: string, options: JoinOptio
   const client = useOpenRTC();
   const roomHandle = useRoomHandle(room);
   const [document, setDocument] = useState<TDocument | undefined>(() => roomHandle.getStorageSnapshot<TDocument>());
-  const limit = options.limit;
-  const cursor = options.cursor;
+  const enterOptions = compactEnterRoomOptions(options);
 
   useEffect(() => {
     let active = true;
-    const entered = client.enterRoom(room, {
-      ...(limit !== undefined ? { limit } : {}),
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    const entered = client.enterRoom(room, enterOptions);
     setDocument(roomHandle.getStorageSnapshot<TDocument>());
 
     const offStorage = roomHandle.subscribe("storage", (event) => {
@@ -423,7 +627,7 @@ export function useStorage<TDocument = unknown>(room: string, options: JoinOptio
       offStorage();
       entered.leave();
     };
-  }, [client, roomHandle, room, limit, cursor]);
+  }, [client, roomHandle, room, enterOptions.limit, enterOptions.cursor, enterOptions.afterSequence]);
 
   return document;
 }
@@ -445,17 +649,13 @@ export function useStorageSelector<TDocument, TSelected>(
   } | null>(null);
   selectorRef.current = selector;
   isEqualRef.current = options.isEqual ?? Object.is;
-  const limit = options.limit;
-  const cursor = options.cursor;
+  const enterOptions = compactEnterRoomOptions(options);
 
   useEffect(() => {
-    const entered = client.enterRoom(room, {
-      ...(limit !== undefined ? { limit } : {}),
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    const entered = client.enterRoom(room, enterOptions);
     void roomHandle.getStorage<TDocument>().catch(() => undefined);
     return entered.leave;
-  }, [client, roomHandle, room, limit, cursor]);
+  }, [client, roomHandle, room, enterOptions.limit, enterOptions.cursor, enterOptions.afterSequence]);
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => roomHandle.subscribe("storage", onStoreChange),
@@ -597,6 +797,38 @@ export function useStorageMutation<TDocument = unknown, Args extends unknown[] =
   return useCallback((...args: Args) => {
     return mutationRef.current(
       {
+        storage: roomHandle.getStorageSnapshot<TDocument>(),
+        setStorage: (document, options) => roomHandle.setStorage<TDocument>(document, options),
+        patchStorage: (operations, options) => roomHandle.patchStorage<TDocument>(operations, options),
+        setLiveStorage: (data, options) => roomHandle.setLiveStorage(data, options),
+        updateLiveStorage: (patch, options) => roomHandle.updateLiveStorage(patch, options),
+        mutateLiveStorage: (liveMutation, options) => roomHandle.mutateLiveStorage(liveMutation, options),
+      },
+      ...args,
+    );
+  }, [roomHandle, ...deps]);
+}
+
+export function useMutation<TDocument = unknown, Args extends unknown[] = [], TResult = void>(
+  room: string,
+  mutation: (context: OpenRTCMutationContext<TDocument>, ...args: Args) => TResult,
+  deps: DependencyList = [],
+): (...args: Args) => TResult {
+  const roomHandle = useRoomHandle(room);
+  const mutationRef = useRef(mutation);
+  mutationRef.current = mutation;
+
+  return useCallback((...args: Args) => {
+    return mutationRef.current(
+      {
+        room: roomHandle,
+        self: roomHandle.getSelf(),
+        others: roomHandle.getOthers(),
+        myPresence: roomHandle.getMyPresence(),
+        setMyPresence: (state) => roomHandle.setPresence(state),
+        updateMyPresence: (patch) => roomHandle.updatePresence(patch),
+        broadcastEvent: (event, payload, options) => roomHandle.broadcastEvent(event, payload, options),
+        broadcastEventWithAck: (event, payload, options) => roomHandle.broadcastEventWithAck(event, payload, options),
         storage: roomHandle.getStorageSnapshot<TDocument>(),
         setStorage: (document, options) => roomHandle.setStorage<TDocument>(document, options),
         patchStorage: (operations, options) => roomHandle.patchStorage<TDocument>(operations, options),

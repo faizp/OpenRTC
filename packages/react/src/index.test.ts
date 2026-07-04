@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { isValidElement, type ReactElement } from "react";
 import {
   Cursor,
+  RoomProvider,
+  createRoomContext,
   useCommentListener,
+  useCurrentRoom,
+  useMutation,
   useNotificationEvents,
   useNotificationListener,
   useMutateLiveStorage,
@@ -42,12 +46,22 @@ assert.equal(typeof useSetLiveStorage, "function");
 assert.equal(typeof useUpdateLiveStorage, "function");
 assert.equal(typeof useMutateLiveStorage, "function");
 assert.equal(typeof useStorageMutation, "function");
+assert.equal(typeof useMutation, "function");
 assert.equal(typeof useStorageListener, "function");
 assert.equal(typeof useStoragePendingMutations, "function");
 assert.equal(typeof useCommentListener, "function");
 assert.equal(typeof useRoomCommentEvents, "function");
 assert.equal(typeof useNotificationListener, "function");
 assert.equal(typeof useNotificationEvents, "function");
+assert.equal(typeof RoomProvider, "function");
+assert.equal(typeof useCurrentRoom, "function");
+
+const roomContext = createRoomContext();
+assert.equal(typeof roomContext.RoomProvider, "function");
+assert.equal(typeof roomContext.useRoom, "function");
+assert.equal(typeof roomContext.useOthers, "function");
+assert.equal(typeof roomContext.useStorage, "function");
+assert.equal(typeof roomContext.useMutation, "function");
 
 const labeledCursor = asElement(
   Cursor({

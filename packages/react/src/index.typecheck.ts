@@ -1,7 +1,9 @@
 import type {
+  ConnectionStatus,
   OpenRTCCursorPeer,
   OpenRTCEvent,
   OpenRTCLiveObject,
+  OpenRTCRoom,
   OpenRTCStorageEvent,
   OpenRTCStoragePendingMutation,
   OpenRTCStorageStatus,
@@ -13,16 +15,20 @@ import {
   AvatarStack,
   Cursor,
   Cursors,
+  RoomProvider,
+  createRoomContext,
   useCursor,
   useCursors,
   useCursorsMapped,
   useBroadcastEvent,
   useBroadcastEventWithAck,
+  useCurrentRoom,
   useEnterRoom,
   useErrorListener,
   useLostConnectionListener,
   useMyPresence,
   useMyPresenceSelector,
+  useMutation,
   useOther,
   useOtherCursors,
   useOthers,
@@ -177,6 +183,23 @@ function StorageIntegrationTypes() {
   );
   expectType<Promise<void>>(mutateStorage("Published"));
 
+  const roomMutation = useMutation<CanvasStorage, [title: string], Promise<void>>(
+    roomId,
+    async ({ room, storage, self, others, myPresence, setMyPresence, updateMyPresence, broadcastEvent, setStorage }, title) => {
+      expectType<OpenRTCRoom>(room);
+      expectType<CanvasStorage | undefined>(storage);
+      expectType<PresencePeer | undefined>(self);
+      expectType<PresencePeer[]>(others);
+      expectType<PresenceState>(myPresence);
+      setMyPresence({ editing: true });
+      updateMyPresence({ title });
+      expectType<string>(broadcastEvent("canvas.title", { title }));
+      await setStorage({ title, items: [] });
+    },
+    [],
+  );
+  expectType<Promise<void>>(roomMutation("Published"));
+
   useStorageListener<OpenRTCLiveObject<CanvasStorage>>(roomId, (event) => {
     expectType<OpenRTCStorageEvent<OpenRTCLiveObject<CanvasStorage>>>(event);
     expectType<number | undefined>(event.sequence);
@@ -185,5 +208,71 @@ function StorageIntegrationTypes() {
   return null;
 }
 
+const boundRoom = createRoomContext();
+
+function RoomContextIntegrationTypes() {
+  type CanvasStorage = {
+    title: string;
+    items: unknown[];
+  };
+
+  expectType<ReactNode>(
+    RoomProvider({
+      id: "tenant-a:canvas-1",
+      initialPresence: { cursor: null },
+      afterSequence: 12,
+      children: null,
+    }),
+  );
+  expectType<ReactNode>(
+    boundRoom.RoomProvider({
+      id: "tenant-a:canvas-1",
+      initialPresence: { cursor: null },
+      afterSequence: 12,
+      children: null,
+    }),
+  );
+
+  expectType<OpenRTCRoom>(useCurrentRoom());
+  expectType<OpenRTCRoom>(boundRoom.useRoom());
+  expectType<ConnectionStatus>(boundRoom.useStatus());
+  expectType<PresencePeer[]>(boundRoom.useOthers());
+  expectType<string[]>(boundRoom.useOthersConnectionIds());
+  expectType<string[]>(boundRoom.useOthersMapped((other) => other.connId));
+  expectType<PresencePeer | undefined>(boundRoom.useOther("conn-1"));
+  expectType<unknown>(boundRoom.useOther("conn-1", (other) => other.state["cursor"]));
+  expectType<PresencePeer | undefined>(boundRoom.useSelf());
+  expectType<unknown>(boundRoom.useSelf((self) => self.state["user"]));
+  expectType<[PresenceState, (patch: PresenceState) => void]>(boundRoom.useMyPresence());
+  expectType<unknown>(boundRoom.useMyPresenceSelector((presence) => presence["cursor"]));
+  expectType<(state: PresenceState) => void>(boundRoom.useUpdateMyPresence());
+  expectType<(patch: PresenceState) => void>(boundRoom.usePatchMyPresence());
+  expectType<(event: string, payload?: unknown) => string>(boundRoom.useBroadcastEvent());
+  expectType<CanvasStorage | undefined>(boundRoom.useStorage<CanvasStorage>());
+  expectType<string>(boundRoom.useStorageSelector<CanvasStorage, string>((storage) => storage?.title ?? "Untitled"));
+  expectType<OpenRTCStorageStatus>(boundRoom.useStorageStatus());
+  expectType<number | undefined>(boundRoom.useStorageSequence());
+  expectType<OpenRTCStoragePendingMutation[]>(boundRoom.useStoragePendingMutations());
+  expectType<Promise<CanvasStorage>>(boundRoom.useSetStorage<CanvasStorage>()({ title: "Draft", items: [] }));
+
+  const boundMutation = boundRoom.useMutation<CanvasStorage, [title: string], Promise<void>>(
+    async ({ room, storage, self, others, myPresence, updateMyPresence, broadcastEventWithAck, setStorage }, title) => {
+      expectType<OpenRTCRoom>(room);
+      expectType<CanvasStorage | undefined>(storage);
+      expectType<PresencePeer | undefined>(self);
+      expectType<PresencePeer[]>(others);
+      expectType<PresenceState>(myPresence);
+      updateMyPresence({ title });
+      expectType<Promise<OpenRTCEvent>>(broadcastEventWithAck("canvas.title", { title }));
+      await setStorage({ title, items: [] });
+    },
+    [],
+  );
+  expectType<Promise<void>>(boundMutation("Published"));
+
+  return null;
+}
+
 void PresenceIntegrationTypes;
 void StorageIntegrationTypes;
+void RoomContextIntegrationTypes;
