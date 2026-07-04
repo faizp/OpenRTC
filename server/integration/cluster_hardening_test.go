@@ -133,6 +133,9 @@ func TestClusterRuntimeUsesRoomAccessGrants(t *testing.T) {
 	if _, err := store.CreateRoom(context.Background(), cluster.RoomRecord{
 		ID:              "tenant-a:grant-room",
 		DefaultAccesses: []string{cluster.PermissionRoomRead, cluster.PermissionRoomPresenceWrite},
+		UsersAccesses: map[string][]string{
+			"blocked-editor": {},
+		},
 		GroupsAccesses: map[string][]string{
 			"editors": {cluster.PermissionRoomWrite},
 		},
@@ -177,6 +180,20 @@ func TestClusterRuntimeUsesRoomAccessGrants(t *testing.T) {
 	event := readJSON(t, editor)
 	if event["t"] != "EVENT" || event["event"] != "doc.update" {
 		t.Fatalf("expected group write grant to allow publish, got %v", event)
+	}
+
+	blockedEditorToken := signToken(t, "openrtc-clients", map[string]any{
+		"sub":      "blocked-editor",
+		"tenant":   "tenant-a",
+		"groupIds": []string{"editors"},
+	})
+	blockedEditor := wsConnect(t, server.URL+cfg.Server.WSPath+"?token="+blockedEditorToken)
+	defer blockedEditor.Close()
+	readJSON(t, blockedEditor) // HELLO
+	mustWriteJSON(t, blockedEditor, map[string]any{"t": "JOIN", "id": "join-blocked-editor", "room": "tenant-a:grant-room"})
+	blockedEditorErr := readJSON(t, blockedEditor)
+	if blockedEditorErr["t"] != "ERROR" {
+		t.Fatalf("expected explicit user deny to override group/default grants, got %v", blockedEditorErr)
 	}
 
 	crossTenantToken := signToken(t, "openrtc-clients", map[string]any{
