@@ -464,6 +464,14 @@ export interface OpenRTCRoomAccesses {
   groupsAccesses?: Record<string, OpenRTCRoomPermission[]>;
 }
 
+export type OpenRTCRoomQueryScalar = string | number | boolean | null;
+
+export interface OpenRTCRoomQueryExists {
+  readonly exists: true;
+}
+
+export const roomQueryExists: OpenRTCRoomQueryExists = Object.freeze({ exists: true });
+
 export interface OpenRTCPresenceUpdate {
   room: string;
   connId: string;
@@ -701,6 +709,70 @@ function accessMatrixPermissionRecord(
     out[id] = accessMatrixPermissions(matrix);
   }
   return out;
+}
+
+export function roomQuery(
+  clauses: Record<string, OpenRTCRoomQueryScalar | OpenRTCRoomQueryExists | undefined>,
+): string {
+  const parts: string[] = [];
+  for (const [field, value] of Object.entries(clauses)) {
+    if (value === undefined) {
+      continue;
+    }
+    parts.push(`${normalizeRoomQueryField(field, value)}:${formatRoomQueryValue(field, value)}`);
+  }
+  if (parts.length > 20) {
+    throw new Error("OpenRTC room query supports at most 20 clauses");
+  }
+  return parts.join(" ");
+}
+
+function normalizeRoomQueryField(field: string, value: OpenRTCRoomQueryScalar | OpenRTCRoomQueryExists): string {
+  if (field === "id") {
+    if (isRoomQueryExists(value)) {
+      throw new Error("OpenRTC room query id field does not support exists checks");
+    }
+    return field;
+  }
+  if (!field.startsWith("metadata.")) {
+    throw new Error("OpenRTC room query fields must be id or metadata paths");
+  }
+  const path = field.slice("metadata.".length).split(".");
+  if (path.length === 0 || path.length > 8) {
+    throw new Error("OpenRTC room query metadata path depth must be between 1 and 8");
+  }
+  for (const key of path) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
+      throw new Error("OpenRTC room query metadata path keys must use letters, numbers, underscore, or dash");
+    }
+  }
+  return field;
+}
+
+function formatRoomQueryValue(field: string, value: OpenRTCRoomQueryScalar | OpenRTCRoomQueryExists): string {
+  if (isRoomQueryExists(value)) {
+    return "*";
+  }
+  if (field === "id" && (typeof value !== "string" || value.trim() === "")) {
+    throw new Error("OpenRTC room query id value must be a non-empty string");
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("OpenRTC room query number values must be finite");
+    }
+    return String(value);
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  return "null";
+}
+
+function isRoomQueryExists(value: OpenRTCRoomQueryScalar | OpenRTCRoomQueryExists): value is OpenRTCRoomQueryExists {
+  return isRecordObject(value) && value.exists === true;
 }
 
 export function normalizeCommentMentions(mentions: readonly string[] = []): string[] {

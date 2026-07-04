@@ -43,6 +43,8 @@ import {
   normalizeCommentReactions,
   removeCommentMention,
   removeCommentReaction,
+  roomQuery,
+  roomQueryExists,
   type OpenRTCCommentEvent,
   type OpenRTCDiagnosticEvent,
   type OpenRTCEvent,
@@ -117,6 +119,24 @@ assert.deepEqual(accessMatrixRoomAccesses({
 });
 assert.throws(() => accessMatrixScopes({ room: "read" }, ""), /non-empty string/);
 assert.throws(() => accessMatrixScope({ room: "read" }, "tenant-a:* storage:*"), /cannot contain whitespace/);
+
+assert.equal(
+  roomQuery({
+    id: "tenant-a:canvas-1",
+    "metadata.type": "whiteboard",
+    "metadata.archived": false,
+    "metadata.priority": 2,
+    "metadata.owner": null,
+    "metadata.tags": roomQueryExists,
+  }),
+  'id:"tenant-a:canvas-1" metadata.type:"whiteboard" metadata.archived:false metadata.priority:2 metadata.owner:null metadata.tags:*',
+);
+assert.equal(roomQuery({}), "");
+assert.throws(() => roomQuery({ owner: "user-1" }), /fields must be id or metadata/);
+assert.throws(() => roomQuery({ id: roomQueryExists }), /id field does not support exists/);
+assert.throws(() => roomQuery({ id: "" }), /id value must be a non-empty string/);
+assert.throws(() => roomQuery({ "metadata.bad/key": "x" }), /metadata path keys/);
+assert.throws(() => roomQuery({ "metadata.score": Number.NaN }), /number values must be finite/);
 
 assert.deepEqual(normalizeCommentMentions([" user-2 ", "", "user-2", "user-3"]), ["user-2", "user-3"]);
 assert.deepEqual(addCommentMention(["user-2"], " user-3 "), ["user-2", "user-3"]);
@@ -1850,7 +1870,7 @@ const rooms = await adminClient.listRooms({
   prefix: "tenant-a:",
   limit: 10,
   cursor: "0",
-  query: `metadata.title:"Room" metadata.public:true`,
+  query: roomQuery({ "metadata.title": "Room", "metadata.public": true }),
 });
 assert.deepEqual(rooms, { rooms: [{ id: "tenant-a:room-1" }], next_cursor: "1" });
 assert.equal(

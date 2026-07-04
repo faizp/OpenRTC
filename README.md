@@ -298,6 +298,7 @@ import {
   accessMatrixScope,
   addCommentMention,
   addCommentReaction,
+  roomQuery,
 } from "@openrtc/client";
 
 const admin = new OpenRTCAdminClient({
@@ -335,7 +336,7 @@ const editorTokenScope = accessMatrixScope({
 
 const editableWhiteboards = await admin.listRooms({
   prefix: "tenant-a:",
-  query: `metadata.type:whiteboard metadata.archived:false`,
+  query: roomQuery({ "metadata.type": "whiteboard", "metadata.archived": false }),
   limit: 50,
 });
 
