@@ -45,6 +45,11 @@ go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:63
 # In another terminal, run a typed smoke probe against the live dev stack.
 go run ./server/cmd/openrtc dev probe --restart runtime
 go run ./server/cmd/openrtc dev probe --json
+
+# Fetch a local client/admin token for terminal scripts or CI.
+go run ./server/cmd/openrtc dev token
+go run ./server/cmd/openrtc dev token --kind admin --scope "rooms:*" --json
+go run ./server/cmd/openrtc dev token --room demo:room-1 --env
 ```
 
 Then open `http://127.0.0.1:3000`. The dev server exposes:
@@ -62,6 +67,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
 - `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including optional runtime/admin restart drills and JSON output.
+- `openrtc dev token` fetches local client/admin JWTs from a terminal, defaulting to a token-only stdout value for command substitution, with `--json` for the full response and `--env` for shell-safe `OPENRTC_DEV_*` assignments.
 - `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, sockets, storage, Yjs metadata, event logs, restart drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs.
 
 For a zero-config local client, let the SDK fetch the dev token response and

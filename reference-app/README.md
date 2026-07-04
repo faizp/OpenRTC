@@ -40,6 +40,9 @@ go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:63
 
 # In another terminal, run a terminal/CI smoke probe.
 go run ./server/cmd/openrtc dev probe --restart runtime
+
+# Fetch a local token for scripts.
+go run ./server/cmd/openrtc dev token --room demo:room-1 --env
 ```
 
 Then open:
@@ -68,6 +71,7 @@ The dev server starts:
 - Bounded room event-log reads at `http://127.0.0.1:3000/dev/events?room=demo:room-1`
 - Ops dev status, socket/event inspection, and reconnect drill with generation verification
 - Terminal smoke probe via `openrtc dev probe`, with `--json` for machine-readable CI output and `--restart runtime|admin|both` for failure drills
+- Terminal token helper via `openrtc dev token`, with token-only stdout by default, `--json` for the full token/config response, and `--env` for shell-safe `OPENRTC_DEV_*` assignments
 
 The older reference server entrypoint still works from this directory:
 

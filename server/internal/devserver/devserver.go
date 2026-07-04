@@ -218,6 +218,9 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "probe" {
 		return probeMain(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "token" {
+		return tokenMain(args[1:], stdout, stderr)
+	}
 
 	output := stderr
 	for _, arg := range args {

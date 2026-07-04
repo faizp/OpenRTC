@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,6 +66,23 @@ func TestMainProbeHelpReturnsSuccess(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Usage of openrtc dev probe") {
 		t.Fatalf("expected probe help on stdout, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestMainTokenHelpReturnsSuccess(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{"token", "--help"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "Usage of openrtc dev token") {
+		t.Fatalf("expected token help on stdout, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
@@ -190,6 +208,118 @@ func TestProbeMainWritesDegradedJSONAndFails(t *testing.T) {
 	}
 	if !probeCheckByName(result.Checks, "events").OK {
 		t.Fatalf("expected events check to pass: %+v", result.Checks)
+	}
+}
+
+func TestMainTokenWritesTextTokenAndBuildsClientQuery(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true})
+	defer server.Close()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{
+		"token",
+		"--base-url", server.URL,
+		"--username", "ada",
+		"--tenant", "acme",
+		"--room", "demo:canvas-1",
+		"--groups", "editors,reviewers",
+		"--access", "grants",
+	}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "dev-token\n" {
+		t.Fatalf("expected token-only output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+	query := server.lastTokenQuery
+	if query.Get("kind") != "client" ||
+		query.Get("pubkey") != localPublicKey ||
+		query.Get("username") != "ada" ||
+		query.Get("tenant") != "acme" ||
+		query.Get("room") != "demo:canvas-1" ||
+		query.Get("groups") != "editors,reviewers" ||
+		query.Get("access") != "grants" {
+		t.Fatalf("unexpected token query: %s", query.Encode())
+	}
+}
+
+func TestMainTokenWritesJSONOutput(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true})
+	defer server.Close()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{"token", "--base-url", server.URL, "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", code, stderr.String())
+	}
+	var body devTokenResponse
+	if err := json.NewDecoder(&stdout).Decode(&body); err != nil {
+		t.Fatalf("decode token JSON: %v\n%s", err, stdout.String())
+	}
+	if body.Token != "dev-token" || body.Room != "demo:room-1" || body.Config == nil || body.Config.TokenURL != "/dev/token" {
+		t.Fatalf("unexpected token response: %+v", body)
+	}
+}
+
+func TestMainTokenWritesEnvOutput(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true})
+	defer server.Close()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{"token", "--base-url", server.URL, "--env"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"OPENRTC_DEV_TOKEN='dev-token'",
+		"OPENRTC_DEV_ROOM='demo:room-1'",
+		"OPENRTC_DEV_WS_URL='ws://127.0.0.1:8080/ws'",
+		"OPENRTC_DEV_ADMIN_URL='http://127.0.0.1:8090'",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected env output to contain %q, got:\n%s", want, output)
+		}
+	}
+}
+
+func TestMainTokenSupportsAdminScope(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true})
+	defer server.Close()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{"token", "--base-url", server.URL, "--kind", "admin", "--scope", "rooms:*"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", code, stderr.String())
+	}
+	query := server.lastTokenQuery
+	if query.Get("kind") != "admin" || query.Get("scope") != "rooms:*" || query.Get("access") != "" {
+		t.Fatalf("unexpected admin token query: %s", query.Encode())
+	}
+}
+
+func TestMainTokenRejectsConflictingOutputFlags(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Main([]string{"token", "--json", "--env"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "json and env output are mutually exclusive") {
+		t.Fatalf("expected conflicting output error, got %q", stderr.String())
 	}
 }
 
@@ -1027,7 +1157,8 @@ type probeTestServerOptions struct {
 }
 
 type probeTestServer struct {
-	URL string
+	URL            string
+	lastTokenQuery url.Values
 }
 
 func (s *probeTestServer) Close() {}
@@ -1042,6 +1173,7 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 	t.Helper()
 	mux := http.NewServeMux()
 	baseURL := "http://openrtc-dev.test"
+	server := &probeTestServer{URL: baseURL}
 	config := func() devClientConfigSnapshot {
 		return devClientConfigSnapshot{
 			PublicKey:        localPublicKey,
@@ -1171,6 +1303,24 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 			Events:        []cluster.PublishedEvent{{Room: "demo:room-1", Event: "dev.probe", Sequence: after + 1}},
 		})
 	})
+	mux.HandleFunc("/dev/token", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
+			return
+		}
+		server.lastTokenQuery = r.URL.Query()
+		snapshot := config()
+		writeJSON(w, http.StatusOK, devTokenResponse{
+			Token:     "dev-token",
+			Kind:      firstNonEmpty(r.URL.Query().Get("kind"), "client"),
+			Username:  firstNonEmpty(r.URL.Query().Get("username"), "anon-test"),
+			Tenant:    firstNonEmpty(r.URL.Query().Get("tenant"), "demo"),
+			Groups:    csvList(r.URL.Query().Get("groups")),
+			ExpiresAt: time.Unix(10, 0).UTC().Format(time.RFC3339),
+			Room:      devTokenRoom(r, &snapshot),
+			Config:    &snapshot,
+		})
+	})
 	mux.HandleFunc("/dev/crash/runtime", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method must be POST", http.StatusMethodNotAllowed)
@@ -1199,7 +1349,7 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 	t.Cleanup(func() {
 		probeHTTPClient = previousClient
 	})
-	return &probeTestServer{URL: baseURL}
+	return server
 }
 
 func probeCheckNames(checks []devProbeCheck) []string {
