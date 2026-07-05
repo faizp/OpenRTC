@@ -97,6 +97,25 @@
 5. Expected cleanup time: 45s (TTL) + 30s (reconciler) = ~75s worst case
 6. Node crash recovery uses `node:{node_id}:conns` index for faster cleanup
 
+### Room Event Replay Retention
+
+**Context:**
+- Non-Yjs room events are replayed on join from the Redis sorted set
+  `room:{room}:events`.
+- `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` controls the maximum retained entries
+  per room. The default is `1000`.
+- Delivery ACK cursors are durable per subject, but events older than the
+  retained Redis window are not replayable.
+
+**Steps:**
+1. If reconnect catch-up appears incomplete, compare the client's
+   `JOIN.meta.after_seq` with `GET /dev/events?room=<room>` in a local
+   reproduction.
+2. Increase `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` for rooms with legitimate
+   reconnect windows longer than the default retention.
+3. Track Redis memory while increasing the value; the limit is per active room
+   event log.
+
 **If cleanup is stuck:**
 ```bash
 # Check for stale connections manually
@@ -165,6 +184,8 @@ redis-cli hdel "room:<room>:presence" "<conn_id>"
 | `room:{room}:record` | hash | — | Durable room metadata record managed by admin room APIs |
 | `room:{room}:storage` | string | — | Durable JSON storage document managed by admin storage APIs |
 | `room:{room}:storage:seq` | string | — | Monotonic storage document sequence for conditional realtime writes |
+| `room:{room}:events` | sorted set | bounded by `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` | Sequenced non-Yjs room event replay log |
+| `room:{room}:events:seq` | string | — | Monotonic room event sequence counter |
 | `room:{room}:threads` | set | — | Durable thread IDs for the room |
 | `room:{room}:thread:{thread_id}` | hash | — | Durable thread metadata |
 | `room:{room}:thread:{thread_id}:comments` | list | — | Durable ordered comments for a thread |

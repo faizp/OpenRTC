@@ -1,0 +1,43 @@
+{
+  "mode": "cluster",
+  "nodeId": "openrtc-admin-1",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8090
+  },
+  "redis": {
+    "url": "redis://redis:6379/0",
+    "channelPrefix": "room:",
+    "eventLogMaxEntries": 1000
+  },
+  "auth": {
+    "issuer": "https://issuer.example.com",
+    "audience": "openrtc-clients",
+    "jwksUrl": "https://issuer.example.com/.well-known/jwks.json"
+  },
+  "adminAuth": {
+    "issuer": "https://issuer.example.com",
+    "audience": "openrtc-admin",
+    "jwksUrl": "https://issuer.example.com/.well-known/jwks.json"
+  },
+  "tenant": {
+    "enforcePrefix": true,
+    "separator": ":"
+  },
+  "webhooks": {
+    "urls": ["https://app.example.com/api/openrtc/webhook"],
+    "secret": "replace-with-secret-manager-value",
+    "timeoutMs": 2000
+  },
+  "limits": {
+    "payloadMaxBytes": 16384,
+    "envelopeMaxBytes": 20480,
+    "yjsMaxBytes": 1048576,
+    "roomsPerConnection": 50,
+    "roomConnections": 0,
+    "yjsRoomConnections": 0,
+    "emitsPerSecond": 100,
+    "outboundQueueDepth": 256
+  },
+  "allowedOrigins": ["https://app.example.com"]
+}

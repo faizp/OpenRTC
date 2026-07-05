@@ -356,6 +356,97 @@ func TestRunProbeRealtimeCheckUsesRuntimeWebSocket(t *testing.T) {
 	}
 }
 
+func TestRunProbeMultiUserCheckUsesTwoRuntimeWebSockets(t *testing.T) {
+	server := newProbeTestServer(t, probeTestServerOptions{healthy: true, activeConnections: 2})
+	defer server.Close()
+	var dialCount int64
+	toUserB := make(chan map[string]interface{}, 3)
+	previousDial := probeWebSocketDial
+	probeWebSocketDial = func(ctx context.Context, rawURL string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
+		index := atomic.AddInt64(&dialCount, 1)
+		connID := fmt.Sprintf("probe-multi-%d", index)
+		if !strings.Contains(rawURL, "token=dev-token") {
+			t.Fatalf("expected multi-user probe to dial with dev token, got %q", rawURL)
+		}
+		wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade multi-user probe websocket: %v", err)
+				return
+			}
+			defer ws.Close()
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t": "HELLO",
+				"payload": map[string]interface{}{
+					"conn_id": connID,
+					"server":  map[string]interface{}{"name": "openrtc", "node_id": "dev-runtime"},
+				},
+			}); err != nil {
+				t.Errorf("write hello: %v", err)
+				return
+			}
+			joinID := "dev-probe-user-a-join"
+			if index == 2 {
+				joinID = "dev-probe-user-b-join"
+			}
+			expectProbeWSMessage(t, ws, "JOIN", joinID)
+			if err := ws.WriteJSON(map[string]interface{}{
+				"t":       "JOINED",
+				"id":      joinID,
+				"room":    "demo:room-1",
+				"payload": map[string]interface{}{"members": []string{"probe-multi-1", "probe-multi-2"}, "presence": map[string]interface{}{}},
+			}); err != nil {
+				t.Errorf("write joined: %v", err)
+				return
+			}
+			if index == 1 {
+				runMultiUserSocketA(t, ws, toUserB)
+				return
+			}
+			runMultiUserSocketB(t, ws, toUserB)
+		}))
+		t.Cleanup(wsServer.Close)
+		return websocket.DefaultDialer.DialContext(ctx, "ws"+wsServer.URL[len("http"):], requestHeader)
+	}
+	t.Cleanup(func() {
+		probeWebSocketDial = previousDial
+	})
+
+	result, err := runProbe(context.Background(), probeOptions{
+		baseURL:           server.URL,
+		room:              "demo:room-1",
+		multiUser:         true,
+		timeout:           time.Second,
+		limit:             5,
+		expectSeedRoom:    true,
+		expectSeedStorage: true,
+	})
+
+	if err != nil {
+		t.Fatalf("run multi-user probe: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected multi-user probe to pass, got %+v", result.Checks)
+	}
+	if got := probeCheckNames(result.Checks); strings.Join(got, ",") != "config,seed-room,status,seed,connections,sockets,storage,yjs,events,multi-user" {
+		t.Fatalf("unexpected multi-user checks: %v", got)
+	}
+	if result.Snapshots.MultiUser == nil ||
+		result.Snapshots.MultiUser.UserAConnectionID != "probe-multi-1" ||
+		result.Snapshots.MultiUser.UserBConnectionID != "probe-multi-2" ||
+		result.Snapshots.MultiUser.ActiveUsersObserved != 2 ||
+		!result.Snapshots.MultiUser.PresenceFanout ||
+		!result.Snapshots.MultiUser.EventFanout ||
+		!result.Snapshots.MultiUser.EventAcked ||
+		!result.Snapshots.MultiUser.StorageUpdateFanout ||
+		result.Snapshots.MultiUser.EventSequence != 7 ||
+		result.Snapshots.MultiUser.StorageAckSequence != 12 ||
+		result.Snapshots.MultiUser.StorageUpdateSequence != 12 {
+		t.Fatalf("unexpected multi-user snapshot: %+v", result.Snapshots.MultiUser)
+	}
+}
+
 func TestRunProbeRuntimeReconnectCheckRestartsAndRejoins(t *testing.T) {
 	closeFirstSocket := make(chan struct{})
 	var closeFirstSocketCalled int32
@@ -1666,10 +1757,11 @@ func (s *fakeDevStorageStore) ListPublishedEvents(_ context.Context, room string
 }
 
 type probeTestServerOptions struct {
-	healthy        bool
-	yjsUpdateCount *int64
-	yjsUpdateBytes *int64
-	onRuntimeCrash func()
+	healthy           bool
+	activeConnections int
+	yjsUpdateCount    *int64
+	yjsUpdateBytes    *int64
+	onRuntimeCrash    func()
 }
 
 type probeTestServer struct {
@@ -1769,9 +1861,22 @@ func newProbeTestServer(t *testing.T, opts probeTestServerOptions) *probeTestSer
 			http.Error(w, "method must be GET", http.StatusMethodNotAllowed)
 			return
 		}
+		activeConnections := opts.activeConnections
+		if activeConnections <= 0 {
+			activeConnections = 1
+		}
+		connections := make([]map[string]any, 0, activeConnections)
+		for index := 0; index < activeConnections; index++ {
+			connections = append(connections, map[string]any{
+				"type":          "json",
+				"connection_id": fmt.Sprintf("conn-%d", index+1),
+				"id":            fmt.Sprintf("user-%d", index+1),
+				"tenant":        "demo",
+			})
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"room":        r.URL.Query().Get("room"),
-			"connections": []map[string]any{{"type": "json", "connection_id": "conn-1", "id": "ada", "tenant": "demo"}},
+			"connections": connections,
 		})
 	})
 	mux.HandleFunc("/dev/sockets", func(w http.ResponseWriter, r *http.Request) {
@@ -1921,6 +2026,107 @@ func expectProbeWSMessage(t *testing.T, ws *websocket.Conn, messageType string, 
 		t.Fatalf("expected probe websocket %s/%s, got %#v", messageType, id, message)
 	}
 	return message
+}
+
+func runMultiUserSocketA(t *testing.T, ws *websocket.Conn, toUserB chan<- map[string]interface{}) {
+	t.Helper()
+	presence := expectProbeWSMessage(t, ws, "PRESENCE_SET", "dev-probe-user-a-presence")
+	if presence["room"] != "demo:room-1" {
+		t.Errorf("unexpected presence room: %#v", presence)
+	}
+	toUserB <- map[string]interface{}{
+		"t":    "PRESENCE",
+		"room": "demo:room-1",
+		"payload": map[string]interface{}{
+			"conn_id": "probe-multi-1",
+			"state":   presence["payload"],
+		},
+	}
+
+	event := expectProbeWSMessage(t, ws, "EMIT", "dev-probe-user-a-event")
+	if event["event"] != "dev.probe.multi_user" {
+		t.Errorf("unexpected multi-user event: %#v", event)
+	}
+	toUserB <- map[string]interface{}{
+		"t":       "EVENT",
+		"room":    "demo:room-1",
+		"event":   "dev.probe.multi_user",
+		"payload": event["payload"],
+		"meta":    map[string]interface{}{"seq": 7, "trace_id": "dev-probe-multi-user"},
+	}
+
+	expectProbeWSMessage(t, ws, "STORAGE_GET", "dev-probe-user-a-storage-get")
+	if err := ws.WriteJSON(map[string]interface{}{
+		"t":    "STORAGE_SNAPSHOT",
+		"id":   "dev-probe-user-a-storage-get",
+		"room": "demo:room-1",
+		"meta": map[string]interface{}{"seq": 11},
+		"payload": map[string]interface{}{
+			"document": map[string]interface{}{
+				"liveblocksType": "LiveObject",
+				"data":           map[string]interface{}{"title": "OpenRTC dev room"},
+			},
+		},
+	}); err != nil {
+		t.Errorf("write multi-user storage snapshot: %v", err)
+		return
+	}
+	patch := expectProbeWSMessage(t, ws, "STORAGE_PATCH", "dev-probe-user-a-storage-patch")
+	if meta, ok := patch["meta"].(map[string]interface{}); !ok || meta["expected_seq"] != float64(11) {
+		t.Errorf("expected multi-user storage patch expected_seq=11, got %#v", patch["meta"])
+	}
+	toUserB <- map[string]interface{}{
+		"t":    "STORAGE_UPDATE",
+		"room": "demo:room-1",
+		"meta": map[string]interface{}{"seq": 12},
+		"payload": map[string]interface{}{
+			"kind":     "patch",
+			"op_id":    "dev-probe-multi-user",
+			"document": map[string]interface{}{"liveblocksType": "LiveObject", "data": map[string]interface{}{"title": "OpenRTC dev room"}},
+		},
+	}
+	if err := ws.WriteJSON(map[string]interface{}{
+		"t":    "STORAGE_ACK",
+		"id":   "dev-probe-user-a-storage-patch",
+		"room": "demo:room-1",
+		"meta": map[string]interface{}{"seq": 12},
+		"payload": map[string]interface{}{
+			"kind":     "patch",
+			"op_id":    "dev-probe-multi-user",
+			"document": map[string]interface{}{"liveblocksType": "LiveObject", "data": map[string]interface{}{"title": "OpenRTC dev room"}},
+		},
+	}); err != nil {
+		t.Errorf("write multi-user storage ack: %v", err)
+		return
+	}
+	_, _ = readProbeWSMessage(ws)
+}
+
+func runMultiUserSocketB(t *testing.T, ws *websocket.Conn, toUserB <-chan map[string]interface{}) {
+	t.Helper()
+	if err := ws.WriteJSON(<-toUserB); err != nil {
+		t.Errorf("write multi-user presence fanout: %v", err)
+		return
+	}
+	if err := ws.WriteJSON(<-toUserB); err != nil {
+		t.Errorf("write multi-user event fanout: %v", err)
+		return
+	}
+	expectProbeWSMessage(t, ws, "EVENT_ACK", "dev-probe-user-b-event-ack")
+	if err := ws.WriteJSON(map[string]interface{}{
+		"t":    "EVENT_ACKED",
+		"id":   "dev-probe-user-b-event-ack",
+		"room": "demo:room-1",
+		"meta": map[string]interface{}{"seq": 7},
+	}); err != nil {
+		t.Errorf("write multi-user event acked: %v", err)
+		return
+	}
+	if err := ws.WriteJSON(<-toUserB); err != nil {
+		t.Errorf("write multi-user storage fanout: %v", err)
+		return
+	}
+	_, _ = readProbeWSMessage(ws)
 }
 
 func hasAudience(value any, audience string) bool {

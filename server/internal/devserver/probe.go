@@ -46,6 +46,7 @@ type probeOptions struct {
 	restart           string
 	jsonOutput        bool
 	realtime          bool
+	multiUser         bool
 	yjsRealtime       bool
 	reconnect         bool
 	timeout           time.Duration
@@ -79,6 +80,7 @@ type devProbeSnapshots struct {
 	YJS              *devYJSSnapshot                    `json:"yjs,omitempty"`
 	Events           *devEventsSnapshot                 `json:"events,omitempty"`
 	Realtime         *devRealtimeProbeSnapshot          `json:"realtime,omitempty"`
+	MultiUser        *devMultiUserProbeSnapshot         `json:"multiUser,omitempty"`
 	YJSRealtime      *devYJSRealtimeProbeSnapshot       `json:"yjsRealtime,omitempty"`
 	RuntimeReconnect *devRuntimeReconnectProbeSnapshot  `json:"runtimeReconnect,omitempty"`
 	RuntimeRestart   *devRestartSnapshot                `json:"runtimeRestart,omitempty"`
@@ -100,6 +102,23 @@ type devRealtimeProbeSnapshot struct {
 	RetryAckSequence     uint64 `json:"retry_ack_sequence,omitempty"`
 	IdempotentRetryAcked bool   `json:"idempotent_retry_acked"`
 	ProbePath            string `json:"probe_path,omitempty"`
+}
+
+type devMultiUserProbeSnapshot struct {
+	UserAConnectionID     string `json:"user_a_connection_id,omitempty"`
+	UserBConnectionID     string `json:"user_b_connection_id,omitempty"`
+	BothJoined            bool   `json:"both_joined"`
+	ActiveUsersObserved   int    `json:"active_users_observed"`
+	PresenceFanout        bool   `json:"presence_fanout"`
+	EventFanout           bool   `json:"event_fanout"`
+	EventAcked            bool   `json:"event_acked"`
+	EventSequence         uint64 `json:"event_sequence,omitempty"`
+	StorageFound          bool   `json:"storage_found"`
+	StorageSnapshotSeq    uint64 `json:"storage_snapshot_sequence,omitempty"`
+	StorageAckSequence    uint64 `json:"storage_ack_sequence,omitempty"`
+	StorageUpdateFanout   bool   `json:"storage_update_fanout"`
+	StorageUpdateSequence uint64 `json:"storage_update_sequence,omitempty"`
+	ProbePath             string `json:"probe_path,omitempty"`
 }
 
 type devYJSRealtimeProbeSnapshot struct {
@@ -179,6 +198,7 @@ func parseProbeOptions(args []string, output io.Writer) (probeOptions, error) {
 	flags.StringVar(&opts.restart, "restart", opts.restart, "optional restart drill: none, runtime, admin, or both")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write the full probe report as JSON")
 	flags.BoolVar(&opts.realtime, "realtime", false, "open the runtime WebSocket, join the room, read storage, perform a sequenced storage patch, and retry the same op_id")
+	flags.BoolVar(&opts.multiUser, "multi-user", false, "open two runtime WebSockets and verify presence, event ACK, and storage fan-out between users")
 	flags.BoolVar(&opts.yjsRealtime, "yjs-realtime", false, "open the Yjs WebSocket, send a valid update frame, and verify dev Yjs inspection sees it")
 	flags.BoolVar(&opts.reconnect, "reconnect", false, "open a runtime WebSocket, restart the dev runtime, verify the old socket closes, reconnect, and rejoin the room")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall probe timeout")
@@ -425,6 +445,34 @@ func runProbe(ctx context.Context, opts probeOptions) (devProbeResult, error) {
 			)
 		})
 	}
+	if opts.multiUser {
+		captureProbeCheck(&result, "multi-user", func() devProbeCheck {
+			snapshot, err := runMultiUserProbe(ctx, client, opts.baseURL, config, room)
+			if err != nil {
+				return probeErrorCheck("multi-user", err)
+			}
+			result.Snapshots.MultiUser = &snapshot
+			return probeCheck(
+				"multi-user",
+				multiUserProbeOK(snapshot),
+				probeMultiUserMessage(snapshot),
+				map[string]interface{}{
+					"userAConnectionID":   snapshot.UserAConnectionID,
+					"userBConnectionID":   snapshot.UserBConnectionID,
+					"activeUsersObserved": snapshot.ActiveUsersObserved,
+					"presenceFanout":      snapshot.PresenceFanout,
+					"eventFanout":         snapshot.EventFanout,
+					"eventAcked":          snapshot.EventAcked,
+					"eventSequence":       snapshot.EventSequence,
+					"storageFound":        snapshot.StorageFound,
+					"storageAckSequence":  snapshot.StorageAckSequence,
+					"storageUpdateFanout": snapshot.StorageUpdateFanout,
+					"storageUpdateSeq":    snapshot.StorageUpdateSequence,
+					"probePath":           snapshot.ProbePath,
+				},
+			)
+		})
+	}
 	if opts.yjsRealtime {
 		captureProbeCheck(&result, "yjs-realtime", func() devProbeCheck {
 			snapshot, err := runYJSRealtimeProbe(ctx, client, opts.baseURL, config, room)
@@ -656,6 +704,163 @@ func runRealtimeProbe(ctx context.Context, client *http.Client, baseURL string, 
 	return snapshot, nil
 }
 
+func runMultiUserProbe(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devMultiUserProbeSnapshot, error) {
+	userA, err := openJoinedRuntimeProbeSocketForUser(ctx, client, baseURL, config, room, "dev-probe-user-a", "dev-probe-user-a-join")
+	if err != nil {
+		return devMultiUserProbeSnapshot{}, fmt.Errorf("open user A socket: %w", err)
+	}
+	defer userA.ws.Close()
+	userB, err := openJoinedRuntimeProbeSocketForUser(ctx, client, baseURL, config, room, "dev-probe-user-b", "dev-probe-user-b-join")
+	if err != nil {
+		return devMultiUserProbeSnapshot{}, fmt.Errorf("open user B socket: %w", err)
+	}
+	defer userB.ws.Close()
+
+	snapshot := devMultiUserProbeSnapshot{
+		UserAConnectionID: userA.connectionID,
+		UserBConnectionID: userB.connectionID,
+		BothJoined:        userA.joined && userB.joined,
+	}
+	if connections, err := fetchProbeConnectionsSnapshot(ctx, client, baseURL, config, room); err == nil {
+		snapshot.ActiveUsersObserved = len(connections.Connections)
+	}
+
+	if err := writeProbeWSMessage(userA.ws, map[string]interface{}{
+		"t":    "PRESENCE_SET",
+		"id":   "dev-probe-user-a-presence",
+		"room": room,
+		"payload": map[string]interface{}{
+			"user":   "dev-probe-user-a",
+			"cursor": map[string]interface{}{"x": 42, "y": 84},
+		},
+	}); err != nil {
+		return snapshot, fmt.Errorf("write user A presence: %w", err)
+	}
+	if _, err := readProbeWSMessageMatching(ctx, userB.ws, "presence fan-out", func(message map[string]interface{}) bool {
+		return asStringFromMap(message, "t") == "PRESENCE" &&
+			asStringFromMap(message, "room") == room &&
+			asStringFromMap(payloadMap(message), "conn_id") == userA.connectionID
+	}); err != nil {
+		return snapshot, err
+	}
+	snapshot.PresenceFanout = true
+
+	if err := writeProbeWSMessage(userA.ws, map[string]interface{}{
+		"t":     "EMIT",
+		"id":    "dev-probe-user-a-event",
+		"room":  room,
+		"event": "dev.probe.multi_user",
+		"payload": map[string]interface{}{
+			"from": "dev-probe-user-a",
+			"ok":   true,
+		},
+		"meta": map[string]interface{}{"trace_id": "dev-probe-multi-user"},
+	}); err != nil {
+		return snapshot, fmt.Errorf("write user A event: %w", err)
+	}
+	eventMessage, err := readProbeWSMessageMatching(ctx, userB.ws, "event fan-out", func(message map[string]interface{}) bool {
+		return asStringFromMap(message, "t") == "EVENT" &&
+			asStringFromMap(message, "room") == room &&
+			asStringFromMap(message, "event") == "dev.probe.multi_user"
+	})
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.EventFanout = true
+	if meta, _ := eventMessage["meta"].(map[string]interface{}); meta != nil {
+		snapshot.EventSequence = asUintFromMap(meta, "seq")
+	}
+	if snapshot.EventSequence > 0 {
+		if err := writeProbeWSMessage(userB.ws, map[string]interface{}{
+			"t":    "EVENT_ACK",
+			"id":   "dev-probe-user-b-event-ack",
+			"room": room,
+			"meta": map[string]interface{}{"seq": snapshot.EventSequence},
+		}); err != nil {
+			return snapshot, fmt.Errorf("write user B event ack: %w", err)
+		}
+		if _, err := readProbeWSMessageMatching(ctx, userB.ws, "event ack", func(message map[string]interface{}) bool {
+			return asStringFromMap(message, "t") == "EVENT_ACKED" &&
+				asStringFromMap(message, "id") == "dev-probe-user-b-event-ack" &&
+				asStringFromMap(message, "room") == room &&
+				asUintFromMap(metaMap(message), "seq") == snapshot.EventSequence
+		}); err != nil {
+			return snapshot, err
+		}
+		snapshot.EventAcked = true
+	}
+
+	if err := writeProbeWSMessage(userA.ws, map[string]interface{}{
+		"t":    "STORAGE_GET",
+		"id":   "dev-probe-user-a-storage-get",
+		"room": room,
+	}); err != nil {
+		return snapshot, fmt.Errorf("write user A storage get: %w", err)
+	}
+	storageSnapshot, err := readProbeWSMessageMatching(ctx, userA.ws, "storage snapshot", func(message map[string]interface{}) bool {
+		return asStringFromMap(message, "t") == "STORAGE_SNAPSHOT" &&
+			asStringFromMap(message, "id") == "dev-probe-user-a-storage-get"
+	})
+	if err != nil {
+		return snapshot, err
+	}
+	storagePayload := payloadMap(storageSnapshot)
+	document := storagePayload["document"]
+	snapshot.StorageFound = document != nil
+	if meta, _ := storageSnapshot["meta"].(map[string]interface{}); meta != nil {
+		snapshot.StorageSnapshotSeq = asUintFromMap(meta, "seq")
+	}
+	snapshot.ProbePath = storageProbePath(document)
+
+	opID := fmt.Sprintf("dev-probe-multi-user-%d", time.Now().UnixNano())
+	patch := []map[string]interface{}{{
+		"op":   "add",
+		"path": snapshot.ProbePath,
+		"value": map[string]interface{}{
+			"from":       "dev-probe-user-a",
+			"checked_at": time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}}
+	meta := map[string]interface{}{"op_id": opID}
+	if snapshot.StorageSnapshotSeq > 0 {
+		meta["expected_seq"] = snapshot.StorageSnapshotSeq
+	}
+	if err := writeProbeWSMessage(userA.ws, map[string]interface{}{
+		"t":       "STORAGE_PATCH",
+		"id":      "dev-probe-user-a-storage-patch",
+		"room":    room,
+		"payload": patch,
+		"meta":    meta,
+	}); err != nil {
+		return snapshot, fmt.Errorf("write user A storage patch: %w", err)
+	}
+	updateMessage, err := readProbeWSMessageMatching(ctx, userB.ws, "storage update fan-out", func(message map[string]interface{}) bool {
+		return asStringFromMap(message, "t") == "STORAGE_UPDATE" &&
+			asStringFromMap(message, "room") == room
+	})
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.StorageUpdateFanout = true
+	if meta, _ := updateMessage["meta"].(map[string]interface{}); meta != nil {
+		snapshot.StorageUpdateSequence = asUintFromMap(meta, "seq")
+	}
+	ackMessage, err := readProbeWSMessageMatching(ctx, userA.ws, "storage ack", func(message map[string]interface{}) bool {
+		return asStringFromMap(message, "t") == "STORAGE_ACK" &&
+			asStringFromMap(message, "id") == "dev-probe-user-a-storage-patch"
+	})
+	if err != nil {
+		return snapshot, err
+	}
+	if meta, _ := ackMessage["meta"].(map[string]interface{}); meta != nil {
+		snapshot.StorageAckSequence = asUintFromMap(meta, "seq")
+	}
+
+	_ = writeProbeWSMessage(userA.ws, map[string]interface{}{"t": "LEAVE", "id": "dev-probe-user-a-leave", "room": room})
+	_ = writeProbeWSMessage(userB.ws, map[string]interface{}{"t": "LEAVE", "id": "dev-probe-user-b-leave", "room": room})
+	return snapshot, nil
+}
+
 type joinedRuntimeProbeSocket struct {
 	ws           *websocket.Conn
 	connectionID string
@@ -709,7 +914,11 @@ func runRuntimeReconnectProbe(ctx context.Context, client *http.Client, baseURL 
 }
 
 func openJoinedRuntimeProbeSocket(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string, joinID string) (joinedRuntimeProbeSocket, error) {
-	token, err := fetchProbeDevToken(ctx, client, baseURL, config, room)
+	return openJoinedRuntimeProbeSocketForUser(ctx, client, baseURL, config, room, "", joinID)
+}
+
+func openJoinedRuntimeProbeSocketForUser(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string, username string, joinID string) (joinedRuntimeProbeSocket, error) {
+	token, err := fetchProbeDevTokenForUser(ctx, client, baseURL, config, room, username)
 	if err != nil {
 		return joinedRuntimeProbeSocket{}, fmt.Errorf("fetch dev runtime token: %w", err)
 	}
@@ -821,11 +1030,19 @@ func runYJSRealtimeProbe(ctx context.Context, client *http.Client, baseURL strin
 }
 
 func fetchProbeDevToken(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (string, error) {
+	return fetchProbeDevTokenForUser(ctx, client, baseURL, config, room, "")
+}
+
+func fetchProbeDevTokenForUser(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string, username string) (string, error) {
 	var tokenResponse devTokenResponse
-	tokenURL := endpointURL(baseURL, config.TokenURL, "/dev/token", map[string]string{
+	query := map[string]string{
 		"pubkey": localPublicKey,
 		"room":   room,
-	})
+	}
+	if strings.TrimSpace(username) != "" {
+		query["username"] = strings.TrimSpace(username)
+	}
+	tokenURL := endpointURL(baseURL, config.TokenURL, "/dev/token", query)
 	if err := probeGetJSON(ctx, client, tokenURL, nil, &tokenResponse); err != nil {
 		return "", err
 	}
@@ -833,6 +1050,14 @@ func fetchProbeDevToken(ctx context.Context, client *http.Client, baseURL string
 		return "", fmt.Errorf("dev token response missing token")
 	}
 	return tokenResponse.Token, nil
+}
+
+func fetchProbeConnectionsSnapshot(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot, room string) (devConnectionsSnapshot, error) {
+	var snapshot devConnectionsSnapshot
+	if err := probeGetJSON(ctx, client, endpointURL(baseURL, config.ConnectionsURL, "/dev/connections", map[string]string{"room": room}), nil, &snapshot); err != nil {
+		return devConnectionsSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func fetchProbeStatusSnapshot(ctx context.Context, client *http.Client, baseURL string, config devClientConfigSnapshot) (devStatusSnapshot, error) {
@@ -950,6 +1175,23 @@ func readProbeWSMessage(ws *websocket.Conn) (map[string]interface{}, error) {
 	return message, nil
 }
 
+func readProbeWSMessageMatching(ctx context.Context, ws *websocket.Conn, description string, matches func(map[string]interface{}) bool) (map[string]interface{}, error) {
+	deadline, _ := ctx.Deadline()
+	if deadline.IsZero() {
+		deadline = time.Now().Add(defaultProbeTimeout)
+	}
+	_ = ws.SetReadDeadline(deadline)
+	for {
+		message, err := readProbeWSMessage(ws)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", description, err)
+		}
+		if matches(message) {
+			return message, nil
+		}
+	}
+}
+
 func writeProbeWSMessage(ws *websocket.Conn, message map[string]interface{}) error {
 	return ws.WriteJSON(message)
 }
@@ -983,6 +1225,22 @@ func asUintFromMap(values map[string]interface{}, key string) uint64 {
 		}
 	}
 	return 0
+}
+
+func payloadMap(message map[string]interface{}) map[string]interface{} {
+	payload, _ := message["payload"].(map[string]interface{})
+	if payload == nil {
+		return map[string]interface{}{}
+	}
+	return payload
+}
+
+func metaMap(message map[string]interface{}) map[string]interface{} {
+	meta, _ := message["meta"].(map[string]interface{})
+	if meta == nil {
+		return map[string]interface{}{}
+	}
+	return meta
 }
 
 func resolveProbeURL(baseURL string, path string, query map[string]string) string {
@@ -1086,6 +1344,27 @@ func realtimeProbeOK(snapshot devRealtimeProbeSnapshot) bool {
 		snapshot.StorageFound &&
 		snapshot.AckSequence > snapshot.SnapshotSequence &&
 		snapshot.IdempotentRetryAcked
+}
+
+func multiUserProbeOK(snapshot devMultiUserProbeSnapshot) bool {
+	storageSequenceMatches := snapshot.StorageAckSequence == 0 ||
+		snapshot.StorageUpdateSequence == 0 ||
+		snapshot.StorageAckSequence == snapshot.StorageUpdateSequence
+	return snapshot.BothJoined &&
+		snapshot.ActiveUsersObserved >= 2 &&
+		snapshot.PresenceFanout &&
+		snapshot.EventFanout &&
+		snapshot.EventAcked &&
+		snapshot.StorageFound &&
+		snapshot.StorageUpdateFanout &&
+		storageSequenceMatches
+}
+
+func probeMultiUserMessage(snapshot devMultiUserProbeSnapshot) string {
+	if multiUserProbeOK(snapshot) {
+		return "Two runtime users joined one room and observed presence, event ACK, and storage fan-out"
+	}
+	return "Two-user collaboration probe did not complete"
 }
 
 func probeYJSRealtimeMessage(snapshot devYJSRealtimeProbeSnapshot) string {

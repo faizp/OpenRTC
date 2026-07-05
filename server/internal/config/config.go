@@ -14,6 +14,8 @@ const (
 	ModeSingle  RuntimeMode = "single"
 	ModeCluster RuntimeMode = "cluster"
 	ServerName              = "openrtc-server"
+
+	DefaultRedisEventLogMaxEntries = 1000
 )
 
 type LimitsConfig struct {
@@ -33,6 +35,12 @@ type WebhooksConfig struct {
 	TimeoutMS int
 }
 
+type RedisConfig struct {
+	URL                string
+	ChannelPrefix      string
+	EventLogMaxEntries int
+}
+
 type RuntimeConfig struct {
 	Mode   RuntimeMode
 	NodeID string
@@ -42,11 +50,8 @@ type RuntimeConfig struct {
 		WSPath         string
 		AllowedOrigins []string
 	}
-	Redis *struct {
-		URL           string
-		ChannelPrefix string
-	}
-	Auth struct {
+	Redis *RedisConfig
+	Auth  struct {
 		Issuer   string
 		Audience string
 		JWKSURL  string
@@ -225,12 +230,14 @@ func LoadFromMap(env map[string]string) (RuntimeConfig, error) {
 		if redisURL == "" {
 			return RuntimeConfig{}, &Error{Message: "OPENRTC_REDIS_URL is required when OPENRTC_MODE=cluster"}
 		}
-		cfg.Redis = &struct {
-			URL           string
-			ChannelPrefix string
-		}{
-			URL:           redisURL,
-			ChannelPrefix: defaultString(readString(env, "OPENRTC_REDIS_CHANNEL_PREFIX"), "room:"),
+		redisEventLogMaxEntries, err := readInt(env, "OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES", DefaultRedisEventLogMaxEntries)
+		if err != nil {
+			return RuntimeConfig{}, err
+		}
+		cfg.Redis = &RedisConfig{
+			URL:                redisURL,
+			ChannelPrefix:      defaultString(readString(env, "OPENRTC_REDIS_CHANNEL_PREFIX"), "room:"),
+			EventLogMaxEntries: redisEventLogMaxEntries,
 		}
 	}
 

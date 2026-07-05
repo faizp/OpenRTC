@@ -10,6 +10,7 @@ Environment variables map into the config contract as follows:
 - `OPENRTC_ALLOWED_ORIGINS` -> `server.allowed_origins` (comma-separated)
 - `OPENRTC_REDIS_URL` -> `redis.url`
 - `OPENRTC_REDIS_CHANNEL_PREFIX` -> `redis.channel_prefix`
+- `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` -> `redis.event_log_max_entries`
 - `OPENRTC_AUTH_ISSUER` -> `auth.issuer`
 - `OPENRTC_AUTH_AUDIENCE` -> `auth.audience`
 - `OPENRTC_AUTH_JWKS_URL` -> `auth.jwks_url`
@@ -46,7 +47,8 @@ Compactor-only environment variables are consumed directly by
 ## Parsing rules
 
 - Booleans accept only `true` or `false` (case-insensitive).
-- Integer fields must parse to base-10 positive integers.
+- Integer fields must parse to base-10 positive integers, except explicit
+  room connection caps where `0` disables the cap.
 - Empty string values are treated as missing.
 - `mode=cluster` without `OPENRTC_REDIS_URL` is invalid.
 - Webhook URLs must be absolute `http` or `https` URLs.

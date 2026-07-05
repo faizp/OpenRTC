@@ -37,7 +37,8 @@
       "required": ["url"],
       "properties": {
         "url": { "type": "string", "minLength": 1 },
-        "channel_prefix": { "type": "string", "default": "room:" }
+        "channel_prefix": { "type": "string", "default": "room:" },
+        "event_log_max_entries": { "type": "integer", "minimum": 1, "default": 1000 }
       }
     },
     "auth": {

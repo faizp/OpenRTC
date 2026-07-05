@@ -8,7 +8,8 @@
   },
   "redis": {
     "url": "redis://localhost:6379/0",
-    "channel_prefix": "room:"
+    "channel_prefix": "room:",
+    "event_log_max_entries": 1000
   },
   "auth": {
     "issuer": "https://issuer.example.com",

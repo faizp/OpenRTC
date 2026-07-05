@@ -61,6 +61,7 @@ import {
   sortInboxNotifications,
   threadQuery,
   threadQueryExists,
+  withOpenRTCConnectionParams,
   type OpenRTCAdminInboxNotification,
   type OpenRTCAdminThread,
   type OpenRTCCommentEvent,
@@ -466,6 +467,15 @@ assert.deepEqual(
   [],
 );
 
+assert.equal(
+  withOpenRTCConnectionParams("ws://localhost:8080/ws?existing=1", {
+    token: "token-1",
+    projectId: "proj-1",
+    resumeSession: { id: "rs-1", ttlSeconds: 60 },
+  }),
+  "ws://localhost:8080/ws?existing=1&token=token-1&project_id=proj-1&resume_session_id=rs-1&resume_ttl_seconds=60",
+);
+
 class FakeWebSocket implements OpenRTCWebSocket {
   static instances: FakeWebSocket[] = [];
 
@@ -562,6 +572,8 @@ class FakeDocument {
 const client = new OpenRTCClient({
   url: "http://localhost:8080/ws",
   token: "token-1",
+  projectId: "proj-1",
+  resumeSession: { id: "rs-1", ttlSeconds: 3600 },
   WebSocket: FakeWebSocket,
 });
 const diagnostics: OpenRTCDiagnosticEvent[] = [];
@@ -572,10 +584,14 @@ const connected = client.connect();
 await Promise.resolve();
 const socket = FakeWebSocket.instances[0];
 assert.ok(socket);
-assert.equal(socket.url, "ws://localhost:8080/ws?token=token-1");
+assert.equal(socket.url, "ws://localhost:8080/ws?token=token-1&project_id=proj-1&resume_session_id=rs-1&resume_ttl_seconds=3600");
 socket.open();
 await connected;
 
+let helloPayload: { connId: string; nodeId?: string; projectId?: string; resumeSessionId?: string } | undefined;
+client.on("hello", (event) => {
+  helloPayload = event;
+});
 let latestOthers = client.getOthers("tenant-a:doc");
 client.on("presence", (event) => {
   latestOthers = event.others;
@@ -583,9 +599,10 @@ client.on("presence", (event) => {
 
 socket.receive({
   t: "HELLO",
-  payload: { conn_id: "self", server: { node_id: "node-a" } },
+  payload: { conn_id: "self", server: { node_id: "node-a" }, project_id: "proj-1", resume_session_id: "rs-1" },
 });
 assert.equal(client.connId, "self");
+assert.deepEqual(helloPayload, { connId: "self", nodeId: "node-a", projectId: "proj-1", resumeSessionId: "rs-1" });
 
 socket.receive({
   t: "JOINED",
@@ -2789,6 +2806,194 @@ const adminClient = new OpenRTCAdminClient({
     if (input.endsWith("/v1/presence")) {
       return fakeResponse(202, "");
     }
+    if (input.endsWith("/v1/tenants") && init?.method === "POST") {
+      return fakeResponse(201, JSON.stringify({ id: "tenant-a", name: "Tenant A", metadata: { tier: "pro" } }));
+    }
+    if (input.endsWith("/v1/tenants") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "tenant-a", name: "Tenant A" }] }));
+    }
+    if (input.endsWith("/v1/tenants/tenant-a") && init?.method === "PATCH") {
+      return fakeResponse(200, JSON.stringify({ id: "tenant-a", name: JSON.parse(init.body ?? "{}").name ?? "Tenant A" }));
+    }
+    if (input.endsWith("/v1/tenants/tenant-a") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ id: "tenant-a", name: "Tenant A" }));
+    }
+    if (input.endsWith("/v1/tenants/tenant-a/projects") && init?.method === "POST") {
+      return fakeResponse(201, JSON.stringify({ id: "proj-1", tenantId: "tenant-a", name: "Project 1" }));
+    }
+    if (input.endsWith("/v1/tenants/tenant-a/projects") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "proj-1", tenantId: "tenant-a", name: "Project 1" }] }));
+    }
+    if (input.endsWith("/v1/tenants/tenant-a/projects/proj-1") && init?.method === "PATCH") {
+      return fakeResponse(200, JSON.stringify({ id: "proj-1", tenantId: "tenant-a", name: "Project Renamed" }));
+    }
+    if (input.endsWith("/v1/tenants/tenant-a/projects/proj-1") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ id: "proj-1", tenantId: "tenant-a", name: "Project 1" }));
+    }
+    if (input.endsWith("/v1/api-keys") && init?.method === "POST") {
+      return fakeResponse(
+        201,
+        JSON.stringify({ id: "key_1", tenantId: "tenant-a", projectId: "proj-1", name: "Server", prefix: "ortc_1234", revoked: false, secret: "ortc_sk_test" }),
+      );
+    }
+    if (input.includes("/v1/api-keys?")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({ data: [{ id: "key_1", tenantId: "tenant-a", projectId: "proj-1", name: "Server", prefix: "ortc_1234", revoked: false }] }),
+      );
+    }
+    if (input.endsWith("/v1/api-keys/key_1/revoke")) {
+      return fakeResponse(200, JSON.stringify({ id: "key_1", tenantId: "tenant-a", projectId: "proj-1", name: "Server", prefix: "ortc_1234", revoked: true }));
+    }
+    if (input.includes("/v1/audit-logs?")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "aud_1", action: "room.create", resourceType: "room", resourceId: "tenant-a:room-1", createdAt: "now" }] }));
+    }
+    if (input.includes("/v1/usage?")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ tenantId: "tenant-a", projectId: "proj-1", metric: "events.published", window: "2026-07-05", count: 1, updatedAt: "now" }] }));
+    }
+    if (input.includes("/v1/dashboard?")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          generatedAt: "now",
+          tenantId: "tenant-a",
+          projectId: "proj-1",
+          roomId: "tenant-a:room-1",
+          tenant: { id: "tenant-a", name: "Tenant A" },
+          project: { id: "proj-1", tenantId: "tenant-a", name: "Project 1" },
+          environment: { environment: "production", region: "us-east-1" },
+          summary: { rooms: 1, activeUsers: 1, events: 1, storageDocs: 1, errors: 1 },
+          apiKeys: [{ id: "key_1", tenantId: "tenant-a", projectId: "proj-1", name: "Server", prefix: "ortc_1234", revoked: false }],
+          rooms: [{ id: "tenant-a:room-1" }],
+          activeUsers: [{ type: "user", connection_id: "conn-1", id: "user-1" }],
+          events: [{ room: "tenant-a:room-1", event: "debug.ping", payload: { ok: true }, seq: 1 }],
+          storage: { found: true, document: { title: "Draft" } },
+          stats: { active_connections: 1 },
+          usage: [],
+          auditLogs: [],
+          webhookDeliveries: [],
+          resumeSessions: [],
+          richTextDocuments: [],
+          versionSnapshots: [],
+          errors: [{ source: "webhook", message: "failed", status: "failed", resource: "wd_1" }],
+          observability: { logs: [], errors: [{ source: "webhook", message: "failed" }], usage: [], webhooks: [] },
+        }),
+      );
+    }
+    if (input.includes("/v1/status?")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          generatedAt: "now",
+          status: "degraded",
+          tenantId: "tenant-a",
+          projectId: "proj-1",
+          roomId: "tenant-a:room-1",
+          environment: { environment: "production", region: "us-east-1" },
+          checks: [{ name: "webhooks", status: "degraded", checkedAt: "now" }],
+          errors: [{ source: "webhook", message: "failed" }],
+          publicPage: { title: "Partial service degradation", message: "1 recent issue(s) need review." },
+        }),
+      );
+    }
+    if (input.includes("/v1/support/debug-bundle?")) {
+      return fakeResponse(
+        200,
+        JSON.stringify({
+          generatedAt: "now",
+          tenantId: "tenant-a",
+          projectId: "proj-1",
+          roomId: "tenant-a:room-1",
+          environment: { environment: "production", region: "us-east-1" },
+          dashboard: {
+            generatedAt: "now",
+            tenantId: "tenant-a",
+            projectId: "proj-1",
+            tenant: { id: "tenant-a", name: "Tenant A" },
+            project: { id: "proj-1", tenantId: "tenant-a", name: "Project 1" },
+            environment: {},
+            summary: { rooms: 1, activeUsers: 0, events: 0, storageDocs: 0, errors: 0 },
+            apiKeys: [],
+            rooms: [],
+            activeUsers: [],
+            events: [],
+            storage: { found: false },
+            stats: {},
+            usage: [],
+            auditLogs: [],
+            webhookDeliveries: [],
+            resumeSessions: [],
+            richTextDocuments: [],
+            versionSnapshots: [],
+            errors: [],
+            observability: { logs: [], errors: [], usage: [], webhooks: [] },
+          },
+          status: {
+            generatedAt: "now",
+            status: "ok",
+            tenantId: "tenant-a",
+            projectId: "proj-1",
+            environment: {},
+            checks: [],
+            errors: [],
+            publicPage: { title: "All systems operational", message: "ok" },
+          },
+          safeConfig: {
+            mode: "cluster",
+            redisConfigured: true,
+            runtimeAuthConfigured: true,
+            adminAuthConfigured: true,
+            webhooksConfigured: true,
+            webhookEndpointCount: 1,
+            webSocketPath: "/ws",
+            tenantEnforcePrefix: true,
+            tenantSeparator: ":",
+            payloadMaxBytes: 16384,
+            envelopeMaxBytes: 20480,
+          },
+          suggestedActions: ["No immediate support actions are required."],
+        }),
+      );
+    }
+    if (input.includes("/v1/webhook-deliveries?")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "wd_1", webhookId: "evt_1", event: "room.created", url: "https://example.test", status: "failed", attempts: 1, createdAt: "now", updatedAt: "now" }] }));
+    }
+    if (input.endsWith("/v1/webhook-deliveries/wd_1/retry")) {
+      return fakeResponse(200, JSON.stringify({ id: "wd_1", webhookId: "evt_1", event: "room.created", url: "https://example.test", status: "delivered", attempts: 2, createdAt: "now", updatedAt: "now" }));
+    }
+    if (input.endsWith("/v1/webhook-deliveries/wd_1/dead-letter")) {
+      return fakeResponse(200, JSON.stringify({ id: "wd_1", webhookId: "evt_1", event: "room.created", url: "https://example.test", status: "dead", attempts: 2, createdAt: "now", updatedAt: "now" }));
+    }
+    if (input.endsWith("/v1/resume-sessions") && init?.method === "POST") {
+      return fakeResponse(201, JSON.stringify({ id: "rs_1", tenantId: "tenant-a", projectId: "proj-1", subject: "user-1", rooms: ["tenant-a:room-1"], roomCursors: {}, createdAt: "now", updatedAt: "now", expiresAt: "later" }));
+    }
+    if (input.includes("/v1/resume-sessions?")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "rs_1", tenantId: "tenant-a", projectId: "proj-1", subject: "user-1", rooms: ["tenant-a:room-1"], roomCursors: {}, createdAt: "now", updatedAt: "now", expiresAt: "later" }] }));
+    }
+    if (input.endsWith("/v1/resume-sessions/rs_1") && init?.method === "DELETE") {
+      return fakeResponse(204, "");
+    }
+    if (input.endsWith("/v1/resume-sessions/rs_1") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ id: "rs_1", tenantId: "tenant-a", projectId: "proj-1", subject: "user-1", rooms: ["tenant-a:room-1"], roomCursors: {}, createdAt: "now", updatedAt: "now", expiresAt: "later" }));
+    }
+    if (input.endsWith("/versions") && init?.method === "POST") {
+      return fakeResponse(201, JSON.stringify({ id: "ver_1", roomId: "tenant-a:room-1", documentId: "storage", document: { title: "Draft" }, createdAt: "now" }));
+    }
+    if (input.includes("/versions?")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "ver_1", roomId: "tenant-a:room-1", documentId: "storage", document: { title: "Draft" }, createdAt: "now" }] }));
+    }
+    if (input.includes("/versions/ver_1")) {
+      return fakeResponse(200, JSON.stringify({ id: "ver_1", roomId: "tenant-a:room-1", documentId: "storage", document: { title: "Draft" }, createdAt: "now" }));
+    }
+    if (input.endsWith("/rich-text/doc-1") && init?.method === "PUT") {
+      return fakeResponse(200, JSON.stringify({ id: "doc-1", roomId: "tenant-a:room-1", content: JSON.parse(init.body ?? "{}").content, createdAt: "now", updatedAt: "now" }));
+    }
+    if (input.endsWith("/rich-text/doc-1") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ id: "doc-1", roomId: "tenant-a:room-1", content: { type: "doc" }, createdAt: "now", updatedAt: "now" }));
+    }
+    if (input.endsWith("/rich-text") && (!init?.method || init.method === "GET")) {
+      return fakeResponse(200, JSON.stringify({ data: [{ id: "doc-1", roomId: "tenant-a:room-1", content: { type: "doc" }, createdAt: "now", updatedAt: "now" }] }));
+    }
     if (input.includes("/active_users")) {
       return fakeResponse(200, JSON.stringify({ data: [{ type: "user", connection_id: "conn-1", id: "user-1" }] }));
     }
@@ -2935,6 +3140,84 @@ assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
   state: { cursor: { x: 1, y: 2 } },
   ttl_seconds: 30,
 });
+
+const tenant = await adminClient.createTenant({ id: "tenant-a", name: "Tenant A", metadata: { tier: "pro" } });
+assert.equal(tenant.id, "tenant-a");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { id: "tenant-a", name: "Tenant A", metadata: { tier: "pro" } });
+assert.equal((await adminClient.listTenants()).data[0]?.id, "tenant-a");
+assert.equal((await adminClient.getTenant("tenant-a")).name, "Tenant A");
+await adminClient.updateTenant("tenant-a", { name: "Tenant Renamed" });
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/tenants/tenant-a");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { name: "Tenant Renamed" });
+
+const project = await adminClient.createProject("tenant-a", { id: "proj-1", name: "Project 1" });
+assert.equal(project.id, "proj-1");
+assert.equal((await adminClient.listProjects("tenant-a")).data[0]?.id, "proj-1");
+assert.equal((await adminClient.getProject("tenant-a", "proj-1")).tenantId, "tenant-a");
+await adminClient.updateProject("tenant-a", "proj-1", { name: "Project Renamed" });
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/tenants/tenant-a/projects/proj-1");
+
+const apiKey = await adminClient.createAPIKey({ tenantId: "tenant-a", projectId: "proj-1", name: "Server", scopes: ["rooms:tenant-a:*"] });
+assert.equal(apiKey.secret, "ortc_sk_test");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
+  tenantId: "tenant-a",
+  projectId: "proj-1",
+  name: "Server",
+  scopes: ["rooms:tenant-a:*"],
+});
+assert.equal((await adminClient.listAPIKeys({ tenantId: "tenant-a", projectId: "proj-1" })).data[0]?.prefix, "ortc_1234");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/api-keys?tenantId=tenant-a&projectId=proj-1");
+assert.equal((await adminClient.revokeAPIKey("key_1")).revoked, true);
+
+assert.equal((await adminClient.listAuditLogs({ tenantId: "tenant-a", limit: 10 })).data[0]?.action, "room.create");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/audit-logs?tenantId=tenant-a&limit=10");
+assert.equal((await adminClient.listUsage({ tenantId: "tenant-a", projectId: "proj-1", window: "2026-07-05" })).data[0]?.metric, "events.published");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/usage?tenantId=tenant-a&projectId=proj-1&window=2026-07-05");
+const dashboard = await adminClient.dashboard({ tenantId: "tenant-a", projectId: "proj-1", roomId: "tenant-a:room-1", limit: 25 });
+assert.equal(dashboard.summary.errors, 1);
+assert.equal(dashboard.environment.region, "us-east-1");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/dashboard?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1&limit=25");
+const productStatus = await adminClient.status({ tenantId: "tenant-a", projectId: "proj-1", roomId: "tenant-a:room-1" });
+assert.equal(productStatus.publicPage.title, "Partial service degradation");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/status?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1");
+const supportBundle = await adminClient.supportDebugBundle({ tenantId: "tenant-a", projectId: "proj-1", roomId: "tenant-a:room-1" });
+assert.equal(supportBundle.safeConfig.redisConfigured, true);
+assert.equal(supportBundle.suggestedActions[0], "No immediate support actions are required.");
+assert.equal(adminCalls.at(-1)?.input, "http://localhost:8090/admin/v1/support/debug-bundle?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1");
+assert.equal((await adminClient.listWebhookDeliveries({ status: "failed" })).data[0]?.id, "wd_1");
+assert.equal(await adminClient.retryWebhookDelivery("wd_1").then((delivery) => delivery.status), "delivered");
+assert.equal(await adminClient.deadLetterWebhookDelivery("wd_1").then((delivery) => delivery.status), "dead");
+
+const resumeSession = await adminClient.upsertResumeSession({
+  tenantId: "tenant-a",
+  projectId: "proj-1",
+  subject: "user-1",
+  rooms: ["tenant-a:room-1"],
+  roomCursors: { "tenant-a:room-1": 12 },
+});
+assert.equal(resumeSession.id, "rs_1");
+assert.equal((await adminClient.listResumeSessions({ tenantId: "tenant-a", projectId: "proj-1" })).data[0]?.subject, "user-1");
+assert.equal(await adminClient.getResumeSession("rs_1").then((session) => session.id), "rs_1");
+await adminClient.deleteResumeSession("rs_1");
+
+const createdVersion = await adminClient.createVersionSnapshot("tenant-a:room-1", {
+  documentId: "storage",
+  label: "manual",
+  document: { title: "Draft" },
+});
+assert.equal(createdVersion.id, "ver_1");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), {
+  documentId: "storage",
+  label: "manual",
+  document: { title: "Draft" },
+});
+assert.equal((await adminClient.listVersionSnapshots("tenant-a:room-1", { documentId: "storage" })).data[0]?.id, "ver_1");
+assert.equal(await adminClient.getVersionSnapshot("tenant-a:room-1", "ver_1", { documentId: "storage" }).then((version) => version.documentId), "storage");
+
+assert.equal((await adminClient.setRichTextDocument("tenant-a:room-1", "doc-1", { content: { type: "doc" } })).id, "doc-1");
+assert.deepEqual(JSON.parse(adminCalls.at(-1)?.init?.body ?? "{}"), { content: { type: "doc" } });
+assert.equal(await adminClient.getRichTextDocument("tenant-a:room-1", "doc-1").then((doc) => doc.id), "doc-1");
+assert.equal((await adminClient.listRichTextDocuments("tenant-a:room-1")).data[0]?.id, "doc-1");
 
 const createdRoom = await adminClient.createRoom({ id: "tenant-a:room-1", metadata: { title: "Room" } });
 assert.deepEqual(createdRoom, { id: "tenant-a:room-1", metadata: { title: "Room" } });

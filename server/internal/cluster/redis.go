@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	aliveTTL           = 45 * time.Second
-	eventLogMaxEntries = 1000
+	aliveTTL = 45 * time.Second
+
+	DefaultEventLogMaxEntries = 1000
 )
 
 const (
@@ -394,18 +395,32 @@ type SequencedStorageDeleter interface {
 }
 
 type RedisStore struct {
-	client        *redis.Client
-	channelPrefix string
+	client             *redis.Client
+	channelPrefix      string
+	eventLogMaxEntries int
+}
+
+type RedisStoreOptions struct {
+	EventLogMaxEntries int
 }
 
 func NewRedisStore(redisURL string, channelPrefix string) (*RedisStore, error) {
-	options, err := redis.ParseURL(redisURL)
+	return NewRedisStoreWithOptions(redisURL, channelPrefix, RedisStoreOptions{})
+}
+
+func NewRedisStoreWithOptions(redisURL string, channelPrefix string, storeOptions RedisStoreOptions) (*RedisStore, error) {
+	redisOptions, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, err
 	}
+	eventLogMaxEntries := storeOptions.EventLogMaxEntries
+	if eventLogMaxEntries <= 0 {
+		eventLogMaxEntries = DefaultEventLogMaxEntries
+	}
 	return &RedisStore{
-		client:        redis.NewClient(options),
-		channelPrefix: channelPrefix,
+		client:             redis.NewClient(redisOptions),
+		channelPrefix:      channelPrefix,
+		eventLogMaxEntries: eventLogMaxEntries,
 	}, nil
 }
 
@@ -428,7 +443,7 @@ func (s *RedisStore) PublishEvent(ctx context.Context, event PublishedEvent) (Pu
 	logKey := roomEventLogKey(event.Room)
 	pipe := s.client.TxPipeline()
 	pipe.ZAdd(ctx, logKey, redis.Z{Score: float64(event.Sequence), Member: string(payload)})
-	pipe.ZRemRangeByRank(ctx, logKey, 0, -eventLogMaxEntries-1)
+	pipe.ZRemRangeByRank(ctx, logKey, 0, int64(-s.eventLogMaxEntries-1))
 	pipe.Publish(ctx, s.channelPrefix+event.Room, payload)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return PublishedEvent{}, err
@@ -440,8 +455,8 @@ func (s *RedisStore) ListPublishedEvents(ctx context.Context, room string, after
 	if limit <= 0 {
 		limit = 100
 	}
-	if limit > eventLogMaxEntries {
-		limit = eventLogMaxEntries
+	if limit > s.eventLogMaxEntries {
+		limit = s.eventLogMaxEntries
 	}
 	values, err := s.client.ZRangeByScore(ctx, roomEventLogKey(room), &redis.ZRangeBy{
 		Min:   fmt.Sprintf("(%d", afterSequence),

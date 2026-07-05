@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/openrtc/openrtc/server/internal/auth"
@@ -778,12 +779,10 @@ func TestNewAdminServiceConfigBranches(t *testing.T) {
 		Audience: "openrtc-admin",
 		JWKSURL:  "https://issuer.example.com/jwks.json",
 	}
-	cfg.Redis = &struct {
-		URL           string
-		ChannelPrefix string
-	}{
-		URL:           "redis://localhost:6379/0",
-		ChannelPrefix: "room:",
+	cfg.Redis = &config.RedisConfig{
+		URL:                "redis://localhost:6379/0",
+		ChannelPrefix:      "room:",
+		EventLogMaxEntries: config.DefaultRedisEventLogMaxEntries,
 	}
 	service, err = NewService(cfg, nil)
 	if err != nil {
@@ -2480,6 +2479,60 @@ func TestAdminWebhookFailuresAreBestEffort(t *testing.T) {
 	}
 }
 
+func TestAdminWebhookRetryWorkerRetriesDueFailures(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := cluster.NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	requests := 0
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("OpenRTC-Webhook-Signature") == "" {
+			t.Fatalf("missing webhook signature")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webhookServer.Close()
+
+	service := newTestAdminService(nil, store)
+	service.cfg.Webhooks = &config.WebhooksConfig{URLs: []string{webhookServer.URL}, Secret: "whsec_test", TimeoutMS: 1000}
+	service.webhookClient = webhookServer.Client()
+	due := time.Now().UTC().Add(-time.Minute)
+	delivery, err := store.CreateWebhookDelivery(context.Background(), cluster.WebhookDeliveryRecord{
+		ID:            "wd_retry",
+		WebhookID:     "evt_retry",
+		Event:         "room.created",
+		URL:           webhookServer.URL,
+		Status:        "failed",
+		Attempts:      1,
+		LastError:     "previous failure",
+		Payload:       json.RawMessage(`{"id":"evt_retry","event":"room.created","data":{}}`),
+		NextAttemptAt: &due,
+	})
+	if err != nil {
+		t.Fatalf("seed webhook delivery: %v", err)
+	}
+	retried := service.retryDueWebhookDeliveries(context.Background(), time.Now().UTC(), 10)
+	if retried != 1 {
+		t.Fatalf("expected one retry, got %d", retried)
+	}
+	updated, err := store.GetWebhookDelivery(context.Background(), delivery.ID)
+	if err != nil {
+		t.Fatalf("get retried delivery: %v", err)
+	}
+	if requests != 1 || updated.Status != "delivered" || updated.Attempts != 2 {
+		t.Fatalf("unexpected retry result requests=%d delivery=%+v", requests, updated)
+	}
+}
+
 type capturedWebhook struct {
 	Header http.Header
 	Body   []byte
@@ -3048,6 +3101,228 @@ func TestAdminRoomAndStorageHandlers(t *testing.T) {
 	readOnlyThreadWriteResp := performAdminRequest(readOnlyHandler, readOnlyToken, http.MethodPost, "/v1/rooms/tenant-a%3Aroom-1/threads", `{"comment":{"userId":"user-1","body":{}}}`)
 	if readOnlyThreadWriteResp.Code != http.StatusForbidden {
 		t.Fatalf("expected read-only thread create 403, got %d", readOnlyThreadWriteResp.Code)
+	}
+}
+
+func TestAdminProductionProductHandlers(t *testing.T) {
+	verifier, token, cleanup := newAdminTestVerifier(t, map[string]any{
+		"tenant": "tenant-a",
+		"scope":  "admin:tenant-a:* rooms:tenant-a:* storage:tenant-a:* publish:tenant-a:*",
+	})
+	defer cleanup()
+
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := cluster.NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	service := newTestAdminService(verifier, store)
+	handler := service.Handler()
+
+	createTenantResp := performAdminRequest(handler, token, http.MethodPost, "/v1/tenants", `{"id":"tenant-a","name":"Tenant A","metadata":{"tier":"pro"}}`)
+	if createTenantResp.Code != http.StatusCreated {
+		t.Fatalf("expected tenant create 201, got %d body=%q", createTenantResp.Code, createTenantResp.Body.String())
+	}
+	var tenant cluster.TenantRecord
+	if err := json.NewDecoder(createTenantResp.Body).Decode(&tenant); err != nil {
+		t.Fatalf("decode tenant: %v", err)
+	}
+	if tenant.ID != "tenant-a" || tenant.Name != "Tenant A" {
+		t.Fatalf("unexpected tenant: %+v", tenant)
+	}
+
+	createProjectResp := performAdminRequest(handler, token, http.MethodPost, "/v1/tenants/tenant-a/projects", `{"id":"proj-1","name":"Project 1"}`)
+	if createProjectResp.Code != http.StatusCreated {
+		t.Fatalf("expected project create 201, got %d body=%q", createProjectResp.Code, createProjectResp.Body.String())
+	}
+
+	apiKeyResp := performAdminRequest(handler, token, http.MethodPost, "/v1/api-keys", `{"tenantId":"tenant-a","projectId":"proj-1","name":"Server","scopes":["rooms:tenant-a:*"]}`)
+	if apiKeyResp.Code != http.StatusCreated {
+		t.Fatalf("expected api key create 201, got %d body=%q", apiKeyResp.Code, apiKeyResp.Body.String())
+	}
+	var apiKey struct {
+		ID     string `json:"id"`
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(apiKeyResp.Body).Decode(&apiKey); err != nil {
+		t.Fatalf("decode api key: %v", err)
+	}
+	if apiKey.ID == "" || !strings.HasPrefix(apiKey.Secret, "ortc_sk_") {
+		t.Fatalf("expected one-time secret in api key response, got %+v", apiKey)
+	}
+
+	createRoomReq := httptest.NewRequest(http.MethodPost, "/v1/rooms", strings.NewReader(`{"id":"tenant-a:room-1","metadata":{"title":"Draft"}}`))
+	createRoomReq.Header.Set("Authorization", "Bearer "+token)
+	createRoomReq.Header.Set("OpenRTC-Project-Id", "proj-1")
+	createRoomResp := httptest.NewRecorder()
+	handler.ServeHTTP(createRoomResp, createRoomReq)
+	if createRoomResp.Code != http.StatusCreated {
+		t.Fatalf("expected room create 201, got %d body=%q", createRoomResp.Code, createRoomResp.Body.String())
+	}
+
+	storageReq := httptest.NewRequest(http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/storage", strings.NewReader(`{"title":"Stored"}`))
+	storageReq.Header.Set("Authorization", "Bearer "+token)
+	storageReq.Header.Set("OpenRTC-Project-Id", "proj-1")
+	storageResp := httptest.NewRecorder()
+	handler.ServeHTTP(storageResp, storageReq)
+	if storageResp.Code != http.StatusOK {
+		t.Fatalf("expected storage set 200, got %d body=%q", storageResp.Code, storageResp.Body.String())
+	}
+
+	apiKeyRoomReq := httptest.NewRequest(http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1", nil)
+	apiKeyRoomReq.Header.Set("Authorization", "Bearer "+apiKey.Secret)
+	apiKeyRoomResp := httptest.NewRecorder()
+	handler.ServeHTTP(apiKeyRoomResp, apiKeyRoomReq)
+	if apiKeyRoomResp.Code != http.StatusOK {
+		t.Fatalf("expected api key bearer room get 200, got %d body=%q", apiKeyRoomResp.Code, apiKeyRoomResp.Body.String())
+	}
+	revokeResp := performAdminRequest(handler, token, http.MethodPost, "/v1/api-keys/"+apiKey.ID+"/revoke", "")
+	if revokeResp.Code != http.StatusOK {
+		t.Fatalf("expected api key revoke 200, got %d body=%q", revokeResp.Code, revokeResp.Body.String())
+	}
+	apiKeyRevokedResp := httptest.NewRecorder()
+	handler.ServeHTTP(apiKeyRevokedResp, apiKeyRoomReq)
+	if apiKeyRevokedResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected revoked api key bearer auth 401, got %d body=%q", apiKeyRevokedResp.Code, apiKeyRevokedResp.Body.String())
+	}
+
+	versionsResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/versions?documentId=storage", "")
+	if versionsResp.Code != http.StatusOK {
+		t.Fatalf("expected versions list 200, got %d body=%q", versionsResp.Code, versionsResp.Body.String())
+	}
+	var versions listResponse[cluster.VersionSnapshotRecord]
+	if err := json.NewDecoder(versionsResp.Body).Decode(&versions); err != nil {
+		t.Fatalf("decode versions: %v", err)
+	}
+	if len(versions.Data) != 1 || string(versions.Data[0].Document) != `{"title":"Stored"}` {
+		t.Fatalf("unexpected versions: %+v", versions)
+	}
+
+	richResp := performAdminRequest(handler, token, http.MethodPut, "/v1/rooms/tenant-a%3Aroom-1/rich-text/doc-1", `{"content":{"type":"doc","content":[]},"metadata":{"title":"Doc"}}`)
+	if richResp.Code != http.StatusOK {
+		t.Fatalf("expected rich text upsert 200, got %d body=%q", richResp.Code, richResp.Body.String())
+	}
+	richListResp := performAdminRequest(handler, token, http.MethodGet, "/v1/rooms/tenant-a%3Aroom-1/rich-text", "")
+	if richListResp.Code != http.StatusOK {
+		t.Fatalf("expected rich text list 200, got %d body=%q", richListResp.Code, richListResp.Body.String())
+	}
+	var richDocs listResponse[cluster.RichTextDocumentRecord]
+	if err := json.NewDecoder(richListResp.Body).Decode(&richDocs); err != nil {
+		t.Fatalf("decode rich docs: %v", err)
+	}
+	if len(richDocs.Data) != 1 || richDocs.Data[0].ID != "doc-1" {
+		t.Fatalf("unexpected rich docs: %+v", richDocs)
+	}
+
+	sessionResp := performAdminRequest(handler, token, http.MethodPost, "/v1/resume-sessions", `{"tenantId":"tenant-a","projectId":"proj-1","subject":"user-1","rooms":["tenant-a:room-1"],"roomCursors":{"tenant-a:room-1":7},"ttlSeconds":3600}`)
+	if sessionResp.Code != http.StatusCreated {
+		t.Fatalf("expected resume session create 201, got %d body=%q", sessionResp.Code, sessionResp.Body.String())
+	}
+	var session cluster.ResumeSessionRecord
+	if err := json.NewDecoder(sessionResp.Body).Decode(&session); err != nil {
+		t.Fatalf("decode resume session: %v", err)
+	}
+	if session.Subject != "user-1" || session.RoomCursors["tenant-a:room-1"] != 7 {
+		t.Fatalf("unexpected resume session: %+v", session)
+	}
+
+	usageResp := performAdminRequest(handler, token, http.MethodGet, "/v1/usage?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1", "")
+	if usageResp.Code != http.StatusOK {
+		t.Fatalf("expected usage list 200, got %d body=%q", usageResp.Code, usageResp.Body.String())
+	}
+	var usage listResponse[cluster.UsageRecord]
+	if err := json.NewDecoder(usageResp.Body).Decode(&usage); err != nil {
+		t.Fatalf("decode usage: %v", err)
+	}
+	if len(usage.Data) == 0 {
+		t.Fatalf("expected usage records after project-scoped room/storage writes")
+	}
+
+	auditResp := performAdminRequest(handler, token, http.MethodGet, "/v1/audit-logs?tenantId=tenant-a&projectId=proj-1", "")
+	if auditResp.Code != http.StatusOK {
+		t.Fatalf("expected audit list 200, got %d body=%q", auditResp.Code, auditResp.Body.String())
+	}
+	var audits listResponse[cluster.AuditLogRecord]
+	if err := json.NewDecoder(auditResp.Body).Decode(&audits); err != nil {
+		t.Fatalf("decode audits: %v", err)
+	}
+	if len(audits.Data) == 0 {
+		t.Fatalf("expected audit records")
+	}
+
+	delivery, err := store.CreateWebhookDelivery(context.Background(), cluster.WebhookDeliveryRecord{
+		ID:        "wd_1",
+		WebhookID: "evt_1",
+		Event:     "room.created",
+		URL:       "https://example.invalid/webhook",
+		Status:    "failed",
+		Payload:   json.RawMessage(`{"id":"evt_1"}`),
+	})
+	if err != nil {
+		t.Fatalf("seed webhook delivery: %v", err)
+	}
+	if delivery.ID != "wd_1" {
+		t.Fatalf("unexpected seeded delivery: %+v", delivery)
+	}
+	dlqResp := performAdminRequest(handler, token, http.MethodPost, "/v1/webhook-deliveries/wd_1/dead-letter", "")
+	if dlqResp.Code != http.StatusOK {
+		t.Fatalf("expected webhook dead-letter 200, got %d body=%q", dlqResp.Code, dlqResp.Body.String())
+	}
+	var dlq cluster.WebhookDeliveryRecord
+	if err := json.NewDecoder(dlqResp.Body).Decode(&dlq); err != nil {
+		t.Fatalf("decode dlq: %v", err)
+	}
+	if dlq.Status != "dead" {
+		t.Fatalf("expected dead delivery, got %+v", dlq)
+	}
+
+	dashboardResp := performAdminRequest(handler, token, http.MethodGet, "/v1/dashboard?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1&limit=50", "")
+	if dashboardResp.Code != http.StatusOK {
+		t.Fatalf("expected dashboard 200, got %d body=%q", dashboardResp.Code, dashboardResp.Body.String())
+	}
+	var dashboard productDashboardResponse
+	if err := json.NewDecoder(dashboardResp.Body).Decode(&dashboard); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if dashboard.TenantID != "tenant-a" || dashboard.ProjectID != "proj-1" || dashboard.RoomID != "tenant-a:room-1" {
+		t.Fatalf("unexpected dashboard scope: %+v", dashboard)
+	}
+	if dashboard.Summary.Rooms == 0 || len(dashboard.APIKeys) == 0 || !dashboard.Storage.Found || len(dashboard.RichTextDocuments) == 0 || len(dashboard.ResumeSessions) == 0 {
+		t.Fatalf("dashboard is missing customer console records: %+v", dashboard.Summary)
+	}
+	if len(dashboard.Usage) == 0 || len(dashboard.AuditLogs) == 0 || len(dashboard.Errors) == 0 {
+		t.Fatalf("dashboard should expose usage, audit logs, and failed/dead errors: usage=%d audits=%d errors=%d", len(dashboard.Usage), len(dashboard.AuditLogs), len(dashboard.Errors))
+	}
+
+	statusResp := performAdminRequest(handler, token, http.MethodGet, "/v1/status?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1", "")
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("expected product status 200, got %d body=%q", statusResp.Code, statusResp.Body.String())
+	}
+	var status productStatusResponse
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Status != "degraded" || len(status.Errors) == 0 || status.PublicPage.Title == "" {
+		t.Fatalf("expected degraded customer status with errors and public page copy, got %+v", status)
+	}
+
+	bundleResp := performAdminRequest(handler, token, http.MethodGet, "/v1/support/debug-bundle?tenantId=tenant-a&projectId=proj-1&roomId=tenant-a%3Aroom-1", "")
+	if bundleResp.Code != http.StatusOK {
+		t.Fatalf("expected support debug bundle 200, got %d body=%q", bundleResp.Code, bundleResp.Body.String())
+	}
+	var bundle productSupportDebugBundleResponse
+	if err := json.NewDecoder(bundleResp.Body).Decode(&bundle); err != nil {
+		t.Fatalf("decode support bundle: %v", err)
+	}
+	if !bundle.SafeConfig.RedisConfigured || bundle.Dashboard.TenantID != "tenant-a" || len(bundle.SuggestedActions) == 0 {
+		t.Fatalf("unexpected support debug bundle: %+v", bundle)
 	}
 }
 

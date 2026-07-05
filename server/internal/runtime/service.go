@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,10 +29,11 @@ import (
 )
 
 var (
-	heartbeatInterval = 15 * time.Second
-	reconcileInterval = 30 * time.Second
-	newClusterStore   = func(url string, channelPrefix string) (cluster.Store, error) {
-		return cluster.NewRedisStore(url, channelPrefix)
+	heartbeatInterval      = 15 * time.Second
+	reconcileInterval      = 30 * time.Second
+	errMissingRuntimeToken = errors.New("missing bearer token")
+	newClusterStore        = func(url string, channelPrefix string, options cluster.RedisStoreOptions) (cluster.Store, error) {
+		return cluster.NewRedisStoreWithOptions(url, channelPrefix, options)
 	}
 	randomRead            = rand.Read
 	clientMessageHandlers = map[protocol.MessageType]func(*Service, *clientConn, protocol.Message) error{
@@ -94,12 +96,15 @@ type Service struct {
 }
 
 type clientConn struct {
-	id      string
-	ws      *websocket.Conn
-	service *Service
-	claims  *auth.Claims
-	send    chan outboundMessage
-	done    chan struct{}
+	id              string
+	ws              *websocket.Conn
+	service         *Service
+	claims          *auth.Claims
+	projectID       string
+	resumeSessionID string
+	resumeSession   *cluster.ResumeSessionRecord
+	send            chan outboundMessage
+	done            chan struct{}
 
 	writeMu sync.Mutex
 	closeMu sync.Mutex
@@ -116,18 +121,24 @@ type emitLimiter struct {
 }
 
 type yjsConn struct {
-	id      string
-	ws      *websocket.Conn
-	service *Service
-	claims  *auth.Claims
-	room    string
-	send    chan []byte
-	done    chan struct{}
-	limiter *emitLimiter
+	id        string
+	ws        *websocket.Conn
+	service   *Service
+	claims    *auth.Claims
+	projectID string
+	room      string
+	send      chan []byte
+	done      chan struct{}
+	limiter   *emitLimiter
 
 	writeMu sync.Mutex
 	closeMu sync.Mutex
 	closed  bool
+}
+
+type runtimeAuthResult struct {
+	claims    *auth.Claims
+	projectID string
 }
 
 type outboundMessage struct {
@@ -206,7 +217,9 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 	}
 
 	if cfg.Redis != nil {
-		store, err := newClusterStore(cfg.Redis.URL, cfg.Redis.ChannelPrefix)
+		store, err := newClusterStore(cfg.Redis.URL, cfg.Redis.ChannelPrefix, cluster.RedisStoreOptions{
+			EventLogMaxEntries: cfg.Redis.EventLogMaxEntries,
+		})
 		if err != nil {
 			cancel()
 			return nil, err
@@ -326,6 +339,10 @@ func yjsEventKindLabel(kind cluster.YJSEventKind) string {
 	}
 }
 
+func yjsUsageMetric(kind cluster.YJSEventKind) string {
+	return "yjs." + yjsEventKindLabel(kind)
+}
+
 func (s *Service) Close() error {
 	s.cancel()
 	s.closeActiveSockets()
@@ -366,15 +383,18 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
-	token := tokenFromRequest(r)
-	if token == "" {
+	authn, err := s.authenticateRequest(r)
+	if errors.Is(err, errMissingRuntimeToken) {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
-
-	claims, err := s.verifier.Verify(r.Context(), token)
 	if err != nil {
 		http.Error(w, "invalid bearer token", http.StatusUnauthorized)
+		return
+	}
+	resumeSession, err := s.resumeSessionFromRequest(r.Context(), r, authn.claims, authn.projectID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -387,27 +407,43 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := &clientConn{
-		id:      newConnID(),
-		ws:      ws,
-		service: s,
-		claims:  claims,
-		send:    make(chan outboundMessage, s.cfg.Limits.OutboundQueueDepth),
-		done:    make(chan struct{}),
-		limiter: &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
+		id:        newConnID(),
+		ws:        ws,
+		service:   s,
+		claims:    authn.claims,
+		projectID: authn.projectID,
+		send:      make(chan outboundMessage, s.cfg.Limits.OutboundQueueDepth),
+		done:      make(chan struct{}),
+		limiter:   &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
+	}
+	if resumeSession != nil {
+		conn.resumeSessionID = resumeSession.ID
+		copied := *resumeSession
+		copied.Rooms = append([]string(nil), resumeSession.Rooms...)
+		copied.RoomCursors = copyRoomCursors(resumeSession.RoomCursors)
+		conn.resumeSession = &copied
 	}
 
 	s.registerConn(conn)
 	defer s.unregisterConn(conn)
+	s.recordConnUsage(conn, "", "runtime.connections", 1)
 
-	if err := conn.enqueue(outboundMessage{
-		T: "HELLO",
-		Payload: map[string]any{
-			"conn_id": conn.id,
-			"server": map[string]any{
-				"name":    config.ServerName,
-				"node_id": s.cfg.NodeID,
-			},
+	helloPayload := map[string]any{
+		"conn_id": conn.id,
+		"server": map[string]any{
+			"name":    config.ServerName,
+			"node_id": s.cfg.NodeID,
 		},
+	}
+	if conn.projectID != "" {
+		helloPayload["project_id"] = conn.projectID
+	}
+	if conn.resumeSessionID != "" {
+		helloPayload["resume_session_id"] = conn.resumeSessionID
+	}
+	if err := conn.enqueue(outboundMessage{
+		T:       "HELLO",
+		Payload: helloPayload,
 	}); err != nil {
 		return
 	}
@@ -439,18 +475,16 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := tokenFromRequest(r)
-	if token == "" {
+	authn, err := s.authenticateRequest(r)
+	if errors.Is(err, errMissingRuntimeToken) {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
 		return
 	}
-
-	claims, err := s.verifier.Verify(r.Context(), token)
 	if err != nil {
 		http.Error(w, "invalid bearer token", http.StatusUnauthorized)
 		return
 	}
-	if !s.allowsRoomAction(r.Context(), claims, "join", room) {
+	if !s.allowsRoomAction(r.Context(), authn.claims, "join", room) {
 		http.Error(w, "room join is not permitted", http.StatusForbidden)
 		return
 	}
@@ -458,8 +492,8 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 	connID := newConnID()
 	if err := s.roomEngine().RegisterYJSSessionWithLimit(roomengine.YJSSessionInfo{
 		ConnID:  connID,
-		Subject: claims.Subject,
-		Tenant:  claims.Tenant,
+		Subject: authn.claims.Subject,
+		Tenant:  authn.claims.Tenant,
 		Room:    room,
 	}, s.cfg.Limits.YJSRoomConnections); errors.Is(err, roomengine.ErrYJSRoomCapacityExceeded) {
 		http.Error(w, "yjs room capacity exceeded", http.StatusTooManyRequests)
@@ -481,19 +515,21 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := &yjsConn{
-		id:      connID,
-		ws:      ws,
-		service: s,
-		claims:  claims,
-		room:    room,
-		send:    make(chan []byte, s.cfg.Limits.OutboundQueueDepth),
-		done:    make(chan struct{}),
-		limiter: &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
+		id:        connID,
+		ws:        ws,
+		service:   s,
+		claims:    authn.claims,
+		projectID: authn.projectID,
+		room:      room,
+		send:      make(chan []byte, s.cfg.Limits.OutboundQueueDepth),
+		done:      make(chan struct{}),
+		limiter:   &emitLimiter{limit: s.cfg.Limits.EmitsPerSecond},
 	}
 
 	s.registerReservedYJSConn(conn)
 	registered = false
 	defer s.unregisterYJSConn(conn)
+	s.recordYJSUsage(conn, "yjs.connections", 1)
 
 	go conn.writeLoop()
 	go s.yjsHeartbeatLoop(conn)
@@ -537,7 +573,7 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if plan.RequiresPublish {
-			if !s.allowsRoomAction(r.Context(), claims, "publish", room) {
+			if !s.allowsRoomAction(r.Context(), authn.claims, "publish", room) {
 				conn.close(openrtcerr.DescriptorFor(openrtcerr.CodeRoomForbidden).WSCloseCode, openrtcerr.WSCloseReason(openrtcerr.CodeRoomForbidden))
 				return
 			}
@@ -560,6 +596,7 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.recordYJSUsage(conn, yjsUsageMetric(kind), 1)
 	}
 }
 
@@ -671,6 +708,10 @@ func (s *Service) handleJoin(conn *clientConn, message protocol.Message) error {
 	}); err != nil {
 		return err
 	}
+	s.recordConnUsage(conn, message.Room, "room.joins", 1)
+	if err := s.touchResumeSessionRoom(conn, message.Room); err != nil {
+		return err
+	}
 	return s.sendReplayEvents(conn, replayEvents)
 }
 
@@ -693,6 +734,7 @@ func (s *Service) handleLeave(conn *clientConn, message protocol.Message) error 
 			s.roomEngine().ApplyLeavePlan(plan)
 		}
 		s.recordLeave()
+		s.recordConnUsage(conn, message.Room, "room.leaves", 1)
 	}
 
 	return conn.enqueue(outboundMessage{T: "LEFT", ID: message.ID, Room: message.Room})
@@ -755,6 +797,7 @@ func (s *Service) handleEmit(conn *clientConn, message protocol.Message) error {
 	if err := s.broadcastEvent(event, true); err != nil {
 		return err
 	}
+	s.recordConnUsage(conn, message.Room, "events.emitted", 1)
 	return nil
 }
 
@@ -769,6 +812,10 @@ func (s *Service) handleEventAck(conn *clientConn, message protocol.Message) err
 	if err := s.persistRoomEventAck(conn, message.Room, sequence); err != nil {
 		return err
 	}
+	if err := s.persistResumeSessionCursor(conn, message.Room, sequence); err != nil {
+		return err
+	}
+	s.recordConnUsage(conn, message.Room, "events.acked", 1)
 	return conn.enqueue(outboundMessage{
 		T:    "EVENT_ACKED",
 		ID:   message.ID,
@@ -781,6 +828,11 @@ func (s *Service) joinMetaWithDurableEventAck(conn *clientConn, room string, joi
 	durableSequence, err := s.durableRoomEventAck(conn, room)
 	if err != nil {
 		return nil, err
+	}
+	if conn != nil && conn.resumeSession != nil {
+		if resumeSequence := conn.resumeSession.RoomCursors[room]; resumeSequence > durableSequence {
+			durableSequence = resumeSequence
+		}
 	}
 	if durableSequence == 0 {
 		return joinMeta, nil
@@ -822,6 +874,60 @@ func (s *Service) persistRoomEventAck(conn *clientConn, room string, sequence ui
 	return store.SetRoomEventAck(s.ctx, room, conn.claims.Subject, sequence)
 }
 
+func (s *Service) touchResumeSessionRoom(conn *clientConn, room string) error {
+	if conn == nil || conn.resumeSession == nil || conn.resumeSessionID == "" || room == "" {
+		return nil
+	}
+	if _, ok := conn.resumeSession.RoomCursors[room]; !ok {
+		conn.resumeSession.RoomCursors[room] = 0
+	}
+	if !stringListContains(conn.resumeSession.Rooms, room) {
+		conn.resumeSession.Rooms = append(conn.resumeSession.Rooms, room)
+	}
+	return s.upsertConnResumeSession(conn)
+}
+
+func (s *Service) persistResumeSessionCursor(conn *clientConn, room string, sequence uint64) error {
+	if conn == nil || conn.resumeSession == nil || conn.resumeSessionID == "" || room == "" || sequence == 0 {
+		return nil
+	}
+	if conn.resumeSession.RoomCursors == nil {
+		conn.resumeSession.RoomCursors = map[string]uint64{}
+	}
+	if current := conn.resumeSession.RoomCursors[room]; sequence <= current {
+		return nil
+	}
+	conn.resumeSession.RoomCursors[room] = sequence
+	if !stringListContains(conn.resumeSession.Rooms, room) {
+		conn.resumeSession.Rooms = append(conn.resumeSession.Rooms, room)
+	}
+	return s.upsertConnResumeSession(conn)
+}
+
+func (s *Service) upsertConnResumeSession(conn *clientConn) error {
+	store, ok := s.store.(interface {
+		UpsertResumeSession(context.Context, cluster.ResumeSessionRecord) (cluster.ResumeSessionRecord, error)
+	})
+	if !ok || conn == nil || conn.resumeSession == nil {
+		return nil
+	}
+	record := *conn.resumeSession
+	record.ID = conn.resumeSessionID
+	if conn.claims != nil {
+		record.TenantID = firstNonEmpty(record.TenantID, conn.claims.Tenant)
+		record.Subject = firstNonEmpty(record.Subject, conn.claims.Subject)
+	}
+	record.ProjectID = firstNonEmpty(record.ProjectID, conn.projectID)
+	record.Rooms = append([]string(nil), record.Rooms...)
+	record.RoomCursors = copyRoomCursors(record.RoomCursors)
+	updated, err := store.UpsertResumeSession(s.ctx, record)
+	if err != nil {
+		return err
+	}
+	conn.resumeSession = &updated
+	return nil
+}
+
 func (s *Service) handlePresence(conn *clientConn, message protocol.Message) error {
 	if !s.allowsRoomAction(s.ctx, conn.claims, "presence", message.Room) {
 		return conn.enqueue(outboundMessage{
@@ -850,6 +956,7 @@ func (s *Service) handlePresence(conn *clientConn, message protocol.Message) err
 		return err
 	}
 	s.recordPresenceUpdate()
+	s.recordConnUsage(conn, message.Room, "presence.upserted", 1)
 	return nil
 }
 
@@ -873,6 +980,7 @@ func (s *Service) handleStorageGet(conn *clientConn, message protocol.Message) e
 	if sequence > 0 {
 		outbound.Meta = map[string]any{"seq": sequence}
 	}
+	s.recordConnUsage(conn, message.Room, "storage.get", 1)
 	return conn.enqueue(outbound)
 }
 
@@ -903,6 +1011,7 @@ func (s *Service) handleStorageSet(conn *clientConn, message protocol.Message) e
 			return err
 		}
 	}
+	s.recordConnUsage(conn, message.Room, "storage.set", 1)
 	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document, plan.Fanout.Sequence))
 }
 
@@ -937,6 +1046,7 @@ func (s *Service) handleStoragePatch(conn *clientConn, message protocol.Message)
 			return err
 		}
 	}
+	s.recordConnUsage(conn, message.Room, "storage.patch", 1)
 	return conn.enqueue(storageAckMessage(message, plan.Mutation.Kind, plan.Mutation.Document, plan.Fanout.Sequence))
 }
 
@@ -1597,6 +1707,154 @@ func (s *Service) allowsRoomAction(ctx context.Context, claims *auth.Claims, act
 	})
 }
 
+func (s *Service) authenticateRequest(r *http.Request) (runtimeAuthResult, error) {
+	token := tokenFromRequest(r)
+	if token == "" {
+		return runtimeAuthResult{}, errMissingRuntimeToken
+	}
+	projectID := projectIDFromRuntimeRequest(r)
+	if s.verifier != nil {
+		claims, err := s.verifier.Verify(r.Context(), token)
+		if err == nil {
+			return runtimeAuthResult{claims: claims, projectID: projectID}, nil
+		}
+		if !strings.HasPrefix(token, "ortc_sk_") {
+			return runtimeAuthResult{}, err
+		}
+	}
+	store, ok := s.store.(interface {
+		VerifyAPIKey(context.Context, string) (cluster.APIKeyRecord, error)
+	})
+	if !ok {
+		return runtimeAuthResult{}, errors.New("api key authentication is not configured")
+	}
+	record, err := store.VerifyAPIKey(r.Context(), token)
+	if err != nil {
+		return runtimeAuthResult{}, err
+	}
+	claims := &auth.Claims{
+		Tenant: record.TenantID,
+		Scope:  strings.Join(record.Scopes, " "),
+	}
+	claims.Subject = "api-key:" + record.ID
+	return runtimeAuthResult{claims: claims, projectID: firstNonEmpty(projectID, record.ProjectID)}, nil
+}
+
+func (s *Service) resumeSessionFromRequest(ctx context.Context, r *http.Request, claims *auth.Claims, projectID string) (*cluster.ResumeSessionRecord, error) {
+	sessionID := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("resume_session_id"), r.URL.Query().Get("resumeSessionId"), r.Header.Get("OpenRTC-Resume-Session-Id")))
+	if sessionID == "" {
+		return nil, nil
+	}
+	if err := protocol.ValidateConnectionID(sessionID); err != nil {
+		return nil, err
+	}
+	if claims == nil || claims.Subject == "" {
+		return nil, errors.New("resume sessions require an authenticated subject")
+	}
+	store, ok := s.store.(interface {
+		GetResumeSession(context.Context, string) (cluster.ResumeSessionRecord, error)
+		UpsertResumeSession(context.Context, cluster.ResumeSessionRecord) (cluster.ResumeSessionRecord, error)
+	})
+	if !ok {
+		return nil, errors.New("resume sessions require redis backing")
+	}
+	record, err := store.GetResumeSession(ctx, sessionID)
+	if errors.Is(err, cluster.ErrResumeSessionNotFound) {
+		record = cluster.ResumeSessionRecord{
+			ID:          sessionID,
+			TenantID:    claims.Tenant,
+			ProjectID:   projectID,
+			Subject:     claims.Subject,
+			Rooms:       []string{},
+			RoomCursors: map[string]uint64{},
+			Metadata:    json.RawMessage(`{"source":"runtime"}`),
+			ExpiresAt:   time.Now().UTC().Add(resumeSessionTTLFromRequest(r)),
+		}
+		created, createErr := store.UpsertResumeSession(ctx, record)
+		if createErr != nil {
+			return nil, createErr
+		}
+		return &created, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if record.Subject != claims.Subject {
+		return nil, errors.New("resume session subject does not match token subject")
+	}
+	if record.TenantID != "" && claims.Tenant != "" && record.TenantID != claims.Tenant {
+		return nil, errors.New("resume session tenant does not match token tenant")
+	}
+	if record.ProjectID != "" && projectID != "" && record.ProjectID != projectID {
+		return nil, errors.New("resume session project does not match connection project")
+	}
+	if !record.ExpiresAt.After(time.Now().UTC()) {
+		return nil, errors.New("resume session has expired")
+	}
+	if record.ProjectID == "" && projectID != "" {
+		record.ProjectID = projectID
+		updated, updateErr := store.UpsertResumeSession(ctx, record)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		record = updated
+	}
+	return &record, nil
+}
+
+func resumeSessionTTLFromRequest(r *http.Request) time.Duration {
+	raw := firstNonEmpty(r.URL.Query().Get("resume_ttl_seconds"), r.URL.Query().Get("resumeTtlSeconds"))
+	if raw == "" {
+		return 24 * time.Hour
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return 24 * time.Hour
+	}
+	if seconds > 30*24*60*60 {
+		seconds = 30 * 24 * 60 * 60
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *Service) recordConnUsage(conn *clientConn, room string, metric string, count int64) {
+	if conn == nil {
+		return
+	}
+	s.recordUsage(s.ctx, conn.claims, conn.projectID, room, metric, count)
+}
+
+func (s *Service) recordYJSUsage(conn *yjsConn, metric string, count int64) {
+	if conn == nil {
+		return
+	}
+	s.recordUsage(s.ctx, conn.claims, conn.projectID, conn.room, metric, count)
+}
+
+func (s *Service) recordUsage(ctx context.Context, claims *auth.Claims, projectID string, room string, metric string, count int64) {
+	store, ok := s.store.(interface {
+		IncrementUsage(context.Context, cluster.UsageIncrement) (cluster.UsageRecord, error)
+	})
+	if !ok || claims == nil || metric == "" {
+		return
+	}
+	tenantID := firstNonEmpty(claims.Tenant, tenantFromRoom(room, s.cfg.Tenant.Separator))
+	if tenantID == "" || projectID == "" {
+		return
+	}
+	_, err := store.IncrementUsage(ctx, cluster.UsageIncrement{
+		TenantID:  tenantID,
+		ProjectID: projectID,
+		RoomID:    room,
+		Metric:    metric,
+		Window:    time.Now().UTC().Format("2006-01-02"),
+		Count:     count,
+	})
+	if err != nil && s.logger != nil {
+		s.logger.Printf("runtime usage meter write failed metric=%s room=%s error=%v", metric, room, err)
+	}
+}
+
 func decodeStoragePatchPayload(payload json.RawMessage) ([]cluster.JSONPatchOperation, *protocol.ParseError) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
@@ -1720,6 +1978,51 @@ func tokenFromRequest(r *http.Request) string {
 		}
 	}
 	return r.URL.Query().Get("token")
+}
+
+func projectIDFromRuntimeRequest(r *http.Request) string {
+	return firstNonEmpty(
+		r.Header.Get("OpenRTC-Project-Id"),
+		r.URL.Query().Get("project_id"),
+		r.URL.Query().Get("projectId"),
+	)
+}
+
+func copyRoomCursors(input map[string]uint64) map[string]uint64 {
+	output := make(map[string]uint64, len(input))
+	for room, sequence := range input {
+		output[room] = sequence
+	}
+	return output
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func tenantFromRoom(room string, separator string) string {
+	if separator == "" {
+		separator = ":"
+	}
+	before, _, ok := strings.Cut(room, separator)
+	if !ok {
+		return ""
+	}
+	return before
+}
+
+func stringListContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) checkOrigin(r *http.Request) bool {

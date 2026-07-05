@@ -6,8 +6,10 @@
   <link rel="icon" href="data:,">
   <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
-  <title>OpenRTC Dev Console</title>
+  <title>OpenRTC - Self-hosted realtime collaboration</title>
   <style>
+    @import url("https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800,900&display=swap");
+
     :root {
       color-scheme: light;
       --bg: #f5f7fa;
@@ -30,7 +32,7 @@
       --red-soft: #fee2e2;
       --shadow: 0 10px 28px rgba(21, 31, 48, 0.07);
       --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      --sans: "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --sans: "Cabinet Grotesk", "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     * {
@@ -134,6 +136,56 @@
       tab-size: 2;
     }
 
+    textarea[hidden] {
+      display: none;
+    }
+
+    .editor-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px 6px 0 0;
+      background: var(--surface-2);
+    }
+
+    .editor-toolbar button {
+      width: 32px;
+      min-height: 30px;
+      padding: 5px;
+      text-align: center;
+    }
+
+    .rich-text-editor {
+      min-height: 190px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-top: 0;
+      border-radius: 0 0 6px 6px;
+      background: #ffffff;
+      color: var(--text);
+      line-height: 1.55;
+      outline: none;
+      overflow-wrap: anywhere;
+    }
+
+    .rich-text-editor:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.13);
+    }
+
+    .rich-text-editor p {
+      margin: 0 0 8px;
+    }
+
+    .rich-text-editor ul,
+    .rich-text-editor ol {
+      margin: 0 0 8px 20px;
+      padding: 0;
+    }
+
     input:focus,
     select:focus,
     textarea:focus {
@@ -169,7 +221,7 @@
       top: 0;
       z-index: 5;
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) auto;
+      grid-template-columns: minmax(220px, auto) minmax(280px, 1fr) auto;
       align-items: center;
       gap: 16px;
       min-height: 58px;
@@ -184,6 +236,8 @@
       align-items: center;
       gap: 10px;
       min-width: 210px;
+      color: inherit;
+      text-decoration: none;
     }
 
     .brand-mark {
@@ -222,6 +276,33 @@
 
     .top-actions {
       justify-content: flex-end;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .nav-links a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
+      transition: color 180ms ease, background 180ms ease;
+    }
+
+    .nav-links a:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
     }
 
     .button-row {
@@ -639,6 +720,14 @@
         display: flex;
       }
 
+      .nav-links {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        overflow-x: visible;
+        padding-bottom: 2px;
+      }
+
       .top-actions {
         width: 100%;
         justify-content: flex-start;
@@ -690,7 +779,7 @@
       --red: #ff7a90;
       --red-soft: rgba(255, 122, 144, 0.14);
       --shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
-      --sans: "Geist", "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --sans: "Cabinet Grotesk", "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     html {
@@ -837,64 +926,105 @@
       color: #06110f;
     }
 
+    .site-main {
+      overflow-x: hidden;
+      width: 100%;
+      max-width: 100%;
+    }
+
     .attention-hero {
       width: min(1480px, calc(100% - 28px));
-      margin: 28px auto 6px;
-      min-height: 430px;
+      margin: 28px auto 0;
+      min-height: clamp(620px, 82vh, 820px);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
-      gap: clamp(20px, 2.6vw, 38px);
-      align-items: stretch;
-      padding: clamp(24px, 4vw, 58px);
+      grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.74fr);
+      gap: clamp(28px, 5vw, 82px);
+      align-items: center;
+      padding: clamp(28px, 5vw, 72px);
       border: 1px solid rgba(220, 236, 255, 0.14);
       border-radius: 8px;
       overflow: hidden;
       background:
-        linear-gradient(90deg, rgba(5, 7, 10, 0.96) 0%, rgba(5, 7, 10, 0.68) 58%, rgba(5, 7, 10, 0.9) 100%),
-        url("https://picsum.photos/seed/realtime-ops-room/1920/1080") center/cover;
+        radial-gradient(circle at 16% 22%, rgba(79, 209, 182, 0.2), transparent 28rem),
+        radial-gradient(circle at 88% 20%, rgba(246, 211, 101, 0.12), transparent 22rem),
+        linear-gradient(90deg, rgba(5, 7, 10, 0.98) 0%, rgba(5, 7, 10, 0.82) 58%, rgba(5, 7, 10, 0.94) 100%),
+        url("https://picsum.photos/seed/openrtc-collaboration-systems/1920/1080") center/cover;
       box-shadow: var(--shadow);
     }
 
     .hero-copy {
       display: grid;
       align-content: center;
-      gap: 24px;
+      gap: 26px;
       max-width: min(1120px, 100%);
     }
 
     .hero-copy h1 {
       max-width: min(1120px, 100%);
       margin: 0;
-      font-size: clamp(3rem, 5vw, 4.7rem);
-      line-height: 0.94;
+      font-size: clamp(3.05rem, 5vw, 5.6rem);
+      line-height: 0.92;
       letter-spacing: 0;
       text-wrap: balance;
     }
 
     .inline-hero-image {
       display: inline-block;
-      width: clamp(72px, 10vw, 156px);
-      height: clamp(32px, 4.4vw, 56px);
-      margin: 0 10px;
+      width: clamp(86px, 11vw, 174px);
+      height: clamp(34px, 4.5vw, 62px);
+      margin: 0 11px;
       border-radius: 999px;
       vertical-align: middle;
-      background: url("https://picsum.photos/seed/cursor-collaboration/420/180") center/cover;
-      filter: grayscale(0.2) contrast(1.2) saturate(1.12);
-      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+      background: url("https://picsum.photos/seed/collaborative-cursors-room/520/220") center/cover;
+      filter: grayscale(0.1) contrast(1.22) saturate(1.18);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24), 0 16px 50px rgba(0, 0, 0, 0.24);
     }
 
     .hero-copy p {
-      max-width: 760px;
+      max-width: 790px;
       margin: 0;
       color: #c8d4e2;
-      font-size: clamp(1rem, 1.5vw, 1.24rem);
-      line-height: 1.55;
+      font-size: clamp(1.04rem, 1.5vw, 1.28rem);
+      line-height: 1.58;
     }
 
-    .hero-actions {
+    .hero-actions,
+    .story-actions {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
+    }
+
+    .story-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 12px 18px;
+      border: 1px solid rgba(220, 236, 255, 0.18);
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 820;
+      font-size: 14px;
+      white-space: nowrap;
+      transition: transform 220ms ease, background 220ms ease, border-color 220ms ease;
+    }
+
+    .story-button:hover {
+      transform: translateY(-2px);
+      border-color: rgba(153, 246, 228, 0.58);
+    }
+
+    .story-button.primary {
+      border-color: rgba(153, 246, 228, 0.78);
+      background: #d7fff4;
+      color: #06110f;
+    }
+
+    .story-button.secondary {
+      background: rgba(255, 255, 255, 0.065);
+      color: #f3f7fb;
     }
 
     .hero-command {
@@ -904,50 +1034,116 @@
       min-width: 0;
     }
 
-    .hero-terminal {
-      min-height: 270px;
+    .hero-media {
+      position: relative;
+      min-height: 520px;
       border: 1px solid rgba(220, 236, 255, 0.14);
       border-radius: 8px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .hero-image {
+      position: absolute;
+      inset: 0;
       background:
-        linear-gradient(180deg, rgba(7, 10, 15, 0.72), rgba(7, 10, 15, 0.92)),
-        url("https://picsum.photos/seed/live-presence-debug/900/900") center/cover;
-      background-blend-mode: normal, luminosity;
-      padding: 16px;
+        linear-gradient(180deg, rgba(3, 7, 12, 0.05), rgba(3, 7, 12, 0.66)),
+        url("https://picsum.photos/seed/realtime-product-workspace/1100/1400") center/cover;
+      filter: grayscale(0.16) contrast(1.18) saturate(0.92);
+      transform: scale(1.02);
+      transition: transform 900ms ease;
+    }
+
+    .hero-media:hover .hero-image {
+      transform: scale(1.08);
+    }
+
+    .terminal-card {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      bottom: 18px;
+      border: 1px solid rgba(220, 236, 255, 0.16);
+      border-radius: 8px;
+      background: rgba(2, 6, 12, 0.82);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42);
       overflow: hidden;
     }
 
-    .hero-terminal-row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 12px;
+    .terminal-top {
+      display: flex;
       align-items: center;
-      padding: 12px 0;
+      gap: 7px;
+      min-height: 34px;
+      padding: 0 12px;
       border-bottom: 1px solid rgba(220, 236, 255, 0.12);
-    }
-
-    .hero-terminal-row:last-child {
-      border-bottom: 0;
-    }
-
-    .hero-terminal b {
-      display: block;
-      font-size: 22px;
-      line-height: 1;
-    }
-
-    .hero-terminal span {
       color: var(--muted);
       font-size: 12px;
-      font-weight: 750;
+      font-weight: 760;
     }
 
-    .marquee {
-      display: flex;
+    .terminal-top i {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #4fd1b6;
+      box-shadow: 15px 0 0 #ffd166, 30px 0 0 #ff7a90;
+    }
+
+    .terminal-card pre {
+      padding: 15px;
+      overflow-x: auto;
+      color: #dbeafe;
+    }
+
+    .terminal-card code {
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .story-section {
+      width: min(1480px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: clamp(108px, 14vw, 190px) 0;
+    }
+
+    .chapter-header {
+      display: grid;
+      grid-template-columns: minmax(0, 0.94fr) minmax(300px, 0.66fr);
+      gap: clamp(24px, 5vw, 76px);
+      align-items: end;
+      margin-bottom: clamp(28px, 5vw, 62px);
+    }
+
+    .chapter-header h2,
+    .pin-copy h2,
+    .cta-wrap h2 {
+      margin: 0;
+      color: var(--text);
+      font-size: clamp(2.4rem, 4.7vw, 5rem);
+      line-height: 0.95;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .chapter-header p,
+    .pin-copy p,
+    .cta-wrap p,
+    .compare-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.34vw, 1.2rem);
+      line-height: 1.6;
+    }
+
+    .partner-marquee {
       width: 100%;
       overflow: hidden;
       border-block: 1px solid rgba(220, 236, 255, 0.1);
-      color: rgba(243, 247, 251, 0.58);
-      font-weight: 850;
+      color: rgba(243, 247, 251, 0.56);
+      font-weight: 870;
       letter-spacing: 0;
       text-transform: uppercase;
     }
@@ -955,11 +1151,11 @@
     .marquee-track {
       display: flex;
       min-width: max-content;
-      animation: marquee 26s linear infinite;
+      animation: marquee 28s linear infinite;
     }
 
     .marquee-track span {
-      padding: 12px 26px;
+      padding: 16px 30px;
       white-space: nowrap;
     }
 
@@ -967,6 +1163,313 @@
       to {
         transform: translateX(-50%);
       }
+    }
+
+    .capability-bento {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-auto-rows: minmax(230px, auto);
+      grid-auto-flow: dense;
+      gap: 10px;
+    }
+
+    .capability-card {
+      position: relative;
+      display: grid;
+      align-content: end;
+      min-height: 230px;
+      overflow: hidden;
+      padding: clamp(18px, 2.6vw, 32px);
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      background:
+        radial-gradient(circle at 15% 0%, rgba(79, 209, 182, 0.16), transparent 20rem),
+        rgba(255, 255, 255, 0.045);
+      transition: transform 700ms ease, border-color 700ms ease, background 700ms ease;
+    }
+
+    .capability-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(153, 246, 228, 0.5);
+      background:
+        radial-gradient(circle at 15% 0%, rgba(79, 209, 182, 0.22), transparent 20rem),
+        rgba(255, 255, 255, 0.065);
+    }
+
+    .capability-card.large {
+      grid-column: span 5;
+      grid-row: span 2;
+    }
+
+    .capability-card.medium {
+      grid-column: span 4;
+    }
+
+    .capability-card.compact {
+      grid-column: span 3;
+    }
+
+    .capability-card .card-media {
+      position: absolute;
+      inset: 0;
+      opacity: 0.23;
+      background: var(--card-image) center/cover;
+      filter: grayscale(0.3) contrast(1.24);
+      transform: scale(1);
+      transition: transform 900ms ease, opacity 900ms ease;
+    }
+
+    .capability-card:hover .card-media {
+      opacity: 0.34;
+      transform: scale(1.07);
+    }
+
+    .capability-card h3,
+    .capability-card p,
+    .capability-card ul {
+      position: relative;
+      z-index: 1;
+    }
+
+    .capability-card h3 {
+      margin: 0 0 12px;
+      font-size: clamp(1.35rem, 2vw, 2.1rem);
+      line-height: 1;
+    }
+
+    .capability-card p,
+    .capability-card li {
+      color: #c7d4e3;
+      line-height: 1.5;
+    }
+
+    .capability-card p {
+      margin: 0;
+      max-width: 610px;
+    }
+
+    .capability-card ul {
+      display: grid;
+      gap: 8px;
+      margin: 16px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .why-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.74fr) minmax(0, 1fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .why-panel {
+      min-height: 420px;
+      display: grid;
+      align-content: end;
+      padding: clamp(22px, 3vw, 36px);
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(3, 7, 12, 0.18), rgba(3, 7, 12, 0.82)),
+        url("https://picsum.photos/seed/self-hosted-realtime-infrastructure/1200/1000") center/cover;
+      filter: contrast(1.08);
+    }
+
+    .why-panel h3 {
+      max-width: 520px;
+      margin: 0;
+      font-size: clamp(1.8rem, 3.4vw, 3.8rem);
+      line-height: 0.98;
+    }
+
+    .product-accordion {
+      display: flex;
+      min-height: 420px;
+      gap: 8px;
+    }
+
+    .product-accordion .accordion-slice {
+      position: relative;
+      display: grid;
+      align-content: end;
+      min-width: 0;
+      padding: 18px;
+      background:
+        linear-gradient(180deg, rgba(3, 7, 12, 0.08), rgba(3, 7, 12, 0.78)),
+        var(--slice-image) center/cover;
+      filter: grayscale(0.1) contrast(1.12);
+    }
+
+    .product-accordion .accordion-slice h3 {
+      margin: 0 0 8px;
+      font-size: 21px;
+    }
+
+    .product-accordion .accordion-slice p {
+      max-width: 410px;
+      color: #c7d4e3;
+    }
+
+    .pin-section {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.68fr) minmax(0, 1fr);
+      gap: clamp(28px, 5vw, 84px);
+      align-items: start;
+      padding-top: clamp(120px, 16vw, 210px);
+    }
+
+    .pin-copy {
+      display: grid;
+      gap: 22px;
+      align-content: start;
+      min-height: 420px;
+    }
+
+    .pin-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .stack-card {
+      position: sticky;
+      top: 108px;
+      min-height: 300px;
+      display: grid;
+      align-content: end;
+      padding: clamp(22px, 3vw, 36px);
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
+        rgba(8, 12, 18, 0.92);
+    }
+
+    .stack-card:nth-child(2) {
+      top: 128px;
+    }
+
+    .stack-card:nth-child(3) {
+      top: 148px;
+    }
+
+    .stack-card:nth-child(4) {
+      top: 168px;
+    }
+
+    .stack-card h3 {
+      margin: 0 0 10px;
+      font-size: clamp(1.5rem, 2.6vw, 2.8rem);
+      line-height: 1;
+    }
+
+    .stack-card p {
+      max-width: 680px;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .stack-card code {
+      display: inline-flex;
+      width: fit-content;
+      margin-bottom: 20px;
+      padding: 7px 9px;
+      border-radius: 999px;
+      background: rgba(215, 255, 244, 0.1);
+      color: #99f6e4;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .comparison-wrap {
+      overflow: auto;
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      box-shadow: var(--shadow);
+    }
+
+    .product-compare {
+      min-width: 980px;
+      background: transparent;
+    }
+
+    .product-compare th {
+      background: rgba(255, 255, 255, 0.06);
+      color: #dbeafe;
+      font-size: 12px;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .product-compare td {
+      color: #c7d4e3;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .product-compare strong {
+      color: var(--text);
+    }
+
+    .compare-note {
+      max-width: 820px;
+      margin-top: 20px;
+    }
+
+    .manifesto-section {
+      padding-top: clamp(90px, 12vw, 150px);
+    }
+
+    .scrub-copy {
+      max-width: 1180px;
+      margin: 0 auto;
+      color: var(--text);
+      font-size: clamp(2rem, 4.2vw, 4.6rem);
+      line-height: 1.04;
+      text-align: center;
+      text-wrap: balance;
+    }
+
+    .scrub-copy span {
+      display: inline-block;
+      opacity: 0.18;
+      transform: translateY(8px);
+    }
+
+    .cta-wrap {
+      display: grid;
+      gap: 24px;
+      padding: clamp(34px, 6vw, 82px);
+      border: 1px solid rgba(220, 236, 255, 0.14);
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 12% 10%, rgba(79, 209, 182, 0.18), transparent 26rem),
+        radial-gradient(circle at 88% 70%, rgba(246, 211, 101, 0.13), transparent 26rem),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025));
+    }
+
+    .site-footer {
+      width: min(1480px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 42px 0 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border-top: 1px solid rgba(220, 236, 255, 0.12);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .site-footer a {
+      color: #dbeafe;
+      text-decoration: none;
+      font-weight: 760;
     }
 
     .surface-bento {
@@ -1045,6 +1548,13 @@
     .accordion-slice:hover {
       flex: 2.25;
       background: rgba(79, 209, 182, 0.1);
+    }
+
+    .product-accordion .accordion-slice:hover {
+      flex: 2.25;
+      background:
+        linear-gradient(180deg, rgba(3, 7, 12, 0.02), rgba(3, 7, 12, 0.7)),
+        var(--slice-image) center/cover;
     }
 
     .cursor-lab {
@@ -1241,14 +1751,38 @@
       font-weight: 800;
     }
 
+    @media (max-width: 1320px) {
+      .topbar .status-row {
+        display: none;
+      }
+    }
+
     @media (max-width: 1120px) {
       .attention-hero,
-      .cursor-lab {
+      .cursor-lab,
+      .chapter-header,
+      .why-grid,
+      .pin-section {
         grid-template-columns: 1fr;
       }
 
       .hero-command {
         align-content: stretch;
+      }
+
+      .hero-media {
+        min-height: 420px;
+      }
+
+      .capability-bento {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
+
+      .capability-card.large,
+      .capability-card.medium,
+      .capability-card.compact {
+        grid-column: span 3;
+        grid-row: span 1;
       }
 
       .surface-bento {
@@ -1281,11 +1815,15 @@
       }
 
       .surface-bento,
+      .capability-bento,
       .latency-grid,
       .benchmark-strip {
         grid-template-columns: 1fr;
       }
 
+      .capability-card.large,
+      .capability-card.medium,
+      .capability-card.compact,
       .bento-card.large,
       .bento-card.wide,
       .bento-card.compact {
@@ -1296,8 +1834,29 @@
         flex-direction: column;
       }
 
+      .product-accordion {
+        flex-direction: column;
+      }
+
       .cursor-stage {
         min-height: 420px;
+      }
+
+      .hero-media,
+      .why-panel,
+      .product-accordion {
+        min-height: 360px;
+      }
+
+      .story-section {
+        width: calc(100% - 20px);
+        padding: 82px 0;
+      }
+
+      .site-footer {
+        width: calc(100% - 20px);
+        flex-direction: column;
+        align-items: flex-start;
       }
     }
   </style>
@@ -1305,13 +1864,20 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="brand">
+      <a class="brand" href="#top" aria-label="OpenRTC home">
         <div class="brand-mark" aria-hidden="true"></div>
         <div>
-          <h1>OpenRTC Dev Console</h1>
-          <small id="config-line">Loading local config</small>
+          <h1>OpenRTC</h1>
+          <small id="config-line">Self-hosted realtime layer</small>
         </div>
-      </div>
+      </a>
+      <nav class="nav-links" aria-label="Product navigation">
+        <a href="#capabilities">Capabilities</a>
+        <a href="#why">Why OpenRTC</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#comparison">Compare</a>
+        <a href="#dev-console">Console</a>
+      </nav>
       <div class="top-actions">
         <div class="status-row">
           <span class="status-pill"><span class="dot" id="runtime-dot"></span><span id="runtime-status">Runtime</span></span>
@@ -1324,44 +1890,213 @@
       </div>
     </header>
 
-    <section class="attention-hero motion-card">
-      <div class="hero-copy">
-        <h1>Realtime presence <span class="inline-hero-image" aria-hidden="true"></span> you can inspect at wire speed.</h1>
-        <p>Connect real sockets, spawn simulated collaborators, choose cursor modes, and watch fan-out, active users, Yjs frames, admin APIs, and latency traces from one integration console.</p>
-        <div class="hero-actions">
-          <button type="button" class="primary" onclick="runAction('presence-log', spawnPresenceClients)">Spawn clients</button>
-          <button type="button" onclick="activateTab('presence')">Open presence lab</button>
-        </div>
-        <div class="marquee" aria-hidden="true">
-          <div class="marquee-track">
-            <span>presence</span><span>cursors</span><span>broadcast</span><span>active users</span><span>Yjs awareness</span><span>debug traces</span>
-            <span>presence</span><span>cursors</span><span>broadcast</span><span>active users</span><span>Yjs awareness</span><span>debug traces</span>
+    <div class="site-main">
+      <section class="attention-hero motion-card" id="top">
+        <div class="hero-copy">
+          <h1>Own realtime <span class="inline-hero-image" aria-hidden="true"></span> collaboration.</h1>
+          <p>OpenRTC brings Liveblocks-style rooms, presence, storage, comments, notifications, and Yjs transport into an OSS stack your team can run, inspect, and extend.</p>
+          <div class="hero-actions">
+            <a class="story-button primary" href="#dev-console">Open dev console</a>
+            <a class="story-button secondary" href="#comparison">Compare products</a>
           </div>
         </div>
-      </div>
-      <div class="hero-command motion-card">
-        <div class="hero-terminal">
-          <div class="hero-terminal-row">
-            <div><span>Connected clients</span><b id="hero-clients">0</b></div>
-            <span class="badge info" id="hero-room">demo:room-1</span>
-          </div>
-          <div class="hero-terminal-row">
-            <div><span>Last presence echo</span><b id="hero-latency">0 ms</b></div>
-            <span class="badge ok">ephemeral</span>
-          </div>
-          <div class="hero-terminal-row">
-            <div><span>Event trace p95</span><b id="hero-p95">0 ms</b></div>
-            <span class="badge info">trace_id</span>
-          </div>
-          <div class="hero-terminal-row">
-            <div><span>Runtime diagnostics</span><b id="hero-diagnostics">0</b></div>
-            <span class="badge warn">debug</span>
-          </div>
-        </div>
-      </div>
-    </section>
+        <div class="hero-command motion-card">
+          <div class="hero-media">
+            <div class="hero-image scale-fade" aria-hidden="true"></div>
+            <div class="terminal-card">
+              <div class="terminal-top"><i aria-hidden="true"></i><span>openrtc product surface</span></div>
+              <pre><code>import { RoomProvider, CommentsPanel } from "@openrtc/react";
+import { OpenRTCYjsProvider } from "@openrtc/yjs";
 
-    <div class="workspace">
+&lt;RoomProvider id="tenant:canvas" initialPresence={{ cursor: null }}&gt;
+  &lt;CommentsPanel room="tenant:canvas" userId="user-1" /&gt;
+&lt;/RoomProvider&gt;</code></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="partner-marquee" aria-hidden="true">
+        <div class="marquee-track">
+          <span>Rooms</span><span>Presence</span><span>Cursors</span><span>Broadcast</span><span>Storage</span><span>Threads</span><span>Comments</span><span>Notifications</span><span>Yjs</span><span>Rich text</span><span>Dev probes</span>
+          <span>Rooms</span><span>Presence</span><span>Cursors</span><span>Broadcast</span><span>Storage</span><span>Threads</span><span>Comments</span><span>Notifications</span><span>Yjs</span><span>Rich text</span><span>Dev probes</span>
+        </div>
+      </div>
+
+      <section class="story-section" id="capabilities">
+        <div class="chapter-header">
+          <h2>A collaboration backend with product surfaces, not just sockets.</h2>
+          <p>OpenRTC is shaped around the things SaaS teams ship: collaborative canvases, dashboards, docs, editor comments, notification inboxes, and room-scoped permissions.</p>
+        </div>
+        <div class="capability-bento motion-stack">
+          <article class="capability-card large motion-card">
+            <div class="card-media scale-fade" style="--card-image: url('https://picsum.photos/seed/openrtc-presence-room/1200/1100')" aria-hidden="true"></div>
+            <h3>Live rooms, presence, cursors, and events</h3>
+            <p>Room handles expose presence snapshots, cursor state, reconnect behavior, active-user reads, and broadcast events with traceable fan-out.</p>
+            <ul>
+              <li>JSON WebSocket room lifecycle with scoped JWT authorization.</li>
+              <li>Ephemeral presence separated from durable document state.</li>
+              <li>Delivery ACK cursors and bounded event catch-up for reconnects.</li>
+            </ul>
+          </article>
+          <article class="capability-card medium motion-card">
+            <div class="card-media scale-fade" style="--card-image: url('https://picsum.photos/seed/liveblocks-storage-map/900/700')" aria-hidden="true"></div>
+            <h3>Typed storage</h3>
+            <p>LiveObject, LiveList, and LiveMap envelopes sit on top of durable JSON documents, optimistic mutations, conflict repair, and local undo/redo.</p>
+          </article>
+          <article class="capability-card compact motion-card">
+            <div class="card-media scale-fade" style="--card-image: url('https://picsum.photos/seed/product-comments-thread/800/700')" aria-hidden="true"></div>
+            <h3>Comments</h3>
+            <p>Durable room threads, replies, read state, metadata filters, mentions, reactions, and an embeddable React comments panel.</p>
+          </article>
+          <article class="capability-card medium motion-card">
+            <div class="card-media scale-fade" style="--card-image: url('https://picsum.photos/seed/yjs-document-sync/900/700')" aria-hidden="true"></div>
+            <h3>Yjs and rich text</h3>
+            <p>Persisted binary sync, awareness over presence, compaction workers, offline cache hooks, and host-owned Tiptap, Lexical, and BlockNote controllers.</p>
+          </article>
+          <article class="capability-card compact motion-card">
+            <div class="card-media scale-fade" style="--card-image: url('https://picsum.photos/seed/dev-ops-reconnect-drill/800/700')" aria-hidden="true"></div>
+            <h3>Ops by default</h3>
+            <p>Local JWKS, seeded rooms, socket inspection, storage/Yjs probes, reconnect drills, stable errors, rate limits, and health metrics.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="story-section" id="why">
+        <div class="chapter-header">
+          <h2>Why OpenRTC exists when managed collaboration clouds already do.</h2>
+          <p>Managed services are excellent when collaboration is a feature. OpenRTC is for teams where collaboration becomes infrastructure, and the room, document, permission, retention, and deployment model must be owned.</p>
+        </div>
+        <div class="why-grid">
+          <div class="why-panel motion-card scale-fade">
+            <h3>Keep realtime control close to your product and data boundaries.</h3>
+          </div>
+          <div class="product-accordion">
+            <article class="accordion-slice motion-card" style="--slice-image: url('https://picsum.photos/seed/tenant-permissions-model/900/900')">
+              <h3>Tenant control</h3>
+              <p>Room IDs, default grants, user grants, group grants, and scoped tokens are explicit instead of hidden behind a hosted tenant model.</p>
+            </article>
+            <article class="accordion-slice motion-card" style="--slice-image: url('https://picsum.photos/seed/observable-websocket-runtime/900/900')">
+              <h3>Inspectable runtime</h3>
+              <p>Socket state, admission caps, event ACKs, storage sequences, Yjs metadata, and crash drills are visible in local tooling.</p>
+            </article>
+            <article class="accordion-slice motion-card" style="--slice-image: url('https://picsum.photos/seed/open-source-collaboration-stack/900/900')">
+              <h3>OSS extensibility</h3>
+              <p>The Go runtime, TypeScript SDKs, React hooks, Yjs provider, and compactor are repo-owned pieces you can audit and adapt.</p>
+            </article>
+            <article class="accordion-slice motion-card" style="--slice-image: url('https://picsum.photos/seed/self-hosted-region-control/900/900')">
+              <h3>Deployment choice</h3>
+              <p>Run the same image as runtime or admin, use embedded local storage for dev, and Redis-backed cluster mode when you need fan-out.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="story-section pin-section" id="architecture">
+        <div class="pin-copy">
+          <h2>Designed around rooms as the unit of trust and motion.</h2>
+          <p>The runtime keeps live sockets fast while durable product state stays explicit: room records, storage documents, comments, inbox notifications, Yjs updates, and operational probes each have their own contract.</p>
+        </div>
+        <div class="pin-stack">
+          <article class="stack-card motion-card">
+            <code>openrtc-runtime</code>
+            <h3>Realtime coordinator</h3>
+            <p>Owns WebSocket traffic, room membership, presence, publish fan-out, JSON storage messages, Yjs upgrades, rate limits, origin checks, and admission control.</p>
+          </article>
+          <article class="stack-card motion-card">
+            <code>openrtc-admin</code>
+            <h3>Durable product API</h3>
+            <p>Manages room metadata, access grants, active users, storage documents, threads, comments, inbox notifications, subscription settings, webhooks, stats, and health endpoints.</p>
+          </article>
+          <article class="stack-card motion-card">
+            <code>@openrtc/react</code>
+            <h3>Application surface</h3>
+            <p>Gives React teams room providers, presence hooks, cursors, avatar stacks, storage selectors, mutation hooks, comments UI, and room subscription controls.</p>
+          </article>
+          <article class="stack-card motion-card">
+            <code>@openrtc/yjs</code>
+            <h3>Document sync lane</h3>
+            <p>Provides binary Yjs sync, state-vector diffs, awareness bridging over presence, optional IndexedDB cache, reconnect diagnostics, and trusted compaction support.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="story-section" id="comparison">
+        <div class="chapter-header">
+          <h2>Where OpenRTC sits against realtime products.</h2>
+          <p>This is not a claim that one tool beats every other tool. It is the deployment and ownership line: choose managed clouds for speed, channel platforms for generic pub/sub, database realtime for data feeds, and OpenRTC when collaboration itself is part of your infrastructure.</p>
+        </div>
+        <div class="comparison-wrap motion-card">
+          <table class="product-compare">
+            <thead>
+              <tr>
+                <th>Product shape</th>
+                <th>Best fit</th>
+                <th>Collaboration surface</th>
+                <th>Ownership model</th>
+                <th>OpenRTC difference</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Liveblocks</strong></td>
+                <td>Fastest path to managed collaborative products.</td>
+                <td>Multiplayer editing, comments, notifications, storage, Yjs/editor integrations, and UI packages.</td>
+                <td>Hosted collaboration cloud.</td>
+                <td>OpenRTC mirrors the room/presence/storage/comments shape while keeping runtime, admin API, storage contracts, and deployment in your repo.</td>
+              </tr>
+              <tr>
+                <td><strong>Ably</strong></td>
+                <td>Global realtime messaging, chat, spaces, live state, and pub/sub infrastructure.</td>
+                <td>Strong realtime primitives with collaboration products layered on channels.</td>
+                <td>Managed realtime platform.</td>
+                <td>OpenRTC is narrower and product-opinionated around SaaS rooms, access grants, comments, typed storage, and Yjs persistence.</td>
+              </tr>
+              <tr>
+                <td><strong>Pusher Channels</strong></td>
+                <td>Broad WebSocket pub/sub, presence channels, dashboards, webhooks, and fallback transport.</td>
+                <td>Events and presence, but app teams build durable comments, storage, and editor sync themselves.</td>
+                <td>Managed channel service.</td>
+                <td>OpenRTC pairs live channels with durable room APIs, SDK materializers, and local dev probes.</td>
+              </tr>
+              <tr>
+                <td><strong>Supabase Realtime</strong></td>
+                <td>Broadcast, presence, and Postgres change streams inside the Supabase ecosystem.</td>
+                <td>Realtime data and presence primitives for apps that already use Supabase or Postgres feeds.</td>
+                <td>Managed Supabase service with open-source components.</td>
+                <td>OpenRTC focuses on collaboration rooms, typed storage, threads, notifications, and Yjs rather than database-change delivery.</td>
+              </tr>
+              <tr>
+                <td><strong>DIY Yjs + Redis</strong></td>
+                <td>Maximum control when a team can design every protocol and product API.</td>
+                <td>Document sync can be excellent, but comments, notifications, auth, observability, and limits are custom work.</td>
+                <td>Fully owned stack.</td>
+                <td>OpenRTC gives the owned-stack path a product contract, SDKs, tests, local console, and operational guardrails.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="compare-note">Current external product positioning was checked against official docs for Liveblocks, Ably, Pusher Channels, and Supabase Realtime while this page was built.</p>
+      </section>
+
+      <section class="story-section manifesto-section">
+        <p class="scrub-copy" aria-label="OpenRTC gives teams a collaboration layer they can own without turning every product squad into protocol engineers.">
+          <span>OpenRTC</span> <span>gives</span> <span>teams</span> <span>a</span> <span>collaboration</span> <span>layer</span> <span>they</span> <span>can</span> <span>own</span> <span>without</span> <span>turning</span> <span>every</span> <span>product</span> <span>squad</span> <span>into</span> <span>protocol</span> <span>engineers.</span>
+        </p>
+      </section>
+
+      <section class="story-section action-section" id="console">
+        <div class="cta-wrap motion-card">
+          <h2>Run the stack, then inspect the whole collaboration surface.</h2>
+          <p>The live console below is part of the product story: issue local tokens, join real sockets, write presence, mutate typed storage, create threads, trigger notifications, exercise Yjs, and run reconnect drills.</p>
+          <div class="story-actions">
+            <a class="story-button primary" href="#dev-console">Enter console</a>
+            <a class="story-button secondary" href="#capabilities">Review capabilities</a>
+          </div>
+        </div>
+      </section>
+
+    <div class="workspace" id="dev-console">
       <aside class="sidebar">
         <div class="section">
           <div class="panel-header">
@@ -1440,6 +2175,7 @@
           <button type="button" class="tab-button" data-tab="threads">Threads</button>
           <button type="button" class="tab-button" data-tab="notifications">Notifications</button>
           <button type="button" class="tab-button" data-tab="yjs">Yjs</button>
+          <button type="button" class="tab-button" data-tab="production">Production</button>
           <button type="button" class="tab-button" data-tab="ops">Ops</button>
         </nav>
 
@@ -1938,6 +2674,101 @@
           </div>
         </section>
 
+        <section class="panel" id="tab-production">
+          <div class="panel-header">
+            <div>
+              <h2>Production</h2>
+              <p>Tenant, project, API key, audit, usage, webhook, resume, version, and rich-text operations.</p>
+            </div>
+            <div class="button-row">
+              <button type="button" class="primary" onclick="runAction('production-output', bootstrapProduction)">Bootstrap</button>
+              <button type="button" onclick="runAction('production-output', refreshProduction)">Refresh</button>
+              <button type="button" onclick="runAction('production-output', loadProductionDashboard)">Dashboard</button>
+              <button type="button" onclick="runAction('production-output', loadProductionStatus)">Status</button>
+              <button type="button" onclick="runAction('production-output', loadSupportDebugBundle)">Debug bundle</button>
+            </div>
+          </div>
+          <div class="grid three">
+            <label>Account email
+              <input id="production-email" value="founder@example.test" autocomplete="email">
+            </label>
+            <label>Org name
+              <input id="production-org-name" value="Demo Inc">
+            </label>
+            <label>Workspace name
+              <input id="production-workspace-name" value="App Workspace">
+            </label>
+          </div>
+          <div class="grid three">
+            <label>Tenant ID
+              <input id="production-tenant" value="demo">
+            </label>
+            <label>Project ID
+              <input id="production-project" value="app">
+            </label>
+            <label>API key name
+              <input id="production-api-key-name" value="server">
+            </label>
+          </div>
+          <div class="grid three">
+            <label>Environment
+              <select id="production-environment">
+                <option value="development">development</option>
+                <option value="staging">staging</option>
+                <option value="production">production</option>
+              </select>
+            </label>
+            <label>Region
+              <input id="production-region" value="local">
+            </label>
+            <label>Status page title
+              <input id="production-status-title" value="OpenRTC workspace status">
+            </label>
+          </div>
+          <div class="button-row">
+            <button type="button" onclick="runAction('production-output', signupProductionAccount)">Sign up</button>
+            <button type="button" onclick="runAction('production-output', loginProductionAccount)">Login</button>
+            <button type="button" onclick="runAction('production-output', createProductionWorkspace)">Create workspace</button>
+            <button type="button" onclick="runAction('production-output', createProductionAPIKey)">Create API key</button>
+            <button type="button" onclick="runAction('production-output', listProductionObservability)">Logs</button>
+            <button type="button" onclick="runAction('production-output', listProductionErrors)">Errors</button>
+          </div>
+          <div class="grid two">
+            <div class="grid">
+              <h3>Managed document</h3>
+              <div class="editor-toolbar" aria-label="Rich text toolbar">
+                <button type="button" title="Bold" onclick="formatProductionEditor('bold')"><b>B</b></button>
+                <button type="button" title="Italic" onclick="formatProductionEditor('italic')"><i>I</i></button>
+                <button type="button" title="Bulleted list" onclick="formatProductionEditor('insertUnorderedList')">&bull;</button>
+                <button type="button" title="Numbered list" onclick="formatProductionEditor('insertOrderedList')">1.</button>
+                <button type="button" title="Paragraph" onclick="formatProductionEditor('formatBlock', 'p')">P</button>
+                <button type="button" title="Heading" onclick="formatProductionEditor('formatBlock', 'h3')">H</button>
+              </div>
+              <div id="production-rich-text-editor" class="rich-text-editor" contenteditable="true"></div>
+              <textarea id="production-rich-text-body" hidden></textarea>
+              <div class="button-row">
+                <button type="button" onclick="runAction('production-output', upsertProductionRichText)">Save rich text</button>
+                <button type="button" onclick="runAction('production-output', createProductionVersion)">Create version</button>
+                <button type="button" onclick="runAction('production-output', listProductionVersions)">List versions</button>
+              </div>
+            </div>
+            <div class="grid">
+              <h3>Recovery and operations</h3>
+              <textarea id="production-resume-body"></textarea>
+              <div class="button-row">
+                <button type="button" onclick="runAction('production-output', upsertProductionResumeSession)">Save resume</button>
+                <button type="button" onclick="runAction('production-output', listProductionUsage)">Usage</button>
+                <button type="button" onclick="runAction('production-output', listProductionAuditLogs)">Audit logs</button>
+                <button type="button" onclick="runAction('production-output', listProductionWebhookDeliveries)">Webhooks</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <h3>Production Result</h3>
+            <div class="output" style="margin-top: 8px;"><pre id="production-output"></pre></div>
+          </div>
+        </section>
+
         <section class="panel" id="tab-ops">
           <div class="panel-header">
             <div>
@@ -1978,6 +2809,12 @@
           </div>
         </section>
       </main>
+    </div>
+
+      <footer class="site-footer">
+        <span>OpenRTC is a self-hosted OSS realtime layer for SaaS teams.</span>
+        <span><a href="#top">Top</a> / <a href="#comparison">Comparison</a> / <a href="#dev-console">Console</a></span>
+      </footer>
     </div>
   </div>
 
@@ -2028,7 +2865,10 @@
       },
       yjsFrames: [],
       actionDepth: 0,
+      productionAccount: null,
     };
+
+    const PRODUCTION_ACCOUNT_STORAGE_KEY = "openrtc.productionAccount";
 
     const samples = {
       eventPayload: () => ({
@@ -2123,6 +2963,28 @@
         threads: "all",
         textMentions: "mine",
       }),
+      productionRichText: () => ({
+        content: {
+          type: "doc",
+          format: "html",
+          html: "<p>Production document for " + escapeHTML(currentRoom()) + "</p>",
+          text: "Production document for " + currentRoom(),
+        },
+        metadata: {
+          room: currentRoom(),
+          source: "production-console",
+        },
+      }),
+      productionResume: () => ({
+        tenantId: productionTenant(),
+        projectId: productionProject(),
+        subject: currentUsername(),
+        rooms: [currentRoom()],
+        roomCursors: {
+          [currentRoom()]: 0,
+        },
+        ttlSeconds: 86400,
+      }),
     };
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -2132,8 +2994,10 @@
       const randomID = Math.floor(Math.random() * 9000) + 1000;
       byId("username").value = "user-" + randomID;
       byId("notification-user").value = "user-" + randomID;
+      hydrateProductionAccount();
       bindSessionInputs();
       resetSamples();
+      byId("production-rich-text-editor").addEventListener("input", syncProductionRichTextBody);
       loadConfig();
       renderState();
       initMotion();
@@ -2168,6 +3032,13 @@
         byId(id).addEventListener("input", () => {
           setJSON("presence-payload", samples.presencePayload());
           renderState();
+        });
+      });
+      ["production-email", "production-org-name", "production-workspace-name", "production-tenant", "production-project", "production-environment", "production-region", "production-status-title"].forEach((id) => {
+        byId(id).addEventListener("input", () => {
+          setJSON("production-rich-text-body", samples.productionRichText());
+          syncProductionRichTextBody();
+          setJSON("production-resume-body", samples.productionResume());
         });
       });
     }
@@ -2212,6 +3083,10 @@
     });
 
     function resetSamples() {
+      byId("production-tenant").value = currentTenant();
+      if (!byId("production-project").value.trim()) {
+        byId("production-project").value = "app";
+      }
       setJSON("event-payload", samples.eventPayload());
       setJSON("presence-payload", samples.presencePayload());
       setJSON("room-create-body", samples.roomCreate());
@@ -2223,16 +3098,23 @@
       setJSON("notification-body", samples.notification());
       setJSON("notification-settings-body", samples.notificationSettings());
       setJSON("subscription-settings-body", samples.subscriptionSettings());
+      setJSON("production-rich-text-body", samples.productionRichText());
+      setProductionEditorFromDocument(samples.productionRichText());
+      setJSON("production-resume-body", samples.productionResume());
       byId("yjs-update-text").value = "openrtc-yjs-update-" + Date.now();
     }
 
     function syncRoomFields() {
       state.room = currentRoom();
       byId("room-prefix").value = roomPrefixFrom(currentRoom());
+      byId("production-tenant").value = currentTenant();
       setJSON("room-create-body", samples.roomCreate());
       setJSON("room-update-body", samples.roomUpdate());
       setJSON("storage-body", samples.storage());
       setJSON("notification-body", samples.notification());
+      setJSON("production-rich-text-body", samples.productionRichText());
+      setProductionEditorFromDocument(samples.productionRichText());
+      setJSON("production-resume-body", samples.productionResume());
     }
 
     async function loadConfig() {
@@ -3195,6 +4077,390 @@
       setOutput("notifications-output", result.body);
     }
 
+    function hydrateProductionAccount() {
+      try {
+        const raw = localStorage.getItem(PRODUCTION_ACCOUNT_STORAGE_KEY);
+        if (!raw) return;
+        const account = JSON.parse(raw);
+        applyProductionAccount(account, { persist: false });
+      } catch (error) {
+        log("production-output", "Stored production account could not be loaded: " + error.message, "err", "production");
+      }
+    }
+
+    function applyProductionAccount(account, options = {}) {
+      if (!account) return null;
+      state.productionAccount = account;
+      byId("production-email").value = account.email || byId("production-email").value;
+      byId("production-org-name").value = account.orgName || byId("production-org-name").value;
+      byId("production-workspace-name").value = account.workspaceName || byId("production-workspace-name").value;
+      byId("production-tenant").value = account.tenantId || productionTenant();
+      byId("production-project").value = account.projectId || productionProject();
+      byId("production-environment").value = account.environment || productionEnvironment();
+      byId("production-region").value = account.region || productionRegion();
+      byId("tenant").value = productionTenant();
+      byId("room").value = productionTenant() + ":room-1";
+      syncRoomFields();
+      if (options.persist !== false) {
+        localStorage.setItem(PRODUCTION_ACCOUNT_STORAGE_KEY, JSON.stringify(account));
+      }
+      return account;
+    }
+
+    function productionAccountFromFields() {
+      return {
+        email: productionEmail(),
+        orgName: productionOrgName(),
+        workspaceName: productionWorkspaceName(),
+        tenantId: slugID(productionOrgName(), productionTenant()),
+        projectId: slugID(productionWorkspaceName(), productionProject()),
+        environment: productionEnvironment(),
+        region: productionRegion(),
+        statusTitle: byId("production-status-title").value.trim() || "OpenRTC workspace status",
+      };
+    }
+
+    function ensureProductionAccount() {
+      if (state.productionAccount) {
+        const updated = {
+          ...state.productionAccount,
+          ...productionAccountFromFields(),
+          lastLoginAt: new Date().toISOString(),
+        };
+        return applyProductionAccount(updated);
+      }
+      const account = {
+        ...productionAccountFromFields(),
+        signedUpAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+      return applyProductionAccount(account);
+    }
+
+    async function signupProductionAccount() {
+      const account = {
+        ...productionAccountFromFields(),
+        signedUpAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+      applyProductionAccount(account);
+      setOutput("production-output", { account, session: "signed_up" });
+      return account;
+    }
+
+    async function loginProductionAccount() {
+      let account = null;
+      try {
+        const raw = localStorage.getItem(PRODUCTION_ACCOUNT_STORAGE_KEY);
+        account = raw ? JSON.parse(raw) : null;
+      } catch (error) {
+        throw new Error("Stored account is invalid: " + error.message);
+      }
+      if (!account) {
+        account = await signupProductionAccount();
+      }
+      account = { ...account, lastLoginAt: new Date().toISOString() };
+      applyProductionAccount(account);
+      setOutput("production-output", { account, session: "logged_in" });
+      return account;
+    }
+
+    async function createProductionWorkspace() {
+      const account = ensureProductionAccount();
+      const tenantID = productionTenant();
+      const projectID = productionProject();
+      const tenant = await adminJSON("/v1/tenants", {
+        method: "POST",
+        body: {
+          id: tenantID,
+          name: productionOrgName(),
+          metadata: {
+            source: "reference-app",
+            accountEmail: account.email,
+            orgName: productionOrgName(),
+          },
+        },
+      }, "production-output", { allowStatuses: [409] });
+      const project = await adminJSON("/v1/tenants/" + enc(tenantID) + "/projects", {
+        method: "POST",
+        body: {
+          id: projectID,
+          name: productionWorkspaceName(),
+          metadata: productionProjectMetadata(),
+        },
+      }, "production-output", { allowStatuses: [409] });
+      const room = await adminJSON("/v1/rooms", {
+        method: "POST",
+        body: productionRoomCreate(),
+      }, "production-output", productionHeaders({ allowStatuses: [409] }));
+      const summary = { account, tenant: tenant.body, project: project.body, room: room.body || currentRoom() };
+      setOutput("production-output", summary);
+      return summary;
+    }
+
+    async function createProductionAPIKey() {
+      ensureProductionAccount();
+      const tenantID = productionTenant();
+      const projectID = productionProject();
+      const result = await adminJSON("/v1/api-keys", {
+        method: "POST",
+        body: {
+          tenantId: tenantID,
+          projectId: projectID,
+          name: byId("production-api-key-name").value.trim() || "server",
+          scopes: productionAPIKeyScopes(tenantID),
+        },
+      }, "production-output");
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    async function bootstrapProduction() {
+      ensureProductionAccount();
+      const results = [];
+      results.push(await createProductionWorkspace());
+      results.push(await createProductionAPIKey());
+      await upsertProductionRichText();
+      await upsertProductionResumeSession();
+      const summary = {
+        tenant: productionTenant(),
+        project: productionProject(),
+        room: currentRoom(),
+        apiKey: results[1].body && results[1].body.id ? { id: results[1].body.id, prefix: results[1].body.prefix, secret: results[1].body.secret } : results[1].body,
+      };
+      setOutput("production-output", summary);
+      return summary;
+    }
+
+    async function refreshProduction() {
+      const tenantID = productionTenant();
+      const projectID = productionProject();
+      const results = {
+        tenants: (await adminJSON("/v1/tenants", {}, "production-output")).body,
+        projects: (await adminJSON("/v1/tenants/" + enc(tenantID) + "/projects", {}, "production-output")).body,
+        apiKeys: (await adminJSON("/v1/api-keys?tenantId=" + enc(tenantID) + "&projectId=" + enc(projectID), {}, "production-output")).body,
+        versions: (await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/versions?documentId=storage", {}, "production-output")).body,
+        richText: (await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/rich-text", {}, "production-output")).body,
+        resumeSessions: (await adminJSON("/v1/resume-sessions?tenantId=" + enc(tenantID) + "&projectId=" + enc(projectID), {}, "production-output")).body,
+        dashboard: (await adminJSON("/v1/dashboard?" + productionConsoleParams(50).toString(), {}, "production-output")).body,
+        status: (await adminJSON("/v1/status?" + productionConsoleParams(50).toString(), {}, "production-output")).body,
+      };
+      hydrateProductionEditor(results.richText);
+      setOutput("production-output", results);
+      return results;
+    }
+
+    async function loadProductionDashboard() {
+      const result = await adminJSON("/v1/dashboard?" + productionConsoleParams(100).toString(), {}, "production-output");
+      setOutput("production-output", result.body);
+      return result.body;
+    }
+
+    async function loadProductionStatus() {
+      const result = await adminJSON("/v1/status?" + productionConsoleParams(100).toString(), {}, "production-output");
+      setOutput("production-output", {
+        title: byId("production-status-title").value.trim() || "OpenRTC workspace status",
+        status: result.body,
+      });
+      return result.body;
+    }
+
+    async function loadSupportDebugBundle() {
+      const result = await adminJSON("/v1/support/debug-bundle?" + productionConsoleParams(100).toString(), {}, "production-output");
+      setOutput("production-output", result.body);
+      return result.body;
+    }
+
+    async function listProductionObservability() {
+      const dashboard = await loadProductionDashboard();
+      setOutput("production-output", dashboard.observability || {});
+      return dashboard.observability || {};
+    }
+
+    async function listProductionErrors() {
+      const status = await loadProductionStatus();
+      setOutput("production-output", {
+        status: status.status,
+        publicPage: status.publicPage,
+        errors: status.errors || [],
+        checks: status.checks || [],
+      });
+      return status.errors || [];
+    }
+
+    function productionConsoleParams(limit) {
+      const params = new URLSearchParams({
+        tenantId: productionTenant(),
+        projectId: productionProject(),
+        roomId: currentRoom(),
+      });
+      if (limit) params.set("limit", String(limit));
+      return params;
+    }
+
+    function productionProjectMetadata() {
+      return {
+        source: "reference-app",
+        accountEmail: productionEmail(),
+        orgName: productionOrgName(),
+        workspaceName: productionWorkspaceName(),
+        environment: productionEnvironment(),
+        region: productionRegion(),
+        statusTitle: byId("production-status-title").value.trim() || "OpenRTC workspace status",
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    function productionRoomCreate() {
+      const body = samples.roomCreate();
+      body.metadata = {
+        ...(body.metadata || {}),
+        projectId: productionProject(),
+        environment: productionEnvironment(),
+        region: productionRegion(),
+        workspaceName: productionWorkspaceName(),
+      };
+      return body;
+    }
+
+    function productionAPIKeyScopes(tenantID) {
+      return [
+        "admin:" + tenantID + ":__admin",
+        "rooms:" + tenantID + ":*",
+        "room:read:" + tenantID + ":*",
+        "room:write:" + tenantID + ":*",
+        "storage:read:" + tenantID + ":*",
+        "storage:write:" + tenantID + ":*",
+        "comments:read:" + tenantID + ":*",
+        "comments:write:" + tenantID + ":*",
+        "feeds:read:" + tenantID + ":*",
+        "feeds:write:" + tenantID + ":*",
+        "notifications:*",
+      ];
+    }
+
+    async function upsertProductionRichText() {
+      syncProductionRichTextBody();
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/rich-text/doc-1", {
+        method: "PUT",
+        body: productionRichTextDocument(),
+      }, "production-output", productionHeaders());
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    function formatProductionEditor(command, value) {
+      const editor = byId("production-rich-text-editor");
+      editor.focus();
+      document.execCommand(command, false, value || null);
+      syncProductionRichTextBody();
+    }
+
+    function productionRichTextDocument() {
+      const editor = byId("production-rich-text-editor");
+      const html = sanitizeEditorHTML(editor.innerHTML || "<p></p>");
+      const text = editor.innerText.trim();
+      return {
+        content: {
+          type: "doc",
+          format: "html",
+          html,
+          text,
+        },
+        metadata: {
+          room: currentRoom(),
+          source: "production-console",
+          savedAt: new Date().toISOString(),
+        },
+      };
+    }
+
+    function syncProductionRichTextBody() {
+      setJSON("production-rich-text-body", productionRichTextDocument());
+    }
+
+    function setProductionEditorFromDocument(documentValue) {
+      const editor = byId("production-rich-text-editor");
+      const content = documentValue && documentValue.content ? documentValue.content : documentValue;
+      if (content && typeof content.html === "string") {
+        editor.innerHTML = sanitizeEditorHTML(content.html);
+      } else if (content && Array.isArray(content.content)) {
+        const text = content.content.map((block) => {
+          if (!block || !Array.isArray(block.content)) {
+            return "";
+          }
+          return block.content.map((child) => child && typeof child.text === "string" ? child.text : "").join("");
+        }).filter(Boolean).join("\n");
+        editor.innerHTML = "<p>" + escapeHTML(text || "Production document for " + currentRoom()) + "</p>";
+      } else {
+        editor.innerHTML = "<p>Production document for " + escapeHTML(currentRoom()) + "</p>";
+      }
+      syncProductionRichTextBody();
+    }
+
+    function hydrateProductionEditor(response) {
+      const docs = response && Array.isArray(response.data) ? response.data : [];
+      const doc = docs.find((item) => item.id === "doc-1") || docs[0];
+      if (doc && doc.content) {
+        setProductionEditorFromDocument({ content: doc.content, metadata: doc.metadata || {} });
+      }
+    }
+
+    async function createProductionVersion() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/versions", {
+        method: "POST",
+        body: {
+          documentId: "storage",
+          label: "manual-" + new Date().toISOString(),
+        },
+      }, "production-output", productionHeaders());
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    async function listProductionVersions() {
+      const result = await adminJSON("/v1/rooms/" + enc(currentRoom()) + "/versions?documentId=storage&limit=20", {}, "production-output");
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    async function upsertProductionResumeSession() {
+      const result = await adminJSON("/v1/resume-sessions", {
+        method: "POST",
+        body: jsonFrom("production-resume-body"),
+      }, "production-output");
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    async function listProductionUsage() {
+      const params = new URLSearchParams({
+        tenantId: productionTenant(),
+        projectId: productionProject(),
+        roomId: currentRoom(),
+      });
+      const result = await adminJSON("/v1/usage?" + params.toString(), {}, "production-output");
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    async function listProductionAuditLogs() {
+      const params = new URLSearchParams({
+        tenantId: productionTenant(),
+        projectId: productionProject(),
+        limit: "50",
+      });
+      const result = await adminJSON("/v1/audit-logs?" + params.toString(), {}, "production-output");
+      setOutput("production-output", result.body);
+      return result;
+    }
+
+    async function listProductionWebhookDeliveries() {
+      const result = await adminJSON("/v1/webhook-deliveries?limit=50", {}, "production-output");
+      setOutput("production-output", result.body);
+      return result;
+    }
+
     async function connectYjs() {
       await ensureConfig();
       const token = await ensureClientToken();
@@ -3639,6 +4905,9 @@
       const token = await ensureAdminToken();
       const method = options.method || "GET";
       const headers = { Authorization: "Bearer " + token };
+      if (extra.headers) {
+        Object.assign(headers, extra.headers);
+      }
       const init = { method, headers };
       if (options.body !== undefined) {
         headers["Content-Type"] = "application/json";
@@ -3686,15 +4955,10 @@
       byId("metric-presence").textContent = String(state.presence.size);
       byId("metric-admin").textContent = String(state.counters.admin);
       byId("metric-yjs").textContent = String(state.counters.yjs);
-      setOptionalText("hero-clients", String(connectedLabClients()));
-      setOptionalText("hero-room", currentRoom());
-      setOptionalText("hero-latency", formatMs(lastLatency()));
-      setOptionalText("hero-p95", formatMs(percentileLatency(95)));
-	      setOptionalText("hero-diagnostics", String(state.diagnostics.length));
-	      setOptionalText("presence-client-total", String(connectedLabClients()));
-	      setOptionalText("presence-closed-total", String(unhealthyLabClients()));
-	      setOptionalText("presence-last-latency", formatMs(lastLatency()));
-	      setOptionalText("presence-p95-latency", formatMs(percentileLatency(95)));
+      setOptionalText("presence-client-total", String(connectedLabClients()));
+      setOptionalText("presence-closed-total", String(unhealthyLabClients()));
+      setOptionalText("presence-last-latency", formatMs(lastLatency()));
+      setOptionalText("presence-p95-latency", formatMs(percentileLatency(95)));
       renderBenchmark();
       renderPresence();
       renderSyntheticClients();
@@ -3996,6 +5260,12 @@
           stagger: 0.08,
           ease: "power3.out",
         });
+        gsap.from(".topbar", {
+          opacity: 0,
+          y: -18,
+          duration: 0.7,
+          ease: "power3.out",
+        });
         gsap.utils.toArray(".motion-card").forEach((element) => {
           gsap.fromTo(element, { scale: 0.98, opacity: 0.72 }, {
             scale: 1,
@@ -4009,6 +5279,57 @@
             },
           });
         });
+        if (!window.ScrollTrigger) return;
+        gsap.utils.toArray(".scale-fade:not(.card-media)").forEach((element) => {
+          gsap.fromTo(element, { scale: 0.88, opacity: 0.48 }, {
+            scale: 1,
+            opacity: 1,
+            ease: "none",
+            scrollTrigger: {
+              trigger: element,
+              start: "top 92%",
+              end: "bottom 28%",
+              scrub: true,
+            },
+          });
+        });
+        const scrubWords = gsap.utils.toArray(".scrub-copy span");
+        if (scrubWords.length > 0) {
+          gsap.to(scrubWords, {
+            opacity: 1,
+            y: 0,
+            stagger: 0.08,
+            ease: "none",
+            scrollTrigger: {
+              trigger: ".manifesto-section",
+              start: "top 78%",
+              end: "bottom 42%",
+              scrub: true,
+            },
+          });
+        }
+        gsap.utils.toArray(".stack-card").forEach((element) => {
+          gsap.fromTo(element, { y: 72, opacity: 0.72 }, {
+            y: 0,
+            opacity: 1,
+            ease: "none",
+            scrollTrigger: {
+              trigger: element,
+              start: "top 92%",
+              end: "top 48%",
+              scrub: true,
+            },
+          });
+        });
+        if (window.matchMedia("(min-width: 901px)").matches) {
+          window.ScrollTrigger.create({
+            trigger: ".pin-section",
+            start: "top 92px",
+            end: "bottom bottom",
+            pin: ".pin-copy",
+            pinSpacing: false,
+          });
+        }
       }, 300);
     }
 
@@ -4055,6 +5376,76 @@
 
     function currentTenant() {
       return byId("tenant").value.trim() || "demo";
+    }
+
+    function productionTenant() {
+      return byId("production-tenant").value.trim() || currentTenant();
+    }
+
+    function productionProject() {
+      return byId("production-project").value.trim() || "app";
+    }
+
+    function productionEmail() {
+      return byId("production-email").value.trim() || "founder@example.test";
+    }
+
+    function productionOrgName() {
+      return byId("production-org-name").value.trim() || productionTenant();
+    }
+
+    function productionWorkspaceName() {
+      return byId("production-workspace-name").value.trim() || productionProject();
+    }
+
+    function productionEnvironment() {
+      return byId("production-environment").value || "development";
+    }
+
+    function productionRegion() {
+      return byId("production-region").value.trim() || "local";
+    }
+
+    function slugID(value, fallback) {
+      const slug = String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64);
+      return slug || fallback;
+    }
+
+    function productionHeaders(extra = {}) {
+      return {
+        ...extra,
+        headers: {
+          ...(extra.headers || {}),
+          "OpenRTC-Project-Id": productionProject(),
+        },
+      };
+    }
+
+    function escapeHTML(value) {
+      const div = document.createElement("div");
+      div.textContent = String(value || "");
+      return div.innerHTML;
+    }
+
+    function sanitizeEditorHTML(html) {
+      const template = document.createElement("template");
+      template.innerHTML = String(html || "");
+      template.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach((node) => node.remove());
+      template.content.querySelectorAll("*").forEach((node) => {
+        [...node.attributes].forEach((attribute) => {
+          const name = attribute.name.toLowerCase();
+          const value = attribute.value.trim().toLowerCase();
+          if (name.startsWith("on") || ((name === "href" || name === "src") && value.startsWith("javascript:"))) {
+            node.removeAttribute(attribute.name);
+          }
+        });
+      });
+      return template.innerHTML || "<p></p>";
     }
 
     function currentRoom() {

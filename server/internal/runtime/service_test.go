@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math/big"
@@ -53,12 +55,10 @@ func TestNewServiceClusterModeWithRedis(t *testing.T) {
 
 	cfg := runtimeTestConfig()
 	cfg.Mode = config.ModeCluster
-	cfg.Redis = &struct {
-		URL           string
-		ChannelPrefix string
-	}{
-		URL:           "redis://" + redisServer.Addr(),
-		ChannelPrefix: "openrtc-test:",
+	cfg.Redis = &config.RedisConfig{
+		URL:                "redis://" + redisServer.Addr(),
+		ChannelPrefix:      "openrtc-test:",
+		EventLogMaxEntries: 25,
 	}
 	service, err := NewService(cfg, nil)
 	if err != nil {
@@ -79,12 +79,10 @@ func TestNewServiceClusterModeWithRedis(t *testing.T) {
 func TestNewServiceRejectsInvalidRedisURL(t *testing.T) {
 	cfg := runtimeTestConfig()
 	cfg.Mode = config.ModeCluster
-	cfg.Redis = &struct {
-		URL           string
-		ChannelPrefix string
-	}{
-		URL:           "redis://%",
-		ChannelPrefix: "openrtc-test:",
+	cfg.Redis = &config.RedisConfig{
+		URL:                "redis://%",
+		ChannelPrefix:      "openrtc-test:",
+		EventLogMaxEntries: config.DefaultRedisEventLogMaxEntries,
 	}
 	if service, err := NewService(cfg, nil); err == nil {
 		_ = service.Close()
@@ -95,12 +93,10 @@ func TestNewServiceRejectsInvalidRedisURL(t *testing.T) {
 func TestNewServiceClosesStoreOnSubscriptionFailures(t *testing.T) {
 	cfg := runtimeTestConfig()
 	cfg.Mode = config.ModeCluster
-	cfg.Redis = &struct {
-		URL           string
-		ChannelPrefix string
-	}{
-		URL:           "redis://example.invalid:6379",
-		ChannelPrefix: "openrtc-test:",
+	cfg.Redis = &config.RedisConfig{
+		URL:                "redis://example.invalid:6379",
+		ChannelPrefix:      "openrtc-test:",
+		EventLogMaxEntries: config.DefaultRedisEventLogMaxEntries,
 	}
 	expected := errors.New("subscribe failed")
 	oldNewClusterStore := newClusterStore
@@ -118,7 +114,7 @@ func TestNewServiceClosesStoreOnSubscriptionFailures(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			newClusterStore = func(string, string) (cluster.Store, error) {
+			newClusterStore = func(string, string, cluster.RedisStoreOptions) (cluster.Store, error) {
 				return tc.store, nil
 			}
 			service, err := NewService(cfg, nil)
@@ -1161,6 +1157,93 @@ func TestRuntimeJoinUsesDurableEventAckCursor(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+func TestRuntimeAPIKeyResumeSessionAndUsage(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := cluster.NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if _, err := store.CreateTenant(ctx, cluster.TenantRecord{ID: "tenant-a", Name: "Tenant A"}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if _, err := store.CreateProject(ctx, cluster.ProjectRecord{TenantID: "tenant-a", ID: "proj-1", Name: "Project"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	secret := "ortc_sk_ortc_87654321_runtime"
+	hash := sha256.Sum256([]byte(secret))
+	if _, err := store.CreateAPIKey(ctx, cluster.APIKeyRecord{
+		ID:         "key_runtime",
+		TenantID:   "tenant-a",
+		ProjectID:  "proj-1",
+		Name:       "Runtime",
+		Prefix:     "ortc_87654321",
+		SecretHash: "sha256:" + hex.EncodeToString(hash[:]),
+		Scopes:     []string{"room:read:tenant-a:*", "room:write:tenant-a:*", "storage:read:tenant-a:*", "storage:write:tenant-a:*"},
+	}); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	service := newRuntimeUnitService(t)
+	defer service.Close()
+	service.store = store
+	request := httptest.NewRequest(http.MethodGet, "/ws?token="+url.QueryEscape(secret)+"&project_id=proj-1&resume_session_id=rs_runtime&resume_ttl_seconds=3600", nil)
+	authn, err := service.authenticateRequest(request)
+	if err != nil {
+		t.Fatalf("authenticate api key: %v", err)
+	}
+	if authn.projectID != "proj-1" || authn.claims.Tenant != "tenant-a" || authn.claims.Subject != "api-key:key_runtime" {
+		t.Fatalf("unexpected api key auth result: %+v claims=%+v", authn, authn.claims)
+	}
+	resume, err := service.resumeSessionFromRequest(ctx, request, authn.claims, authn.projectID)
+	if err != nil {
+		t.Fatalf("create resume session: %v", err)
+	}
+	if resume.ID != "rs_runtime" || resume.Subject != authn.claims.Subject {
+		t.Fatalf("unexpected resume session: %+v", resume)
+	}
+	resume.Rooms = []string{"tenant-a:room-1"}
+	resume.RoomCursors = map[string]uint64{"tenant-a:room-1": 7}
+	updatedResume, err := store.UpsertResumeSession(ctx, *resume)
+	if err != nil {
+		t.Fatalf("seed resume cursor: %v", err)
+	}
+	conn := runtimeTestConn(service, "conn-api-key", authn.claims, 4)
+	conn.projectID = authn.projectID
+	conn.resumeSessionID = updatedResume.ID
+	conn.resumeSession = &updatedResume
+
+	joinMeta, err := service.joinMetaWithDurableEventAck(conn, "tenant-a:room-1", nil)
+	if err != nil {
+		t.Fatalf("join meta with resume: %v", err)
+	}
+	if joinMeta == nil || joinMeta.AfterSequence != 7 {
+		t.Fatalf("expected resume cursor after_seq 7, got %+v", joinMeta)
+	}
+	if err := service.persistResumeSessionCursor(conn, "tenant-a:room-1", 11); err != nil {
+		t.Fatalf("persist resume cursor: %v", err)
+	}
+	storedResume, err := store.GetResumeSession(ctx, "rs_runtime")
+	if err != nil {
+		t.Fatalf("get resume session: %v", err)
+	}
+	if storedResume.RoomCursors["tenant-a:room-1"] != 11 {
+		t.Fatalf("expected cursor 11, got %+v", storedResume.RoomCursors)
+	}
+	service.recordConnUsage(conn, "tenant-a:room-1", "events.emitted", 1)
+	usage, err := store.ListUsage(ctx, "tenant-a", "proj-1", "tenant-a:room-1", time.Now().UTC().Format("2006-01-02"))
+	if err != nil || len(usage) != 1 || usage[0].Metric != "events.emitted" {
+		t.Fatalf("expected runtime usage record, got %+v err=%v", usage, err)
 	}
 }
 

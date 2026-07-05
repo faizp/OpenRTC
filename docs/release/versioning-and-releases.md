@@ -23,8 +23,10 @@
 ## Release checklist (M1 baseline)
 
 1. `make check` passes in CI.
-2. Protocol/config changes include contract docs and schema updates.
-3. Error/limits changes include migration notes.
-4. `CHANGELOG.md` is updated by automation before tag cut.
-5. Go backend image builds once and can run both `openrtc-runtime` and `openrtc-admin`.
-6. Release notes call out any backend/runtime contract change separately from SDK-only changes.
+2. `docs/release/sdk-compatibility-matrix.md` is satisfied for changed packages.
+3. Protocol/config changes include contract docs and schema updates.
+4. Error/limits changes include migration notes.
+5. Product/admin API changes include onboarding docs or template updates when setup behavior changes.
+6. `CHANGELOG.md` is updated by automation before tag cut.
+7. Go backend image builds once and can run both `openrtc-runtime` and `openrtc-admin`.
+8. Release notes call out any backend/runtime contract change separately from SDK-only changes.

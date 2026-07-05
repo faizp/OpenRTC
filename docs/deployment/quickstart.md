@@ -37,8 +37,9 @@ response, and `--env` for shell-safe `OPENRTC_DEV_*` assignments. `openrtc dev
 probe` runs the same status, seed, socket, storage, Yjs, event-log, and optional
 restart checks from a terminal or CI job; use `--reconnect` to restart the local
 runtime and verify the old socket closes before a fresh socket rejoins,
-`--realtime` for runtime join/storage, `--yjs-realtime` for a live Yjs WebSocket
-update check, and `--json` for machine-readable output. Use
+`--realtime` for runtime join/storage, `--multi-user` for two-user presence,
+sequenced event ACK, and storage fan-out, `--yjs-realtime` for a live Yjs
+WebSocket update check, and `--json` for machine-readable output. Use
 `http://127.0.0.1:3000/dev/status` to verify storage backend, Redis protocol health, runtime/admin generation,
 seeded-room, and endpoint readiness. Use
 `http://127.0.0.1:3000/dev/connections?room=demo:room-1` to inspect room active
@@ -54,6 +55,12 @@ Seeded rooms include a small typed `LiveObject` storage document unless storage
 already exists. `http://127.0.0.1:3000/dev/seed` reports the active fixture, and
 `POST http://127.0.0.1:3000/dev/seed` deletes and reseeds configured dev rooms.
 Seed files use the shape in `docs/config/openrtc.seed.example.json`.
+
+For production tenant/project setup, API keys, managed version snapshots,
+rich-text documents, resumable-session cursors, audit logs, usage records, and
+webhook delivery operations, follow `docs/deployment/production-onboarding.md`.
+Use `docs/config/openrtc.production.example.json` as the production config
+template.
 
 ## Option 1: Docker Compose (Recommended for Getting Started)
 
@@ -138,6 +145,8 @@ All configuration is via environment variables:
 | `OPENRTC_ALLOWED_ORIGINS` | — | Comma-separated WebSocket Origin allowlist. Empty allows all; set in production. |
 | `/yjs/{room}` | fixed | Binary Yjs sync endpoint path |
 | `OPENRTC_REDIS_URL` | — | Redis connection URL (required in cluster mode) |
+| `OPENRTC_REDIS_CHANNEL_PREFIX` | `room:` | Redis Pub/Sub channel prefix for room fan-out |
+| `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` | `1000` | Max bounded room event replay entries retained per room |
 | `OPENRTC_AUTH_ISSUER` | (required) | JWT issuer for client tokens |
 | `OPENRTC_AUTH_AUDIENCE` | (required) | JWT audience for client tokens |
 | `OPENRTC_AUTH_JWKS_URL` | (required) | JWKS endpoint URL |
@@ -168,6 +177,19 @@ All configuration is via environment variables:
 | `OPENRTC_YJS_COMPACTOR_METRICS_PORT` | — | Optional compactor Prometheus metrics port |
 
 ## Verifying Your Deployment
+
+Before cutting a release, run the local production gate:
+
+```bash
+make production-check
+```
+
+This runs lint, typecheck, Go statement coverage with
+`OPENRTC_GO_COVERAGE_MIN` defaulting to `80.0`, TypeScript public value export
+coverage with `OPENRTC_TS_EXPORT_COVERAGE_MIN` defaulting to `90.0`, package
+tests, and integration tests.
+SDK/backend compatibility expectations are listed in
+`docs/release/sdk-compatibility-matrix.md`.
 
 ```bash
 # Health check (should return "ok")

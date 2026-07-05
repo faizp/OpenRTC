@@ -70,12 +70,18 @@ Implemented:
   Redis-backed local state, anonymous `pk_localdev` tokens, seeded room fixtures,
   `/dev/seed` reset, active socket/storage/Yjs/event inspection, and
   crash/reconnect probes.
+- Terminal two-user dev probes for presence fan-out, custom event fan-out,
+  sequenced event ACKs, storage ACKs, and cross-user storage updates.
 - Non-Yjs room event delivery ACKs: `@openrtc/client` tracks latest delivered
   `EVENT.meta.seq`, sends bounded reconnect catch-up with `JOIN.meta.after_seq`,
   automatically sends `EVENT_ACK`, Redis-backed runtimes persist per-subject
   room ACK cursors, and runtime/dev socket snapshots expose per-connection ACK
   cursors.
+- Configurable bounded room event replay retention through
+  `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES`.
 - Origin allowlist, bounded JSON payloads, bounded Yjs frames, bounded admin bodies, and shared room/event/connection ID validation.
+- Functional production release gates for lint, typecheck, Go coverage,
+  TypeScript API export coverage, package tests, and integration tests.
 
 Missing for parity:
 - Fully managed text-editor product features beyond host-owned editor canvases,
@@ -83,16 +89,15 @@ Missing for parity:
   and packaged version-history UI.
 - Managed version history beyond local ACK-backed storage undo/redo and Yjs
   compaction snapshots.
-- Room-affine placement and Yjs compactor retention alerts tuned against
-  production traffic. Per-node JSON/Yjs room admission caps exist, but they are
-  not yet a regional placement or autoscaling policy.
+- Room-affine placement and deployment-specific retention alerts tuned against
+  production traffic. Per-node JSON/Yjs room admission caps and Redis event-log
+  retention controls exist, but they are not yet a regional placement or
+  autoscaling policy.
 - Full durable resumable session protocol beyond the current bounded Redis
   replay plus durable per-subject room ACK cursor. Remaining work includes a
   resumable socket/session token window and stronger delivery guarantees after
   Redis retention expires.
 - Region/tenant placement, room-affine routing, load-shedding, and horizontal scale tests at product scale.
-- Published API coverage thresholds for Go and TypeScript.
-
 ## Architecture decision
 
 Keep Redis Pub/Sub as the low-latency fan-out bus, but do not treat it as durable collaboration state. Durable state needs a room/document store with sequence IDs, snapshots, retention, and compaction. For massive scale, route each room to a single active coordinator shard or edge object, and use durable storage for replay. That keeps the runtime light while avoiding split-brain document persistence and unbounded Redis lists.
@@ -173,11 +178,18 @@ Recommended target shape:
   wiring, per-room retries, Prometheus-format metrics, and supervisor-friendly
   failure exits.
 - Hardened JWKS fetches to reject non-2xx responses and cap response size.
+- Added two-user `openrtc dev probe --multi-user` coverage for presence/event
+  ACK/storage fan-out.
+- Added `make coverage` and `make production-check`, with Go statement
+  coverage and TypeScript public API export coverage thresholds.
+- Added configurable `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` retention for the
+  bounded Redis room event replay log.
 
 ## Remaining scaling risk
 
 The current Yjs persistence now has sequence IDs, a safe compaction primitive,
 and an operational compactor worker with metrics and retry behavior. The
-remaining scale risk is proving the thresholds under production room traffic,
-adding deployment-specific alerts, and adding room-affine placement or sharding
-so hot rooms do not overload a shared Redis deployment.
+bounded room event log now has a configurable retention limit. The remaining
+scale risk is proving the thresholds under production room traffic, adding
+deployment-specific alerts, and adding room-affine placement or sharding so hot
+rooms do not overload a shared Redis deployment.

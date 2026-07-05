@@ -53,10 +53,18 @@ export interface OpenRTCClientOptions {
   url: string;
   token: string | (() => string | Promise<string>);
   WebSocket?: OpenRTCWebSocketConstructor;
+  projectId?: string;
+  resumeSession?: string | OpenRTCRuntimeResumeSessionOptions;
   autoReconnect?: boolean;
   lostConnectionTimeout?: number;
   backgroundKeepAliveTimeout?: number;
   reconnect?: OpenRTCReconnectOptions;
+}
+
+export interface OpenRTCRuntimeResumeSessionOptions {
+  id: string;
+  projectId?: string;
+  ttlSeconds?: number;
 }
 
 export interface OpenRTCReconnectOptions {
@@ -1460,9 +1468,314 @@ export interface OpenRTCAdminPresenceOptions {
   ttlSeconds?: number;
 }
 
+export interface OpenRTCTenantRecord {
+  id: string;
+  name: string;
+  metadata?: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface OpenRTCTenantInput {
+  id: string;
+  name?: string;
+  metadata?: unknown;
+}
+
+export interface OpenRTCTenantUpdate {
+  name?: string;
+  metadata?: unknown;
+}
+
+export interface OpenRTCProjectRecord {
+  id: string;
+  tenantId: string;
+  name: string;
+  metadata?: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface OpenRTCProjectInput {
+  id: string;
+  name?: string;
+  metadata?: unknown;
+}
+
+export interface OpenRTCProjectUpdate {
+  name?: string;
+  metadata?: unknown;
+}
+
+export interface OpenRTCAdminAPIKeyRecord {
+  id: string;
+  tenantId: string;
+  projectId: string;
+  name: string;
+  prefix: string;
+  scopes?: string[];
+  revoked: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  lastUsedAt?: string;
+}
+
+export interface OpenRTCAdminAPIKeyInput {
+  tenantId: string;
+  projectId: string;
+  name: string;
+  scopes?: string[];
+}
+
+export interface OpenRTCAdminAPIKeyCreateResponse extends OpenRTCAdminAPIKeyRecord {
+  secret: string;
+}
+
+export interface OpenRTCAuditLogRecord {
+  id: string;
+  tenantId?: string;
+  projectId?: string;
+  actorId?: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  metadata?: unknown;
+  createdAt: string;
+}
+
+export interface OpenRTCUsageRecord {
+  tenantId?: string;
+  projectId?: string;
+  roomId?: string;
+  metric: string;
+  window: string;
+  count: number;
+  updatedAt: string;
+}
+
+export interface OpenRTCWebhookDeliveryRecord {
+  id: string;
+  webhookId: string;
+  event: string;
+  url: string;
+  status: "pending" | "delivered" | "failed" | "dead" | string;
+  attempts: number;
+  lastStatusCode?: number;
+  lastError?: string;
+  payload?: unknown;
+  createdAt: string;
+  updatedAt: string;
+  nextAttemptAt?: string;
+}
+
+export interface OpenRTCResumeSessionRecord {
+  id: string;
+  tenantId?: string;
+  projectId?: string;
+  subject: string;
+  rooms: string[];
+  roomCursors: Record<string, number>;
+  metadata?: unknown;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
+export interface OpenRTCResumeSessionInput {
+  id?: string;
+  tenantId?: string;
+  projectId: string;
+  subject: string;
+  rooms: string[];
+  roomCursors?: Record<string, number>;
+  metadata?: unknown;
+  ttlSeconds?: number;
+}
+
+export interface OpenRTCVersionSnapshotRecord {
+  id: string;
+  roomId: string;
+  documentId: string;
+  label?: string;
+  document: unknown;
+  metadata?: unknown;
+  createdAt: string;
+}
+
+export interface OpenRTCVersionSnapshotInput {
+  id?: string;
+  documentId?: string;
+  label?: string;
+  document?: unknown;
+  metadata?: unknown;
+}
+
+export interface OpenRTCRichTextDocumentRecord {
+  id: string;
+  roomId: string;
+  content: unknown;
+  metadata?: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenRTCRichTextDocumentInput {
+  content: unknown;
+  metadata?: unknown;
+}
+
+export interface OpenRTCAdminPublishedEvent {
+  room: string;
+  event: string;
+  payload: unknown;
+  exclude_sender_conn_id?: string;
+  trace_id?: string;
+  seq?: number;
+  origin_node?: string;
+}
+
+export interface OpenRTCAdminStatsSnapshot {
+  active_connections?: number;
+  active_rooms?: number;
+  joins_total?: number;
+  leaves_total?: number;
+  events_total?: number;
+  presence_updates_total?: number;
+  queue_overflows_total?: number;
+  admin_publishes_total?: number;
+}
+
+export interface OpenRTCProductConsoleOptions {
+  tenantId: string;
+  projectId: string;
+  roomId?: string;
+  limit?: number;
+}
+
+export interface OpenRTCProductEnvironmentSummary {
+  environment?: string;
+  region?: string;
+}
+
+export interface OpenRTCProductDashboardSummary {
+  rooms: number;
+  activeUsers: number;
+  events: number;
+  storageDocs: number;
+  errors: number;
+}
+
+export interface OpenRTCProductStorageSnapshot {
+  found: boolean;
+  document?: unknown;
+}
+
+export interface OpenRTCProductConsoleError {
+  source: string;
+  message: string;
+  status?: string;
+  resource?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface OpenRTCProductDashboardObservability {
+  logs: OpenRTCAuditLogRecord[];
+  errors: OpenRTCProductConsoleError[];
+  usage: OpenRTCUsageRecord[];
+  webhooks: OpenRTCWebhookDeliveryRecord[];
+}
+
+export interface OpenRTCProductDashboard {
+  generatedAt: string;
+  tenantId: string;
+  projectId: string;
+  roomId?: string;
+  tenant: OpenRTCTenantRecord;
+  project: OpenRTCProjectRecord;
+  environment: OpenRTCProductEnvironmentSummary;
+  summary: OpenRTCProductDashboardSummary;
+  apiKeys: OpenRTCAdminAPIKeyRecord[];
+  rooms: OpenRTCAdminRoomRecord[];
+  activeUsers: OpenRTCAdminActiveUser[];
+  events: OpenRTCAdminPublishedEvent[];
+  storage: OpenRTCProductStorageSnapshot;
+  stats: OpenRTCAdminStatsSnapshot;
+  usage: OpenRTCUsageRecord[];
+  auditLogs: OpenRTCAuditLogRecord[];
+  webhookDeliveries: OpenRTCWebhookDeliveryRecord[];
+  resumeSessions: OpenRTCResumeSessionRecord[];
+  richTextDocuments: OpenRTCRichTextDocumentRecord[];
+  versionSnapshots: OpenRTCVersionSnapshotRecord[];
+  errors: OpenRTCProductConsoleError[];
+  observability: OpenRTCProductDashboardObservability;
+}
+
+export interface OpenRTCProductStatusCheck {
+  name: string;
+  status: "ok" | "degraded" | "error" | string;
+  message?: string;
+  checkedAt: string;
+}
+
+export interface OpenRTCProductPublicStatusPage {
+  title: string;
+  message: string;
+}
+
+export interface OpenRTCProductStatus {
+  generatedAt: string;
+  status: "ok" | "degraded" | "error" | string;
+  tenantId: string;
+  projectId: string;
+  roomId?: string;
+  environment: OpenRTCProductEnvironmentSummary;
+  checks: OpenRTCProductStatusCheck[];
+  errors: OpenRTCProductConsoleError[];
+  publicPage: OpenRTCProductPublicStatusPage;
+}
+
+export interface OpenRTCProductSafeConfig {
+  mode: string;
+  nodeId?: string;
+  redisConfigured: boolean;
+  runtimeAuthConfigured: boolean;
+  adminAuthConfigured: boolean;
+  webhooksConfigured: boolean;
+  webhookEndpointCount: number;
+  webSocketPath: string;
+  tenantEnforcePrefix: boolean;
+  tenantSeparator: string;
+  payloadMaxBytes: number;
+  envelopeMaxBytes: number;
+}
+
+export interface OpenRTCProductSupportDebugBundle {
+  generatedAt: string;
+  tenantId: string;
+  projectId: string;
+  roomId?: string;
+  environment: OpenRTCProductEnvironmentSummary;
+  dashboard: OpenRTCProductDashboard;
+  status: OpenRTCProductStatus;
+  safeConfig: OpenRTCProductSafeConfig;
+  suggestedActions: string[];
+}
+
+function productConsoleQuery(
+  options: OpenRTCProductConsoleOptions,
+): Record<string, string | number | boolean | undefined> {
+  return {
+    tenantId: options.tenantId,
+    projectId: options.projectId,
+    roomId: options.roomId,
+    limit: options.limit,
+  };
+}
+
 export interface OpenRTCEventMap {
   status: ConnectionStatus;
-  hello: { connId: string; nodeId?: string };
+  hello: { connId: string; nodeId?: string; projectId?: string; resumeSessionId?: string };
   room: OpenRTCRoomState;
   presence: OpenRTCPresenceUpdate;
   event: OpenRTCEvent;
@@ -2081,6 +2394,8 @@ export class OpenRTCClient {
 
   private readonly token: OpenRTCClientOptions["token"];
   private readonly WebSocketCtor: OpenRTCWebSocketConstructor;
+  private readonly projectId: string | undefined;
+  private readonly resumeSession: OpenRTCClientOptions["resumeSession"];
   private readonly autoReconnect: boolean;
   private readonly lostConnectionTimeoutMs: number;
   private readonly backgroundKeepAliveTimeoutMs: number | undefined;
@@ -2133,6 +2448,8 @@ export class OpenRTCClient {
   constructor(options: OpenRTCClientOptions) {
     this.url = options.url;
     this.token = options.token;
+    this.projectId = options.projectId;
+    this.resumeSession = options.resumeSession;
     const defaultCtor = globalThis.WebSocket as unknown as OpenRTCWebSocketConstructor | undefined;
     if (!options.WebSocket && !defaultCtor) {
       throw new Error("A WebSocket constructor is required in this environment");
@@ -2621,7 +2938,13 @@ export class OpenRTCClient {
       return;
     }
 
-    const socket = new this.WebSocketCtor(withToken(toWebSocketURL(this.url), token));
+    const socket = new this.WebSocketCtor(
+      withOpenRTCConnectionParams(toWebSocketURL(this.url), {
+        token,
+        projectId: this.projectId,
+        resumeSession: this.resumeSession,
+      }),
+    );
     this.socket = socket;
 
     await new Promise<void>((resolve, reject) => {
@@ -3153,9 +3476,13 @@ export class OpenRTCClient {
       this.connIdValue = connId;
       const server = asRecord(payload["server"]);
       const nodeId = optionalString(server["node_id"]);
+      const projectId = optionalString(payload["project_id"]);
+      const resumeSessionId = optionalString(payload["resume_session_id"]);
       this.emit("hello", {
         connId,
         ...(nodeId ? { nodeId } : {}),
+        ...(projectId ? { projectId } : {}),
+        ...(resumeSessionId ? { resumeSessionId } : {}),
       });
       if (this.needsRoomReplay) {
         this.needsRoomReplay = false;
@@ -3943,6 +4270,107 @@ export class OpenRTCAdminClient {
     });
   }
 
+  listTenants(): Promise<OpenRTCListResponse<OpenRTCTenantRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCTenantRecord>>("/v1/tenants");
+  }
+
+  createTenant(input: OpenRTCTenantInput): Promise<OpenRTCTenantRecord> {
+    return this.request<OpenRTCTenantRecord>("/v1/tenants", { method: "POST", body: input, okStatuses: [201] });
+  }
+
+  getTenant(tenantId: string): Promise<OpenRTCTenantRecord> {
+    return this.request<OpenRTCTenantRecord>(`/v1/tenants/${encodeURIComponent(tenantId)}`);
+  }
+
+  updateTenant(tenantId: string, update: OpenRTCTenantUpdate): Promise<OpenRTCTenantRecord> {
+    return this.request<OpenRTCTenantRecord>(`/v1/tenants/${encodeURIComponent(tenantId)}`, { method: "PATCH", body: update });
+  }
+
+  listProjects(tenantId: string): Promise<OpenRTCListResponse<OpenRTCProjectRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCProjectRecord>>(
+      `/v1/tenants/${encodeURIComponent(tenantId)}/projects`,
+    );
+  }
+
+  createProject(tenantId: string, input: OpenRTCProjectInput): Promise<OpenRTCProjectRecord> {
+    return this.request<OpenRTCProjectRecord>(`/v1/tenants/${encodeURIComponent(tenantId)}/projects`, {
+      method: "POST",
+      body: input,
+      okStatuses: [201],
+    });
+  }
+
+  getProject(tenantId: string, projectId: string): Promise<OpenRTCProjectRecord> {
+    return this.request<OpenRTCProjectRecord>(
+      `/v1/tenants/${encodeURIComponent(tenantId)}/projects/${encodeURIComponent(projectId)}`,
+    );
+  }
+
+  updateProject(tenantId: string, projectId: string, update: OpenRTCProjectUpdate): Promise<OpenRTCProjectRecord> {
+    return this.request<OpenRTCProjectRecord>(
+      `/v1/tenants/${encodeURIComponent(tenantId)}/projects/${encodeURIComponent(projectId)}`,
+      { method: "PATCH", body: update },
+    );
+  }
+
+  listAPIKeys(options: { tenantId: string; projectId: string }): Promise<OpenRTCListResponse<OpenRTCAdminAPIKeyRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCAdminAPIKeyRecord>>(this.pathWithQuery("/v1/api-keys", options));
+  }
+
+  createAPIKey(input: OpenRTCAdminAPIKeyInput): Promise<OpenRTCAdminAPIKeyCreateResponse> {
+    return this.request<OpenRTCAdminAPIKeyCreateResponse>("/v1/api-keys", {
+      method: "POST",
+      body: input,
+      okStatuses: [201],
+    });
+  }
+
+  revokeAPIKey(id: string): Promise<OpenRTCAdminAPIKeyRecord> {
+    return this.request<OpenRTCAdminAPIKeyRecord>(`/v1/api-keys/${encodeURIComponent(id)}/revoke`, {
+      method: "POST",
+    });
+  }
+
+  listAuditLogs(options: { tenantId?: string; projectId?: string; limit?: number } = {}): Promise<OpenRTCListResponse<OpenRTCAuditLogRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCAuditLogRecord>>(this.pathWithQuery("/v1/audit-logs", options));
+  }
+
+  listUsage(options: { tenantId: string; projectId: string; roomId?: string; window?: string }): Promise<OpenRTCListResponse<OpenRTCUsageRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCUsageRecord>>(this.pathWithQuery("/v1/usage", options));
+  }
+
+  dashboard(options: OpenRTCProductConsoleOptions): Promise<OpenRTCProductDashboard> {
+    return this.request<OpenRTCProductDashboard>(this.pathWithQuery("/v1/dashboard", productConsoleQuery(options)));
+  }
+
+  status(options: OpenRTCProductConsoleOptions): Promise<OpenRTCProductStatus> {
+    return this.request<OpenRTCProductStatus>(this.pathWithQuery("/v1/status", productConsoleQuery(options)));
+  }
+
+  supportDebugBundle(options: OpenRTCProductConsoleOptions): Promise<OpenRTCProductSupportDebugBundle> {
+    return this.request<OpenRTCProductSupportDebugBundle>(
+      this.pathWithQuery("/v1/support/debug-bundle", productConsoleQuery(options)),
+    );
+  }
+
+  listWebhookDeliveries(options: { status?: string; limit?: number } = {}): Promise<OpenRTCListResponse<OpenRTCWebhookDeliveryRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCWebhookDeliveryRecord>>(
+      this.pathWithQuery("/v1/webhook-deliveries", options),
+    );
+  }
+
+  retryWebhookDelivery(id: string): Promise<OpenRTCWebhookDeliveryRecord> {
+    return this.request<OpenRTCWebhookDeliveryRecord>(`/v1/webhook-deliveries/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+    });
+  }
+
+  deadLetterWebhookDelivery(id: string): Promise<OpenRTCWebhookDeliveryRecord> {
+    return this.request<OpenRTCWebhookDeliveryRecord>(`/v1/webhook-deliveries/${encodeURIComponent(id)}/dead-letter`, {
+      method: "POST",
+    });
+  }
+
   listRooms(options: { prefix?: string; limit?: number; cursor?: string; query?: string } = {}): Promise<OpenRTCAdminRoomList> {
     return this.request<OpenRTCAdminRoomList>(this.pathWithQuery("/v1/rooms", options));
   }
@@ -4177,6 +4605,82 @@ export class OpenRTCAdminClient {
   ): Promise<OpenRTCListResponse<OpenRTCAdminRoomSubscriptionSettings>> {
     return this.request<OpenRTCListResponse<OpenRTCAdminRoomSubscriptionSettings>>(
       this.pathWithQuery(`/v1/users/${encodeURIComponent(userId)}/room-subscription-settings`, options),
+    );
+  }
+
+  listResumeSessions(
+    options: { tenantId?: string; projectId: string; roomId?: string; subject?: string; active?: boolean; limit?: number },
+  ): Promise<OpenRTCListResponse<OpenRTCResumeSessionRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCResumeSessionRecord>>(this.pathWithQuery("/v1/resume-sessions", options));
+  }
+
+  upsertResumeSession(input: OpenRTCResumeSessionInput): Promise<OpenRTCResumeSessionRecord> {
+    return this.request<OpenRTCResumeSessionRecord>("/v1/resume-sessions", {
+      method: "POST",
+      body: input,
+      okStatuses: [201],
+    });
+  }
+
+  getResumeSession(id: string): Promise<OpenRTCResumeSessionRecord> {
+    return this.request<OpenRTCResumeSessionRecord>(`/v1/resume-sessions/${encodeURIComponent(id)}`);
+  }
+
+  async deleteResumeSession(id: string): Promise<void> {
+    await this.request<void>(`/v1/resume-sessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      empty: true,
+      okStatuses: [204],
+    });
+  }
+
+  listVersionSnapshots(
+    room: string,
+    options: { documentId?: string; limit?: number } = {},
+  ): Promise<OpenRTCListResponse<OpenRTCVersionSnapshotRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCVersionSnapshotRecord>>(
+      this.pathWithQuery(`/v1/rooms/${encodeURIComponent(room)}/versions`, options),
+    );
+  }
+
+  createVersionSnapshot(room: string, input: OpenRTCVersionSnapshotInput = {}): Promise<OpenRTCVersionSnapshotRecord> {
+    return this.request<OpenRTCVersionSnapshotRecord>(`/v1/rooms/${encodeURIComponent(room)}/versions`, {
+      method: "POST",
+      body: input,
+      okStatuses: [201],
+    });
+  }
+
+  getVersionSnapshot(
+    room: string,
+    versionId: string,
+    options: { documentId?: string } = {},
+  ): Promise<OpenRTCVersionSnapshotRecord> {
+    return this.request<OpenRTCVersionSnapshotRecord>(
+      this.pathWithQuery(`/v1/rooms/${encodeURIComponent(room)}/versions/${encodeURIComponent(versionId)}`, options),
+    );
+  }
+
+  listRichTextDocuments(room: string): Promise<OpenRTCListResponse<OpenRTCRichTextDocumentRecord>> {
+    return this.request<OpenRTCListResponse<OpenRTCRichTextDocumentRecord>>(
+      `/v1/rooms/${encodeURIComponent(room)}/rich-text`,
+    );
+  }
+
+  getRichTextDocument(room: string, documentId: string): Promise<OpenRTCRichTextDocumentRecord> {
+    return this.request<OpenRTCRichTextDocumentRecord>(
+      `/v1/rooms/${encodeURIComponent(room)}/rich-text/${encodeURIComponent(documentId)}`,
+    );
+  }
+
+  setRichTextDocument(
+    room: string,
+    documentId: string,
+    input: OpenRTCRichTextDocumentInput,
+  ): Promise<OpenRTCRichTextDocumentRecord> {
+    return this.request<OpenRTCRichTextDocumentRecord>(
+      `/v1/rooms/${encodeURIComponent(room)}/rich-text/${encodeURIComponent(documentId)}`,
+      { method: "PUT", body: input },
     );
   }
 
@@ -4911,8 +5415,31 @@ export function toWebSocketURL(rawURL: string): string {
 }
 
 export function withToken(rawURL: string, token: string): string {
+  return withOpenRTCConnectionParams(rawURL, { token });
+}
+
+export function withOpenRTCConnectionParams(
+  rawURL: string,
+  options: {
+    token: string;
+    projectId?: string | undefined;
+    resumeSession?: string | OpenRTCRuntimeResumeSessionOptions | undefined;
+  },
+): string {
   const parsed = new URL(rawURL);
-  parsed.searchParams.set("token", token);
+  parsed.searchParams.set("token", options.token);
+  const resumeSession =
+    typeof options.resumeSession === "string" ? { id: options.resumeSession } : options.resumeSession;
+  const projectId = resumeSession?.projectId ?? options.projectId;
+  if (projectId) {
+    parsed.searchParams.set("project_id", projectId);
+  }
+  if (resumeSession?.id) {
+    parsed.searchParams.set("resume_session_id", resumeSession.id);
+  }
+  if (resumeSession?.ttlSeconds !== undefined) {
+    parsed.searchParams.set("resume_ttl_seconds", String(resumeSession.ttlSeconds));
+  }
   return parsed.toString();
 }
 

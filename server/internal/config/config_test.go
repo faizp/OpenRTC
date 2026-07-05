@@ -49,6 +49,7 @@ func TestLoadFromMapClusterMode(t *testing.T) {
 	env["OPENRTC_LIMIT_YJS_MAX_BYTES"] = "2048"
 	env["OPENRTC_LIMIT_ROOM_CONNECTIONS"] = "250"
 	env["OPENRTC_LIMIT_YJS_ROOM_CONNECTIONS"] = "125"
+	env["OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES"] = "2500"
 	env["OPENRTC_SERVER_HOST"] = "127.0.0.1"
 	env["OPENRTC_SERVER_PORT"] = "9000"
 	env["OPENRTC_WS_PATH"] = "/rt"
@@ -64,6 +65,9 @@ func TestLoadFromMapClusterMode(t *testing.T) {
 	}
 	if cfg.Redis == nil || cfg.Redis.URL != "redis://localhost:6379/0" {
 		t.Fatalf("unexpected redis config: %+v", cfg.Redis)
+	}
+	if cfg.Redis.EventLogMaxEntries != 2500 {
+		t.Fatalf("unexpected redis event log max entries: %d", cfg.Redis.EventLogMaxEntries)
 	}
 	if len(cfg.Server.AllowedOrigins) != 2 || cfg.Server.AllowedOrigins[0] != "https://app.example.com" {
 		t.Fatalf("unexpected allowed origins: %#v", cfg.Server.AllowedOrigins)
@@ -251,6 +255,15 @@ func TestLoadFromMapRejectsInvalidEnvironment(t *testing.T) {
 				env["OPENRTC_LIMIT_ROOM_CONNECTIONS"] = "-1"
 			},
 			message: "OPENRTC_LIMIT_ROOM_CONNECTIONS must be a non-negative integer",
+		},
+		{
+			name: "bad redis event log max entries",
+			mutate: func(env map[string]string) {
+				env["OPENRTC_MODE"] = "cluster"
+				env["OPENRTC_REDIS_URL"] = "redis://localhost:6379/0"
+				env["OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES"] = "0"
+			},
+			message: "OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES must be a positive integer",
 		},
 		{
 			name: "bad yjs room connection limit",

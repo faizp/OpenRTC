@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,182 @@ func TestRedisStoreHealthAndEphemeralPresenceExpiry(t *testing.T) {
 	}
 	if len(users) != 1 || !users[0].ConnectedAt.IsZero() {
 		t.Fatalf("expected invalid connected_at to be ignored, got %+v", users)
+	}
+}
+
+func TestRedisStoreProductRecords(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := NewRedisStore("redis://"+redisServer.Addr(), "room:")
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	tenant, err := store.CreateTenant(ctx, TenantRecord{ID: "tenant-a", Name: "Tenant A", Metadata: json.RawMessage(`{"tier":"pro"}`)})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if tenant.Name != "Tenant A" || string(tenant.Metadata) != `{"tier":"pro"}` {
+		t.Fatalf("unexpected tenant: %+v", tenant)
+	}
+	if _, err := store.CreateTenant(ctx, TenantRecord{ID: "tenant-a"}); !errors.Is(err, ErrTenantAlreadyExists) {
+		t.Fatalf("expected duplicate tenant conflict, got %v", err)
+	}
+	if updated, err := store.UpdateTenant(ctx, "tenant-a", TenantUpdate{Name: "Tenant Renamed", NameSet: true}); err != nil || updated.Name != "Tenant Renamed" {
+		t.Fatalf("update tenant: %+v %v", updated, err)
+	}
+	tenants, err := store.ListTenants(ctx)
+	if err != nil || len(tenants) != 1 {
+		t.Fatalf("list tenants: %+v %v", tenants, err)
+	}
+
+	project, err := store.CreateProject(ctx, ProjectRecord{ID: "proj-1", TenantID: "tenant-a", Name: "Project 1"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if project.TenantID != "tenant-a" {
+		t.Fatalf("unexpected project: %+v", project)
+	}
+	if _, err := store.CreateProject(ctx, ProjectRecord{ID: "proj-x", TenantID: "missing"}); !errors.Is(err, ErrTenantNotFound) {
+		t.Fatalf("expected missing tenant for project, got %v", err)
+	}
+	projects, err := store.ListProjects(ctx, "tenant-a")
+	if err != nil || len(projects) != 1 || projects[0].ID != "proj-1" {
+		t.Fatalf("list projects: %+v %v", projects, err)
+	}
+
+	secret := "ortc_sk_ortc_12345678_testsecret"
+	apiKey, err := store.CreateAPIKey(ctx, APIKeyRecord{
+		ID:         "key_1",
+		TenantID:   "tenant-a",
+		ProjectID:  "proj-1",
+		Name:       "Server",
+		Prefix:     "ortc_12345678",
+		SecretHash: apiKeySecretHash(secret),
+		Scopes:     []string{"rooms:tenant-a:*"},
+	})
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+	if apiKey.SecretHash != apiKeySecretHash(secret) {
+		t.Fatalf("secret hash should be persisted privately: %+v", apiKey)
+	}
+	verified, err := store.VerifyAPIKey(ctx, secret)
+	if err != nil || verified.ID != "key_1" || verified.LastUsedAt == nil {
+		t.Fatalf("verify api key: %+v %v", verified, err)
+	}
+	if _, err := store.VerifyAPIKey(ctx, secret+"bad"); !errors.Is(err, ErrAPIKeyNotFound) {
+		t.Fatalf("expected invalid api key secret to be rejected, got %v", err)
+	}
+	revoked, err := store.RevokeAPIKey(ctx, "key_1")
+	if err != nil || !revoked.Revoked {
+		t.Fatalf("revoke api key: %+v %v", revoked, err)
+	}
+	if _, err := store.VerifyAPIKey(ctx, secret); !errors.Is(err, ErrAPIKeyNotFound) {
+		t.Fatalf("expected revoked api key to be rejected, got %v", err)
+	}
+	keys, err := store.ListAPIKeys(ctx, "tenant-a", "proj-1")
+	if err != nil || len(keys) != 1 || !keys[0].Revoked {
+		t.Fatalf("list api keys: %+v %v", keys, err)
+	}
+
+	audit, err := store.RecordAuditLog(ctx, AuditLogRecord{
+		ID:           "aud_1",
+		TenantID:     "tenant-a",
+		ProjectID:    "proj-1",
+		Action:       "room.create",
+		ResourceType: "room",
+		ResourceID:   "tenant-a:room-1",
+	})
+	if err != nil || audit.ID != "aud_1" {
+		t.Fatalf("record audit: %+v %v", audit, err)
+	}
+	audits, err := store.ListAuditLogs(ctx, "tenant-a", "proj-1", 10)
+	if err != nil || len(audits) != 1 || audits[0].Action != "room.create" {
+		t.Fatalf("list audit logs: %+v %v", audits, err)
+	}
+
+	usage, err := store.IncrementUsage(ctx, UsageIncrement{TenantID: "tenant-a", ProjectID: "proj-1", RoomID: "tenant-a:room-1", Metric: "events.published", Window: "2026-07-05"})
+	if err != nil || usage.Count != 1 {
+		t.Fatalf("increment usage: %+v %v", usage, err)
+	}
+	usageRecords, err := store.ListUsage(ctx, "tenant-a", "proj-1", "tenant-a:room-1", "2026-07-05")
+	if err != nil || len(usageRecords) != 1 {
+		t.Fatalf("list usage: %+v %v", usageRecords, err)
+	}
+
+	delivery, err := store.CreateWebhookDelivery(ctx, WebhookDeliveryRecord{
+		ID:        "wd_1",
+		WebhookID: "evt_1",
+		Event:     "room.created",
+		URL:       "https://example.test/webhook",
+		Status:    "pending",
+		Payload:   json.RawMessage(`{"id":"evt_1"}`),
+	})
+	if err != nil || delivery.Status != "pending" {
+		t.Fatalf("create webhook delivery: %+v %v", delivery, err)
+	}
+	delivery.Status = "dead"
+	delivery.Attempts = 10
+	if _, err := store.UpdateWebhookDelivery(ctx, delivery); err != nil {
+		t.Fatalf("update webhook delivery: %v", err)
+	}
+	deliveries, err := store.ListWebhookDeliveries(ctx, "dead", 10)
+	if err != nil || len(deliveries) != 1 || deliveries[0].ID != "wd_1" {
+		t.Fatalf("list webhook deliveries: %+v %v", deliveries, err)
+	}
+
+	version, err := store.CreateVersionSnapshot(ctx, VersionSnapshotRecord{
+		ID:         "ver_1",
+		RoomID:     "tenant-a:room-1",
+		DocumentID: "storage",
+		Document:   json.RawMessage(`{"title":"Draft"}`),
+	})
+	if err != nil || version.ID != "ver_1" {
+		t.Fatalf("create version: %+v %v", version, err)
+	}
+	versions, err := store.ListVersionSnapshots(ctx, "tenant-a:room-1", "storage", 10)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("list versions: %+v %v", versions, err)
+	}
+
+	rich, err := store.UpsertRichTextDocument(ctx, RichTextDocumentRecord{
+		ID:      "doc-1",
+		RoomID:  "tenant-a:room-1",
+		Content: json.RawMessage(`{"type":"doc"}`),
+	})
+	if err != nil || rich.ID != "doc-1" {
+		t.Fatalf("upsert rich text: %+v %v", rich, err)
+	}
+	richDocs, err := store.ListRichTextDocuments(ctx, "tenant-a:room-1")
+	if err != nil || len(richDocs) != 1 {
+		t.Fatalf("list rich text: %+v %v", richDocs, err)
+	}
+
+	session, err := store.UpsertResumeSession(ctx, ResumeSessionRecord{
+		ID:          "rs_1",
+		TenantID:    "tenant-a",
+		ProjectID:   "proj-1",
+		Subject:     "user-1",
+		Rooms:       []string{"tenant-a:room-1"},
+		RoomCursors: map[string]uint64{"tenant-a:room-1": 9},
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil || session.ID != "rs_1" {
+		t.Fatalf("upsert resume session: %+v %v", session, err)
+	}
+	sessions, err := store.ListResumeSessions(ctx, "tenant-a", "proj-1", "tenant-a:room-1", "user-1", true, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].RoomCursors["tenant-a:room-1"] != 9 {
+		t.Fatalf("list resume sessions: %+v %v", sessions, err)
+	}
+	if err := store.DeleteResumeSession(ctx, "rs_1"); err != nil {
+		t.Fatalf("delete resume session: %v", err)
 	}
 }
 
@@ -193,6 +370,49 @@ func TestRedisPubSubFanoutFiltersMalformedEvents(t *testing.T) {
 	yjs := receiveClusterTestValue(t, yjsEvents, "yjs event")
 	if yjs.Room != "tenant-a:doc-1" || string(yjs.Update) != "update" {
 		t.Fatalf("unexpected yjs event: %+v", yjs)
+	}
+}
+
+func TestRedisPublishedEventLogHonorsRetentionOption(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer redisServer.Close()
+
+	store, err := NewRedisStoreWithOptions("redis://"+redisServer.Addr(), "room:", RedisStoreOptions{
+		EventLogMaxEntries: 2,
+	})
+	if err != nil {
+		t.Fatalf("new redis store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	for i := 1; i <= 3; i++ {
+		published, err := store.PublishEvent(ctx, PublishedEvent{
+			Room:       "tenant-a:room-1",
+			Event:      fmt.Sprintf("doc.%d", i),
+			Payload:    json.RawMessage(`{"ok":true}`),
+			OriginNode: "node-a",
+		})
+		if err != nil {
+			t.Fatalf("publish event %d: %v", i, err)
+		}
+		if published.Sequence != uint64(i) {
+			t.Fatalf("expected event %d sequence %d, got %d", i, i, published.Sequence)
+		}
+	}
+
+	logged, err := store.ListPublishedEvents(ctx, "tenant-a:room-1", 0, 10)
+	if err != nil {
+		t.Fatalf("list published events: %v", err)
+	}
+	if len(logged.Events) != 2 {
+		t.Fatalf("expected retained events to be capped at 2, got %+v", logged.Events)
+	}
+	if logged.Events[0].Sequence != 2 || logged.Events[1].Sequence != 3 {
+		t.Fatalf("expected retained sequences 2 and 3, got %+v", logged.Events)
 	}
 }
 

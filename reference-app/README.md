@@ -39,7 +39,7 @@ go run ./server/cmd/openrtc dev
 go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:6379/0
 
 # In another terminal, run a terminal/CI smoke probe.
-go run ./server/cmd/openrtc dev probe --reconnect --realtime
+go run ./server/cmd/openrtc dev probe --reconnect --realtime --multi-user --yjs-realtime
 
 # Fetch a local token for scripts.
 go run ./server/cmd/openrtc dev token --room demo:room-1 --env
@@ -70,7 +70,7 @@ The dev server starts:
 - Yjs snapshot/update metadata reads at `http://127.0.0.1:3000/dev/yjs?room=demo:room-1`
 - Bounded room event-log reads at `http://127.0.0.1:3000/dev/events?room=demo:room-1`
 - Ops dev status, socket/event inspection, and reconnect drill with generation verification
-- Terminal smoke probe via `openrtc dev probe`, with `--json` for machine-readable CI output and `--restart runtime|admin|both` for failure drills
+- Terminal smoke probe via `openrtc dev probe`, with `--json` for machine-readable CI output, `--restart runtime|admin|both` for failure drills, `--realtime` for one-socket storage mutation/idempotency, `--multi-user` for two-user presence/event ACK/storage fan-out, and `--yjs-realtime` for live Yjs update verification
 - Terminal token helper via `openrtc dev token`, with token-only stdout by default, `--json` for the full token/config response, and `--env` for shell-safe `OPENRTC_DEV_*` assignments
 
 The older reference server entrypoint still works from this directory:
@@ -89,3 +89,4 @@ go run ./cmd/server
    WebSocket storage snapshots, acks, and updates.
 5. Use `Yjs` to connect to the binary endpoint, send an update frame, reconnect,
    and verify replay.
+6. For the CLI equivalent of a two-user smoke, run `go run ./server/cmd/openrtc dev probe --multi-user` while the dev stack is running.

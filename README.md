@@ -26,7 +26,9 @@ OpenRTC is a self-hosted OSS realtime layer for SaaS teams.
 - `make typecheck`
 - `make test`
 - `make test-integration`
+- `make coverage`
 - `make check`
+- `make production-check`
 
 ## Local dev server
 
@@ -46,7 +48,7 @@ go run ./server/cmd/openrtc dev --storage redis --redis-url redis://localhost:63
 go run ./server/cmd/openrtc dev --seed-file ./docs/config/openrtc.seed.example.json
 
 # In another terminal, run a typed smoke probe against the live dev stack.
-go run ./server/cmd/openrtc dev probe --reconnect --realtime --yjs-realtime
+go run ./server/cmd/openrtc dev probe --reconnect --realtime --multi-user --yjs-realtime
 go run ./server/cmd/openrtc dev probe --json
 
 # Fetch a local client/admin token for terminal scripts or CI.
@@ -70,7 +72,7 @@ Then open `http://127.0.0.1:3000`. The dev server exposes:
 - `http://127.0.0.1:3000/dev/seed` to inspect the active seed fixture and `POST /dev/seed` to delete and reseed configured dev rooms. Seed files use the shape in `docs/config/openrtc.seed.example.json`.
 - `POST http://127.0.0.1:3000/dev/crash/runtime` and `/dev/crash/admin` to restart local services and return the new service generation.
 - The Ops tab includes dev status, socket/event inspection, and a runtime reconnect drill that restarts the local runtime, reconnects, and verifies the new socket/presence path.
-- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including seed fixture checks, optional runtime/admin restart drills, JSON output, `--reconnect` for a runtime crash/reconnect/rejoin drill, `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch and duplicate `op_id` retry, and `--yjs-realtime` for a live Yjs WebSocket update check.
+- `openrtc dev probe` runs the same endpoint checks from a terminal or CI job, including seed fixture checks, optional runtime/admin restart drills, JSON output, `--reconnect` for a runtime crash/reconnect/rejoin drill, `--realtime` for a tokenized runtime WebSocket join plus sequenced storage patch and duplicate `op_id` retry, `--multi-user` for two-user presence/event ACK/storage fan-out, and `--yjs-realtime` for a live Yjs WebSocket update check.
 - `openrtc dev token` fetches local client/admin JWTs from a terminal, defaulting to a token-only stdout value for command substitution, with `--json` for the full response and `--env` for shell-safe `OPENRTC_DEV_*` assignments.
 - `createOpenRTCDevClient()` and `createOpenRTCDevAdminClient()` return typed `tools` helpers for fetching status, seed fixtures, sockets, storage, Yjs metadata, event logs, restart/reconnect drills, and a reusable `tools.probe()` smoke check from the advertised dev URLs. Use `tools.resetSeed()` to restore deterministic local data without restarting the stack.
 
@@ -190,8 +192,12 @@ after a hard failure. For Redis-backed room events, the SDK remembers the latest
 delivered `EVENT.meta.seq`, sends it as `JOIN.meta.after_seq` on reconnect, and
 automatically reports accepted sequenced events with `EVENT_ACK`; authenticated
 Redis-backed runtimes also persist the highest ACKed sequence per room/subject
-as a bounded reconnect cursor. Use `room.getLastEventSequence()` to inspect the
-local resume cursor and `room.ackEvent(seq)` to resend delivery state manually.
+as a bounded reconnect cursor. For product-managed recovery beyond the bounded
+event replay window, pass `projectId` and `resumeSession` to `OpenRTCClient`;
+the runtime creates/loads the resume session, merges its room cursor into
+`JOIN.meta.after_seq`, and advances it from `EVENT_ACK`. Use
+`room.getLastEventSequence()` to inspect the local resume cursor and
+`room.ackEvent(seq)` to resend delivery state manually.
 Room storage uses the
 runtime `STORAGE_GET`, `STORAGE_SET`, and `STORAGE_PATCH` protocol, keeps the
 latest authoritative snapshot in memory, emits `storage` / `storage-status`
@@ -469,6 +475,10 @@ debugging. Spawn lab clients, run the benchmark, and it stamps every synthetic
 presence update with a run ID, round, sender, and sent timestamp. The UI reports
 expected versus observed delivery, loss percentage, p99 latency, and duration so
 integrators can verify multi-client realtime behavior before embedding OpenRTC.
+For a terminal/CI smoke of the same core collaboration path, run
+`openrtc dev probe --multi-user`; it opens two runtime sockets and verifies
+presence fan-out, sequenced room event delivery plus `EVENT_ACK`, and remote
+storage update fan-out.
 
 ```ts
 import {

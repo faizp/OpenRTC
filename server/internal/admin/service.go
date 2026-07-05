@@ -34,8 +34,11 @@ type Service struct {
 	verifier *auth.Verifier
 	store    cluster.Store
 	metrics  *observability.AdminMetrics
+	ctx      context.Context
+	cancel   context.CancelFunc
 
-	webhookClient *http.Client
+	webhookClient     *http.Client
+	webhookWorkerDone chan struct{}
 
 	mu    sync.Mutex
 	stats stats.Snapshot
@@ -198,11 +201,14 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 		verifier = auth.NewVerifier(cfg.AdminAuth.Issuer, cfg.AdminAuth.Audience, cfg.AdminAuth.JWKSURL)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
 		cfg:      cfg,
 		logger:   logger,
 		verifier: verifier,
 		metrics:  observability.NewAdminMetrics(),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 
 	if cfg.Webhooks != nil && len(cfg.Webhooks.URLs) > 0 {
@@ -210,17 +216,23 @@ func NewService(cfg config.RuntimeConfig, logger *log.Logger) (*Service, error) 
 	}
 
 	if cfg.Redis != nil {
-		store, err := cluster.NewRedisStore(cfg.Redis.URL, cfg.Redis.ChannelPrefix)
+		store, err := cluster.NewRedisStoreWithOptions(cfg.Redis.URL, cfg.Redis.ChannelPrefix, cluster.RedisStoreOptions{
+			EventLogMaxEntries: cfg.Redis.EventLogMaxEntries,
+		})
 		if err != nil {
 			return nil, err
 		}
 		service.store = store
 	}
+	service.startWebhookRetryWorker()
 
 	return service, nil
 }
 
 func (s *Service) Close() error {
+	if s.cancel != nil {
+		s.cancel()
+	}
 	if s.store != nil {
 		return s.store.Close()
 	}
@@ -240,6 +252,19 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("/v1/presence", s.handlePresence)
 	mux.HandleFunc("/v1/inbox-notifications/trigger", s.handleTriggerInboxNotification)
 	mux.HandleFunc("/v1/inbox-notifications/", s.handleInboxNotificationAction)
+	mux.HandleFunc("/v1/tenants", s.handleTenants)
+	mux.HandleFunc("/v1/tenants/", s.handleTenant)
+	mux.HandleFunc("/v1/api-keys", s.handleAPIKeys)
+	mux.HandleFunc("/v1/api-keys/", s.handleAPIKeyAction)
+	mux.HandleFunc("/v1/audit-logs", s.handleAuditLogs)
+	mux.HandleFunc("/v1/usage", s.handleUsage)
+	mux.HandleFunc("/v1/dashboard", s.handleProductDashboard)
+	mux.HandleFunc("/v1/status", s.handleProductStatus)
+	mux.HandleFunc("/v1/support/debug-bundle", s.handleSupportDebugBundle)
+	mux.HandleFunc("/v1/webhook-deliveries", s.handleWebhookDeliveries)
+	mux.HandleFunc("/v1/webhook-deliveries/", s.handleWebhookDeliveryAction)
+	mux.HandleFunc("/v1/resume-sessions", s.handleResumeSessions)
+	mux.HandleFunc("/v1/resume-sessions/", s.handleResumeSession)
 	mux.HandleFunc("/v1/rooms", s.handleRooms)
 	mux.HandleFunc("/v1/rooms/", s.handleRoom)
 	mux.HandleFunc("/v1/users/", s.handleUser)
@@ -314,6 +339,8 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	s.metrics.AdminPublishesTotal.Inc()
 	_ = s.store.SyncStats(context.Background(), "admin:"+s.cfg.NodeID, snapshot)
+	s.recordUsage(r.Context(), r, request.Room, "events.published", 1)
+	s.recordAuditLog(r.Context(), claims, "event.publish", "room", request.Room, tenantFromRoom(request.Room, s.cfg.Tenant.Separator), projectFromRequest(r), map[string]any{"event": request.Event})
 
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -382,6 +409,8 @@ func (s *Service) handlePresence(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.recordUsage(r.Context(), r, request.Room, "presence.upserted", 1)
+	s.recordAuditLog(r.Context(), claims, "presence.set", "room", request.Room, tenantFromRoom(request.Room, s.cfg.Tenant.Separator), projectFromRequest(r), map[string]any{"connId": request.ConnID})
 
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -409,6 +438,18 @@ func (s *Service) handleRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	if subresource == "storage/json-patch" {
 		s.handleStoragePatch(w, r, room)
+		return
+	}
+	if subresource == "versions" {
+		s.handleVersionSnapshots(w, r, room)
+		return
+	}
+	if strings.HasPrefix(subresource, "versions/") {
+		s.handleVersionSnapshot(w, r, room, subresource)
+		return
+	}
+	if subresource == "rich-text" || strings.HasPrefix(subresource, "rich-text/") {
+		s.handleRichTextDocuments(w, r, room, subresource)
 		return
 	}
 	if subresource == "active_users" || subresource == "active-users" {
@@ -498,6 +539,9 @@ func (s *Service) handleStoragePatch(w http.ResponseWriter, r *http.Request, roo
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.recordVersionSnapshot(r.Context(), room, "storage", "storage.patch", plan.Mutation.Document)
+	s.recordUsage(r.Context(), r, room, "storage.patch", 1)
+	s.recordAuditLog(r.Context(), claims, "storage.patch", "room", room, tenantFromRoom(room, s.cfg.Tenant.Separator), projectFromRequest(r), map[string]any{"operations": len(operations)})
 	writeRawJSON(w, http.StatusOK, plan.Mutation.Document)
 }
 
@@ -1447,6 +1491,8 @@ func (s *Service) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dispatchRoomWebhook(r.Context(), roomengine.RoomCreated, record.ID, &record)
+	s.recordUsage(r.Context(), r, record.ID, "rooms.created", 1)
+	s.recordAuditLog(r.Context(), claims, "room.create", "room", record.ID, tenantFromRoom(record.ID, s.cfg.Tenant.Separator), projectFromRequest(r), nil)
 	writeJSON(w, http.StatusCreated, record)
 }
 
@@ -1506,6 +1552,9 @@ func (s *Service) handleSetStorage(w http.ResponseWriter, r *http.Request, room 
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.recordVersionSnapshot(r.Context(), room, "storage", "storage.set", plan.Mutation.Document)
+	s.recordUsage(r.Context(), r, room, "storage.set", 1)
+	s.recordAuditLog(r.Context(), claims, "storage.set", "room", room, tenantFromRoom(room, s.cfg.Tenant.Separator), projectFromRequest(r), nil)
 	writeRawJSON(w, http.StatusOK, plan.Mutation.Document)
 }
 
@@ -1537,6 +1586,8 @@ func (s *Service) handleDeleteStorage(w http.ResponseWriter, r *http.Request, ro
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
+	s.recordUsage(r.Context(), r, room, "storage.deleted", 1)
+	s.recordAuditLog(r.Context(), claims, "storage.delete", "room", room, tenantFromRoom(room, s.cfg.Tenant.Separator), projectFromRequest(r), nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1623,6 +1674,7 @@ func (s *Service) handleUpdateRoom(w http.ResponseWriter, r *http.Request, room 
 		return
 	}
 	s.dispatchRoomWebhook(r.Context(), roomengine.RoomUpdated, record.ID, &record)
+	s.recordAuditLog(r.Context(), claims, "room.update", "room", record.ID, tenantFromRoom(record.ID, s.cfg.Tenant.Separator), projectFromRequest(r), nil)
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -1651,6 +1703,8 @@ func (s *Service) handleDeleteRoom(w http.ResponseWriter, r *http.Request, room 
 		return
 	}
 	s.dispatchRoomWebhook(r.Context(), roomengine.RoomDeleted, room, nil)
+	s.recordUsage(r.Context(), r, room, "rooms.deleted", 1)
+	s.recordAuditLog(r.Context(), claims, "room.delete", "room", room, tenantFromRoom(room, s.cfg.Tenant.Separator), projectFromRequest(r), nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1769,14 +1823,40 @@ func (s *Service) handleReady(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) authenticate(r *http.Request) (*auth.Claims, error) {
-	if s.verifier == nil {
-		return nil, errors.New("admin auth verifier is not configured")
-	}
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return nil, errors.New("missing bearer token")
 	}
-	return s.verifier.Verify(r.Context(), strings.TrimPrefix(authHeader, "Bearer "))
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if s.verifier != nil {
+		claims, err := s.verifier.Verify(r.Context(), token)
+		if err == nil {
+			return claims, nil
+		}
+		if !strings.HasPrefix(token, "ortc_sk_") {
+			return nil, err
+		}
+	}
+	return s.authenticateAPIKey(r.Context(), token)
+}
+
+func (s *Service) authenticateAPIKey(ctx context.Context, token string) (*auth.Claims, error) {
+	store, ok := s.store.(interface {
+		VerifyAPIKey(context.Context, string) (cluster.APIKeyRecord, error)
+	})
+	if !ok {
+		return nil, errors.New("api key authentication is not configured")
+	}
+	record, err := store.VerifyAPIKey(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	claims := &auth.Claims{
+		Tenant: record.TenantID,
+		Scope:  strings.Join(record.Scopes, " "),
+	}
+	claims.Subject = "api-key:" + record.ID
+	return claims, nil
 }
 
 func roomFromPath(path string) (string, error) {

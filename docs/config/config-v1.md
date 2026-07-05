@@ -32,6 +32,7 @@ Required only when webhooks are configured:
 - `server.ws_path`: `/ws`
 - `server.allowed_origins`: `[]` (allow all origins; set explicitly in production)
 - `redis.channel_prefix`: `room:`
+- `redis.event_log_max_entries`: `1000`
 - `tenant.enforce_prefix`: `true`
 - `tenant.separator`: `:`
 - `limits.payload_max_bytes`: `16384`
