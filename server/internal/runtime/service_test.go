@@ -2796,25 +2796,27 @@ func TestEmitLimiter(t *testing.T) {
 }
 
 func TestNewConnIDShape(t *testing.T) {
-	id := newConnID()
+	id, err := newConnID()
+	if err != nil {
+		t.Fatalf("new conn id: %v", err)
+	}
 	if len(id) != 24 {
 		t.Fatalf("unexpected conn id length: %d", len(id))
 	}
 }
 
-func TestNewConnIDPanicsWhenRandomReadFails(t *testing.T) {
+func TestNewConnIDReturnsErrorWhenRandomReadFails(t *testing.T) {
 	oldRandomRead := randomRead
 	randomRead = func([]byte) (int, error) {
 		return 0, errors.New("random failed")
 	}
 	defer func() {
 		randomRead = oldRandomRead
-		if recovered := recover(); recovered == nil {
-			t.Fatalf("expected newConnID to panic")
-		}
 	}()
 
-	_ = newConnID()
+	if id, err := newConnID(); err == nil || id != "" {
+		t.Fatalf("expected empty id and random error, got id=%q err=%v", id, err)
+	}
 }
 
 func newRuntimeAuthorizedService(t *testing.T, extraClaims map[string]any) (*Service, string, func()) {

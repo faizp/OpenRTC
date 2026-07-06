@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: admin
-          image: openrtc:latest
+          image: openrtc:0.1.0
           command: ["/usr/local/bin/openrtc-admin"]
           ports:
             - containerPort: 8080

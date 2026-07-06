@@ -116,6 +116,12 @@ func TestRunStartsAdminServerAndClosesService(t *testing.T) {
 			if server.Handler == nil {
 				t.Fatalf("expected handler")
 			}
+			if server.ReadHeaderTimeout != readHeaderTimeout {
+				t.Fatalf("unexpected read header timeout: %s", server.ReadHeaderTimeout)
+			}
+			if server.IdleTimeout != idleTimeout {
+				t.Fatalf("unexpected idle timeout: %s", server.IdleTimeout)
+			}
 			return http.ErrServerClosed
 		},
 		io.Discard,

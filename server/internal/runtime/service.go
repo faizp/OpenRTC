@@ -406,8 +406,14 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	connID, err := newConnID()
+	if err != nil {
+		http.Error(w, "connection id generation failed", http.StatusInternalServerError)
+		return
+	}
+
 	conn := &clientConn{
-		id:        newConnID(),
+		id:        connID,
 		ws:        ws,
 		service:   s,
 		claims:    authn.claims,
@@ -489,7 +495,11 @@ func (s *Service) handleYJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connID := newConnID()
+	connID, err := newConnID()
+	if err != nil {
+		http.Error(w, "connection id generation failed", http.StatusInternalServerError)
+		return
+	}
 	if err := s.roomEngine().RegisterYJSSessionWithLimit(roomengine.YJSSessionInfo{
 		ConnID:  connID,
 		Subject: authn.claims.Subject,
@@ -2041,12 +2051,12 @@ func (s *Service) checkOrigin(r *http.Request) bool {
 	return false
 }
 
-func newConnID() string {
+func newConnID() (string, error) {
 	raw := make([]byte, 12)
 	if _, err := randomRead(raw); err != nil {
-		panic(err)
+		return "", err
 	}
-	return hex.EncodeToString(raw)
+	return hex.EncodeToString(raw), nil
 }
 
 func roomFromYJSPath(pathValue string) (string, error) {

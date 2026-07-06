@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/openrtc/openrtc/server/internal/config"
 	runtimeapp "github.com/openrtc/openrtc/server/internal/runtime"
@@ -23,6 +24,12 @@ var (
 	listenAndServe = func(server *http.Server) error {
 		return server.ListenAndServe()
 	}
+)
+
+const (
+	readHeaderTimeout = 5 * time.Second
+	idleTimeout       = 60 * time.Second
+	shutdownTimeout   = 10 * time.Second
 )
 
 func main() {
@@ -55,8 +62,10 @@ func run(ctx context.Context, loadConfig func() (config.RuntimeConfig, error), n
 	defer service.Close()
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler: service.Handler(),
+		Addr:              fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:           service.Handler(),
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -64,7 +73,9 @@ func run(ctx context.Context, loadConfig func() (config.RuntimeConfig, error), n
 
 	go func() {
 		<-ctx.Done()
-		_ = server.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
 	}()
 
 	logger.Printf("runtime server starting: %s", server.Addr)

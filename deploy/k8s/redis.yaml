@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: redis
   namespace: openrtc
@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/component: datastore
 spec:
   replicas: 1
+  serviceName: redis
   selector:
     matchLabels:
       app.kubernetes.io/name: redis
@@ -19,9 +20,24 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          command: ["sh", "-c", "redis-server --appendonly yes --save 60 1000 --requirepass \"$REDIS_PASSWORD\""]
           ports:
             - containerPort: 6379
               name: redis
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openrtc-auth
+                  key: REDIS_PASSWORD
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: openrtc-auth
+                  key: REDIS_PASSWORD
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
           resources:
             requests:
               cpu: 100m
@@ -39,6 +55,14 @@ spec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 5
             periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

@@ -34,8 +34,13 @@ func (s *Service) dispatchWebhook(ctx context.Context, eventName string, data an
 	}
 
 	now := time.Now().UTC()
+	webhookID, err := newRecordID("evt")
+	if err != nil {
+		s.logWebhookDelivery("id", eventName, 0, err)
+		return
+	}
 	envelope := webhookEnvelope{
-		ID:        newRecordID("evt"),
+		ID:        webhookID,
 		Event:     eventName,
 		CreatedAt: now.Format(time.RFC3339Nano),
 		Data:      data,
@@ -58,8 +63,13 @@ func (s *Service) dispatchWebhook(ctx context.Context, eventName string, data an
 	})
 
 	for index, targetURL := range s.cfg.Webhooks.URLs {
+		deliveryID, err := newRecordID("wd")
+		if err != nil {
+			s.logWebhookDelivery("id", eventName, index, err)
+			continue
+		}
 		delivery := cluster.WebhookDeliveryRecord{
-			ID:        newRecordID("wd"),
+			ID:        deliveryID,
 			WebhookID: envelope.ID,
 			Event:     eventName,
 			URL:       targetURL,

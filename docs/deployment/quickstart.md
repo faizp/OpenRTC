@@ -92,7 +92,7 @@ Services:
 Apply manifests from `deploy/k8s/`:
 
 ```bash
-# Edit configmap.yaml and secret with your values
+# Edit configmap.yaml, secret values, image tags, hostnames, and storage class.
 kubectl apply -f deploy/k8s/namespace.yaml
 kubectl apply -f deploy/k8s/configmap.yaml
 kubectl apply -f deploy/k8s/redis.yaml
@@ -106,6 +106,13 @@ kubectl apply -f deploy/k8s/ingress.yaml
 manifest includes nginx annotations for cookie-based affinity and expects an
 `openrtc-tls` secret for `openrtc.example.com`. Adjust both for your ingress
 controller and certificate manager.
+
+The sample Kubernetes Redis is a single persistent, password-protected
+StatefulSet for small production deployments and staging. Replace
+`replace-with-redis-password`, use immutable image tags or digests, and set a
+storage class/size appropriate for your environment. For higher durability or
+managed failover, point `OPENRTC_REDIS_URL` at a managed Redis service instead
+of applying `deploy/k8s/redis.yaml`.
 
 ## Option 3: Build from Source
 
@@ -144,7 +151,7 @@ All configuration is via environment variables:
 | `OPENRTC_WS_PATH` | `/ws` | WebSocket endpoint path |
 | `OPENRTC_ALLOWED_ORIGINS` | — | Comma-separated WebSocket Origin allowlist. Empty allows all; set in production. |
 | `/yjs/{room}` | fixed | Binary Yjs sync endpoint path |
-| `OPENRTC_REDIS_URL` | — | Redis connection URL (required in cluster mode) |
+| `OPENRTC_REDIS_URL` | — | Redis connection URL (required in cluster mode). Treat as secret when it includes credentials. |
 | `OPENRTC_REDIS_CHANNEL_PREFIX` | `room:` | Redis Pub/Sub channel prefix for room fan-out |
 | `OPENRTC_REDIS_EVENT_LOG_MAX_ENTRIES` | `1000` | Max bounded room event replay entries retained per room |
 | `OPENRTC_AUTH_ISSUER` | (required) | JWT issuer for client tokens |

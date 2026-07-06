@@ -168,24 +168,27 @@ func TestRoomPathAndMetadataValidation(t *testing.T) {
 	if err := validateRoomRequest("tenant-a:bad room", json.RawMessage(`{"ok":true}`), false, 16); err == nil || err.Code != openrtcerr.CodeBadRequest {
 		t.Fatalf("invalid room request should fail with BAD_REQUEST, got %v", err)
 	}
-	if id := newRecordID("th"); !strings.HasPrefix(id, "th_") || len(id) != 27 {
+	id, err := newRecordID("th")
+	if err != nil {
+		t.Fatalf("new record id: %v", err)
+	}
+	if !strings.HasPrefix(id, "th_") || len(id) != 27 {
 		t.Fatalf("unexpected generated record id: %s", id)
 	}
 }
 
-func TestNewRecordIDPanicsWhenRandomReadFails(t *testing.T) {
+func TestNewRecordIDReturnsErrorWhenRandomReadFails(t *testing.T) {
 	oldRandomRead := randomRead
 	randomRead = func([]byte) (int, error) {
 		return 0, errors.New("random failed")
 	}
 	defer func() {
 		randomRead = oldRandomRead
-		if recovered := recover(); recovered == nil {
-			t.Fatalf("expected newRecordID to panic")
-		}
 	}()
 
-	_ = newRecordID("th")
+	if id, err := newRecordID("th"); err == nil || id != "" {
+		t.Fatalf("expected empty id and random error, got id=%q err=%v", id, err)
+	}
 }
 
 func TestAuthorizedRoomListPrefixAndPaginationParsing(t *testing.T) {

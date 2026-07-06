@@ -656,9 +656,18 @@ func (s *Service) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, openrtcerr.CodeRoomForbidden, "api key administration is not permitted", "", http.StatusForbidden)
 		return
 	}
-	prefix, secret, secretHash := newAPIKeyMaterial()
+	prefix, secret, secretHash, err := newAPIKeyMaterial()
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, "api key secret generation failed", "", http.StatusInternalServerError)
+		return
+	}
+	recordID, err := newRecordID("key")
+	if err != nil {
+		s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+		return
+	}
 	record, err := store.CreateAPIKey(r.Context(), cluster.APIKeyRecord{
-		ID:         newRecordID("key"),
+		ID:         recordID,
 		TenantID:   request.TenantID,
 		ProjectID:  request.ProjectID,
 		Name:       strings.TrimSpace(request.Name),
@@ -1034,7 +1043,12 @@ func (s *Service) handleUpsertResumeSession(w http.ResponseWriter, r *http.Reque
 	}
 	id := request.ID
 	if id == "" {
-		id = newRecordID("rs")
+		generatedID, idErr := newRecordID("rs")
+		if idErr != nil {
+			s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+			return
+		}
+		id = generatedID
 	}
 	record, err := store.UpsertResumeSession(r.Context(), cluster.ResumeSessionRecord{
 		ID:          id,
@@ -1152,7 +1166,12 @@ func (s *Service) handleCreateVersionSnapshot(w http.ResponseWriter, r *http.Req
 	}
 	id := request.ID
 	if id == "" {
-		id = newRecordID("ver")
+		generatedID, idErr := newRecordID("ver")
+		if idErr != nil {
+			s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+			return
+		}
+		id = generatedID
 	}
 	record, err := store.CreateVersionSnapshot(r.Context(), cluster.VersionSnapshotRecord{
 		ID:         id,
@@ -1265,13 +1284,17 @@ func (s *Service) handleUpsertRichTextDocument(w http.ResponseWriter, r *http.Re
 		s.writeError(w, openrtcerr.CodeInternal, err.Error(), "", http.StatusInternalServerError)
 		return
 	}
-	_, _ = store.CreateVersionSnapshot(r.Context(), cluster.VersionSnapshotRecord{
-		ID:         newRecordID("ver"),
-		RoomID:     room,
-		DocumentID: "rich:" + documentID,
-		Label:      "rich-text.update",
-		Document:   request.Content,
-	})
+	if versionID, err := newRecordID("ver"); err == nil {
+		_, _ = store.CreateVersionSnapshot(r.Context(), cluster.VersionSnapshotRecord{
+			ID:         versionID,
+			RoomID:     room,
+			DocumentID: "rich:" + documentID,
+			Label:      "rich-text.update",
+			Document:   request.Content,
+		})
+	} else if s.logger != nil {
+		s.logger.Printf("version snapshot id generation failed room=%s document=%s error=%v", room, documentID, err)
+	}
 	s.recordUsage(r.Context(), r, room, "rich_text_documents.upserted", 1)
 	s.recordAuditLog(r.Context(), claims, "rich_text_document.upsert", "room", room, tenantFromRoom(room, s.cfg.Tenant.Separator), projectFromRequest(r), map[string]any{"documentId": documentID})
 	writeJSON(w, http.StatusOK, record)
@@ -1695,8 +1718,15 @@ func (s *Service) recordAuditLog(ctx context.Context, claims *auth.Claims, actio
 			tenantID = claims.Tenant
 		}
 	}
+	id, idErr := newRecordID("aud")
+	if idErr != nil {
+		if s.logger != nil {
+			s.logger.Printf("audit log id generation failed action=%s resource=%s error=%v", action, resourceID, idErr)
+		}
+		return
+	}
 	_, err := store.RecordAuditLog(ctx, cluster.AuditLogRecord{
-		ID:           newRecordID("aud"),
+		ID:           id,
 		TenantID:     tenantID,
 		ProjectID:    projectID,
 		ActorID:      actorID,
@@ -1742,8 +1772,15 @@ func (s *Service) recordVersionSnapshot(ctx context.Context, room string, docume
 	if !ok || len(document) == 0 || !json.Valid(document) {
 		return
 	}
+	id, idErr := newRecordID("ver")
+	if idErr != nil {
+		if s.logger != nil {
+			s.logger.Printf("version snapshot id generation failed room=%s document=%s error=%v", room, documentID, idErr)
+		}
+		return
+	}
 	_, err := store.CreateVersionSnapshot(ctx, cluster.VersionSnapshotRecord{
-		ID:         newRecordID("ver"),
+		ID:         id,
 		RoomID:     room,
 		DocumentID: firstNonEmpty(documentID, "storage"),
 		Label:      label,
@@ -1857,13 +1894,13 @@ func projectFromRequest(r *http.Request) string {
 	return firstNonEmpty(r.Header.Get("OpenRTC-Project-Id"), r.URL.Query().Get("projectId"))
 }
 
-func newAPIKeyMaterial() (string, string, string) {
+func newAPIKeyMaterial() (string, string, string, error) {
 	raw := make([]byte, 28)
 	if _, err := randomRead(raw); err != nil {
-		panic(err)
+		return "", "", "", err
 	}
 	prefix := "ortc_" + hex.EncodeToString(raw[:4])
 	secret := "ortc_sk_" + prefix + "_" + hex.EncodeToString(raw[4:])
 	hash := sha256.Sum256([]byte(secret))
-	return prefix, secret, "sha256:" + hex.EncodeToString(hash[:])
+	return prefix, secret, "sha256:" + hex.EncodeToString(hash[:]), nil
 }

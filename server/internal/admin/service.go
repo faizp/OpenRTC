@@ -883,10 +883,18 @@ func (s *Service) handleCreateThread(w http.ResponseWriter, r *http.Request, roo
 	}
 	threadID := request.ID
 	if threadID == "" {
-		threadID = newRecordID("th")
+		threadID, err = newRecordID("th")
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+			return
+		}
 	}
 	if request.Comment.ID == "" {
-		request.Comment.ID = newRecordID("cm")
+		request.Comment.ID, err = newRecordID("cm")
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+			return
+		}
 	}
 	if parseErr := validateThreadRequest(threadID, request.Metadata, request.Comment, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
 		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
@@ -1008,7 +1016,11 @@ func (s *Service) handleAddComment(w http.ResponseWriter, r *http.Request, room 
 		return
 	}
 	if request.ID == "" {
-		request.ID = newRecordID("cm")
+		request.ID, err = newRecordID("cm")
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+			return
+		}
 	}
 	if parseErr := validateCommentRequest(request, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
 		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
@@ -1220,7 +1232,11 @@ func (s *Service) handleTriggerInboxNotification(w http.ResponseWriter, r *http.
 		return
 	}
 	if request.ID == "" {
-		request.ID = newRecordID("in")
+		request.ID, err = newRecordID("in")
+		if err != nil {
+			s.writeError(w, openrtcerr.CodeInternal, "record id generation failed", "", http.StatusInternalServerError)
+			return
+		}
 	}
 	if parseErr := validateInboxNotificationRequest(request, s.cfg.Limits.PayloadMaxBytes); parseErr != nil {
 		s.writeError(w, parseErr.Code, parseErr.Message, "", openrtcerr.DescriptorFor(parseErr.Code).HTTPStatus)
@@ -2484,12 +2500,12 @@ func findThreadComment(thread cluster.ThreadRecord, commentID string) *cluster.C
 	return nil
 }
 
-func newRecordID(prefix string) string {
+func newRecordID(prefix string) (string, error) {
 	raw := make([]byte, 12)
 	if _, err := randomRead(raw); err != nil {
-		panic(err)
+		return "", err
 	}
-	return prefix + "_" + hex.EncodeToString(raw)
+	return prefix + "_" + hex.EncodeToString(raw), nil
 }
 
 func (s *Service) authorizedRoomListPrefix(claims *auth.Claims, requested string) (string, *protocol.ParseError) {

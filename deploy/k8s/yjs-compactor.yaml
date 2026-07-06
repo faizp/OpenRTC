@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: yjs-compactor
-          image: openrtc-yjs-compactor:latest
+          image: openrtc-yjs-compactor:0.1.0
           command: ["pnpm", "--filter", "@openrtc/yjs-compactor", "compact"]
           ports:
             - containerPort: 9102
@@ -31,6 +31,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: openrtc-config
+            - secretRef:
+                name: openrtc-auth
           resources:
             requests:
               cpu: 50m
